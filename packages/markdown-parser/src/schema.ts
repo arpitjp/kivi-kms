@@ -111,3 +111,15 @@ export function codeMark(): PMMarkJSON {
 export function linkMark(href: string, title?: string): PMMarkJSON {
   return { type: 'link', attrs: { href, title: title || null, target: '_blank' } };
 }
+
+export function wikiLinkMark(target: string, alias?: string): PMMarkJSON {
+  return { type: 'wikiLink', attrs: { target, alias: alias || null } };
+}
+
+export function hashTagNode(tag: string): PMNodeJSON {
+  return { type: 'hashTag', attrs: { tag } };
+}
+
+export function tocBlockNode(): PMNodeJSON {
+  return { type: 'tocBlock' };
+}

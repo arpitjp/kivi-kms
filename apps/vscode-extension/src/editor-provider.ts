@@ -25,6 +25,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       enableScripts: true,
       localResourceRoots: [
         vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview'),
+        vscode.Uri.joinPath(this.context.extensionUri, 'images'),
       ],
     };
 
@@ -117,6 +118,9 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'webview.css'),
     );
+    const iconUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, 'images', 'icon.png'),
+    );
 
     const nonce = getNonce();
 
@@ -126,11 +130,11 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+    content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Kivi</title>
 </head>
-<body>
+<body data-icon-uri="${iconUri}">
   <div id="editor"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

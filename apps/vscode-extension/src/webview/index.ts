@@ -24,6 +24,27 @@ function init() {
 
   const toolbarEl = document.createElement('div');
   toolbarEl.id = 'kivi-toolbar';
+
+  const iconUri = document.body.dataset.iconUri;
+  if (iconUri) {
+    const brand = document.createElement('span');
+    brand.className = 'kivi-toolbar-brand';
+    const img = document.createElement('img');
+    img.src = iconUri;
+    img.alt = 'Kivi';
+    img.width = 18;
+    img.height = 18;
+    brand.appendChild(img);
+    const label = document.createElement('span');
+    label.textContent = 'Kivi';
+    brand.appendChild(label);
+    toolbarEl.appendChild(brand);
+
+    const sep = document.createElement('span');
+    sep.className = 'kivi-toolbar-sep';
+    toolbarEl.appendChild(sep);
+  }
+
   document.body.insertBefore(toolbarEl, editorEl);
 
   createSearchBar();

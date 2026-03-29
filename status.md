@@ -2,82 +2,95 @@
 
 ## Current Phase
 
-Phase 1 — Core Markdown WYSIWYG Editor (COMPLETE)
+Phase 2 — Knowledge Management & Advanced Editor Features (COMPLETE)
 
 ## Completed
 
+### Phase 1 — Core Markdown WYSIWYG Editor
+
 - **Monorepo scaffold**: pnpm workspaces + Turborepo, TypeScript strict mode, Vitest
-- **Shared types** (`@kivi/shared-types`): KiviDocument, BlockMeta, SourceMap, StyleHints, EditorConfig, SerializerOptions
-- **Markdown parser** (`@kivi/markdown-parser`): remark-parse pipeline with full position preservation, mdast-to-ProseMirror transformer, source range extraction, style hint detection
-- **Markdown serializer** (`@kivi/markdown-serializer`): ProseMirror-to-mdast converter, remark-stringify output, block-level dirty serialization, style-preserving re-serialization
-- **Editor core** (`@kivi/editor-core`): Tiptap-based editor with all CommonMark + GFM extensions
-  - Headings, paragraphs, bold, italic, strikethrough, underline
-  - Inline code, fenced code blocks (with language)
-  - Ordered lists, unordered lists, task lists
-  - Tables, blockquotes, horizontal rules
-  - Links, images, hard breaks
-  - Frontmatter, math blocks, math inline, footnotes (custom extensions)
-  - In-document search with regex, case-sensitive, whole-word, replace/replace-all
-  - Smart clipboard: Markdown detection heuristic, rich parse-and-insert via `parseMarkdown()`, Markdown-aware copy
-  - **Real dirty tracking**: ProseMirror plugin tracks which top-level blocks are modified per transaction, feeds into serializer for minimal diffs
-  - **KaTeX math rendering**: NodeView-based renderer for MathBlock and MathInline, with KaTeX integration (auto-detects `window.katex`), fallback to source display
-  - **Floating toolbar**: Bold, italic, strikethrough, code, headings (H1–H3), lists (bullet, ordered, task), blockquote, code block, horizontal rule — with active-state highlighting
-  - **Web Worker parsing**: Background `parseMarkdown()` via Web Worker for files > 100KB, with sync fallback for small files or unsupported environments
-- **Round-trip preservation**: Lossless parse-serialize cycle verified with comprehensive tests
-  - Preserves: whitespace, list markers, heading style, code fence style, emphasis style, inter-block gaps, preamble/postamble
-  - Block-level dirty tracking: only modified blocks are re-serialized
-  - Debounced update notifications (300ms) to avoid serializing on every keystroke
-- **Web demo** (`@kivi/web-demo`): Vite app with split WYSIWYG / raw Markdown view, full toolbar
-- **VS Code extension** (`kivi`): CustomTextEditorProvider with bundled Tiptap webview
-  - Toolbar with formatting buttons and active-state indicators
-  - **Search UI**: Floating search bar (Cmd+F) with case-sensitive, regex, whole-word toggles, next/prev navigation, replace/replace-all
-  - **Incremental edits**: Diff-based document updates (finds minimal changed range instead of replacing entire document)
-  - Theme/font sync via CSS variables
-  - postMessage protocol for load/edit/externalChange
-  - Complete CSS styling for all block types including math, frontmatter, footnotes, search highlights
+- **Shared types** (`@kivi/shared-types`): KiviDocument, BlockMeta, SourceMap, StyleHints, EditorConfig, ThemeColors
+- **Markdown parser** (`@kivi/markdown-parser`): remark-parse pipeline with wiki-link, math, frontmatter support; position preservation; mdast-to-ProseMirror transformer
+- **Markdown serializer** (`@kivi/markdown-serializer`): ProseMirror-to-mdast converter with custom handlers for wiki-links, mermaid, excalidraw, ToC
+- **Editor core** (`@kivi/editor-core`): Tiptap-based editor with all CommonMark + GFM + PKM extensions
+- **Round-trip preservation**: Lossless parse-serialize cycle with block-level dirty tracking
+- **Web demo** (`@kivi/web-demo`): Vite app with split view, toolbar, search
+- **VS Code extension** (`kivi`): CustomTextEditorProvider with incremental edits, theme sync
+
+### Phase 2 — Knowledge Management & Advanced Editor
+
+#### Sub-phase 2A: Wiki-Links, Backlinks & Tags
+- **Wiki-Link Extension**: `[[page-name]]` and `[[page-name|alias]]` with parser/serializer support via `remark-wiki-link`
+- **`@kivi/vault` Package**: In-memory file index with backlinks, tags, hierarchy, graph data, search; lightweight markdown scanner
+- **HashTag Extension**: `#tag-name` inline nodes with input rules and hierarchical tag support
+- **Platform Integration**: VS Code backlinks TreeDataProvider + file watcher; web demo file browser + backlinks panel
+
+#### Sub-phase 2B: Navigation
+- **Sidebar Tree View**: VS Code TreeDataProvider for markdown files; web demo collapsible file list
+- **Outline View**: Heading tree for active document; VS Code sidebar + web demo right panel
+- **Table of Contents**: `[TOC]` / `[[toc]]` marker → reactive NodeView with clickable heading links
+
+#### Sub-phase 2C: Editor UX
+- **Slash Commands**: `/` trigger → floating popup with categorized items, keyboard navigation, type-to-filter
+- **Image Paste**: Clipboard image detection, `ImageStorageAdapter` interface, data URL default adapter
+- **Theme System**: 4 themes (dark, light, sepia, nord) via CSS custom properties; font customization; localStorage persistence
+
+#### Sub-phase 2D: Visualization
+- **Mermaid Diagrams**: `mermaidBlock` extension with lazy-loaded rendering, click-to-edit source
+- **Excalidraw Embeds**: `excalidrawBlock` extension storing JSON data, code block syntax in markdown
+- **Graph View**: Canvas-based force-directed graph renderer in `@kivi/vault`; web demo fullscreen overlay
+
+#### Sub-phase 2E: Page Hierarchy & Polish
+- **Page Hierarchy**: Parent/child inference from folder structure + `parent:` frontmatter; breadcrumb navigation
+- **Tests**: 165 unit/integration tests + 16 VS Code integration tests = 181 total
+- **README & Status**: Updated documentation
 
 ## Technical Decisions
 
 - **Tiptap + custom remark bridge** instead of `@tiptap/markdown` (which uses Marked and normalizes aggressively)
 - **Block-level dirty serialization** for minimal diffs — clean blocks emit original source verbatim
-- **Style hints** extracted on parse, used during re-serialization to match original formatting
-- **Gap preservation** — whitespace between top-level blocks stored separately and emitted unchanged
-- **`CustomTextEditorProvider`** for VS Code integration (text-backed document, native undo support)
-- **Dirty tracker with explicit reset** — `setContent()` triggers transactions, so dirty state is reset after `loadMarkdown()` to start clean
-- **Incremental diff algorithm** — finds first/last diverging character between old/new content, sends only the changed range to VS Code's WorkspaceEdit API
-- **Happy-dom** for integration tests (jsdom v29 has ESM incompatibility with Node 18)
+- **`@kivi/vault` is a separate package** with no editor dependency — keeps indexing testable and reusable
+- **Wiki-links use `remark-wiki-link`** (Obsidian-compatible syntax with `|` alias divider)
+- **Slash commands live in `editor-core`** so both platforms get them for free
+- **Canvas-based graph renderer** avoids adding d3/React as dependencies
+- **Mermaid/Excalidraw use NodeView pattern** (same as MathBlock) — code block in markdown, rendered widget in editor
+- **Image storage is adapter-based** — different implementations for VS Code (workspace files) and web (data URLs)
+- **Themes are CSS custom properties** — works naturally with VS Code's CSS variable bridging
+- **Incremental diff algorithm** — finds first/last diverging character, sends only changed range to VS Code
 
 ## Known Limitations
 
 - Footnotes render as simple text blocks (no bidirectional navigation yet)
-- Mermaid diagram rendering requires loading the mermaid library in the host environment
+- Mermaid rendering requires the mermaid library available (lazy-loaded via dynamic import)
+- Excalidraw uses JSON editing (full React-based Excalidraw canvas would require React dependency)
 - No viewport virtualization for extremely large files (>10K lines)
 - Multi-cursor not yet implemented
 
 ## Test Summary
 
 ```
-@kivi/markdown-parser:     18 tests passing (unit)
-@kivi/markdown-serializer: 17 tests passing (unit)
+@kivi/markdown-parser:     32 tests passing
+@kivi/markdown-serializer: 29 tests passing
 @kivi/editor-core:         71 tests passing
-  - 28 e2e tests (5 fixture suites)
-  - 13 integration tests (editor round-trip, dirty tracking)
-  - 30 unit tests (clipboard, dirty-tracker, incremental-diff, worker)
+@kivi/vault:               33 tests passing
+VS Code extension:         16 tests passing
 ────────────────────────────────────────────
-Total:                    106 tests passing
+Total:                    181 tests passing
 ```
 
-## Future Work (Phase 2)
+## New Packages (Phase 2)
 
-- Wiki-style links and backlinks
-- Graph view (React Flow)
-- Tag system with hierarchical tags
-- Page hierarchy (parent/child)
-- Sidebar tree view and navigation
-- Slash commands (Notion-like)
-- Image paste from clipboard with auto-storage
-- Table of contents generation
-- Outline view
-- Theme and font customization
-- Mermaid diagram rendering in editor
-- Excalidraw embed support
+| Package | Purpose |
+|---|---|
+| `@kivi/vault` | Knowledge layer — file index, backlinks, tags, graph, scanner |
+
+## New Extensions (Phase 2)
+
+| Extension | File | Description |
+|---|---|---|
+| WikiLink | `wiki-link.ts` | `[[page]]` mark with click navigation |
+| HashTag | `hashtag.ts` | `#tag` inline node with input rule |
+| TocBlock | `toc.ts` | `[TOC]` reactive heading list |
+| SlashCommands | `slash-commands.ts` | `/` command palette with keyboard nav |
+| MermaidBlock | `mermaid.ts` | Live mermaid diagram rendering |
+| ExcalidrawBlock | `excalidraw.ts` | Excalidraw JSON embed |

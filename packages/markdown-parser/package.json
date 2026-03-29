@@ -21,23 +21,24 @@
   },
   "dependencies": {
     "@kivi/shared-types": "workspace:*",
-    "unified": "^11",
+    "@tiptap/pm": "^2",
+    "mdast-util-frontmatter": "^2",
+    "mdast-util-gfm": "^3",
+    "mdast-util-math": "^3",
+    "mdast-util-to-string": "^4",
+    "remark-frontmatter": "^5",
+    "remark-gfm": "^4",
+    "remark-math": "^6",
     "remark-parse": "^11",
     "remark-stringify": "^11",
-    "remark-gfm": "^4",
-    "remark-frontmatter": "^5",
-    "remark-math": "^6",
-    "mdast-util-to-string": "^4",
-    "mdast-util-gfm": "^3",
-    "mdast-util-frontmatter": "^2",
-    "mdast-util-math": "^3",
-    "unist-util-visit": "^5",
-    "@tiptap/pm": "^2"
+    "remark-wiki-link": "^2.0.1",
+    "unified": "^11",
+    "unist-util-visit": "^5"
   },
   "devDependencies": {
+    "@types/mdast": "^4",
     "tsup": "^8",
     "typescript": "^5.7",
-    "vitest": "^3",
-    "@types/mdast": "^4"
+    "vitest": "^3"
   }
 }

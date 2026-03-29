@@ -5,10 +5,17 @@
   "version": "0.0.1",
   "publisher": "kivi",
   "license": "MIT",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -17,26 +24,62 @@
         "viewType": "kivi.markdownEditor",
         "displayName": "Kivi Markdown Editor",
         "selector": [
-          { "filenamePattern": "*.md" },
-          { "filenamePattern": "*.markdown" }
+          {
+            "filenamePattern": "*.md"
+          },
+          {
+            "filenamePattern": "*.markdown"
+          }
         ],
         "priority": "option"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kivi",
+          "title": "Kivi",
+          "icon": "images/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "kivi": [
+        {
+          "id": "kivi.files",
+          "name": "Files"
+        },
+        {
+          "id": "kivi.outline",
+          "name": "Outline"
+        },
+        {
+          "id": "kivi.backlinks",
+          "name": "Backlinks"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist out",
+    "pretest": "node build.mjs && tsc -p tsconfig.test.json",
+    "test": "NODE_TLS_REJECT_UNAUTHORIZED=0 vscode-test",
     "package": "vsce package"
   },
   "dependencies": {
     "@kivi/editor-core": "workspace:*"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.5.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.24",
-    "vite": "^6",
-    "typescript": "^5.7"
+    "glob": "^13.0.6",
+    "typescript": "^5.7",
+    "vite": "^6"
   }
 }

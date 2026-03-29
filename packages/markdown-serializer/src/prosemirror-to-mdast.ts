@@ -100,6 +100,23 @@ function convertBlockNode(node: PMNode): RootContent[] {
     case 'footnoteDef':
       return [];
 
+    case 'tocBlock':
+      return [{ type: 'paragraph', children: [{ type: 'text', value: '[TOC]' }] }];
+
+    case 'mermaidBlock':
+      return [{
+        type: 'code',
+        lang: 'mermaid',
+        value: getTextContent(node),
+      }];
+
+    case 'excalidrawBlock':
+      return [{
+        type: 'code',
+        lang: 'excalidraw',
+        value: (node.attrs?.data as string) || '{}',
+      }];
+
     default:
       return [];
   }
@@ -166,6 +183,8 @@ function convertInlineContent(nodes: PMNode[]): PhrasingContent[] {
         alt: (node.attrs?.alt as string) || undefined,
         title: (node.attrs?.title as string) || undefined,
       });
+    } else if (node.type === 'hashTag') {
+      result.push({ type: 'text', value: `#${node.attrs?.tag || ''}` });
     }
   }
 
@@ -192,6 +211,19 @@ function wrapWithMark(content: PhrasingContent, mark: PMMark): PhrasingContent {
         title: (mark.attrs?.title as string) || undefined,
         children: [content],
       };
+    case 'wikiLink': {
+      const target = (mark.attrs?.target as string) || '';
+      const alias = mark.attrs?.alias as string | undefined;
+      return {
+        type: 'wikiLink',
+        value: target,
+        data: {
+          alias: alias || target,
+          permalink: target,
+          exists: true,
+        },
+      } as unknown as PhrasingContent;
+    }
     default:
       return content;
   }

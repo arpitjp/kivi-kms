@@ -47,6 +47,9 @@ import {
   strikeMark,
   codeMark,
   linkMark,
+  wikiLinkMark,
+  hashTagNode,
+  tocBlockNode,
 } from './schema.js';
 
 /**
@@ -125,6 +128,10 @@ function convertNode(
     case 'inlineMath':
       return convertMathInline(node as RootContent & { value: string }, parentMarks);
     default: {
+      // Wiki-link nodes from remark-wiki-link
+      if ((node as { type: string }).type === 'wikiLink') {
+        return convertWikiLink(node as unknown as RootContent & { value: string; data?: { alias?: string } }, parentMarks);
+      }
       // Handle frontmatter types that remark-frontmatter adds (e.g. 'toml')
       const anyNode = node as RootContent & { value?: string };
       if ('value' in anyNode && typeof anyNode.value === 'string' && node.type === ('toml' as string)) {
@@ -135,7 +142,29 @@ function convertNode(
   }
 }
 
+const TOC_RE = /^\[toc\]$|^\[\[toc\]\]$/i;
+
 function convertParagraph(node: Paragraph): PMNodeJSON {
+  // Detect [TOC] or [[toc]] marker (plain text form)
+  if (node.children.length === 1 && node.children[0].type === 'text') {
+    const text = (node.children[0] as Text).value.trim();
+    if (TOC_RE.test(text)) {
+      return tocBlockNode();
+    }
+  }
+  // [[toc]] is parsed as wikiLink by remark-wiki-link; treat standalone as TOC
+  if (node.children.length === 1 && (node.children[0] as { type: string }).type === 'wikiLink') {
+    const wl = node.children[0] as RootContent & { value: string; data?: { alias?: string } };
+    const target = wl.value.trim();
+    if (target.toLowerCase() === 'toc') {
+      const alias = wl.data?.alias?.trim();
+      const plainToc =
+        !alias || alias.toLowerCase() === target.toLowerCase();
+      if (plainToc) {
+        return tocBlockNode();
+      }
+    }
+  }
   const content = convertPhrasingContent(node.children, []);
   return paragraphNode(content);
 }
@@ -151,6 +180,19 @@ function convertBlockquote(node: Blockquote): PMNodeJSON {
 }
 
 function convertCode(node: Code): PMNodeJSON {
+  if (node.lang === 'mermaid') {
+    return {
+      type: 'mermaidBlock',
+      attrs: { language: 'mermaid' },
+      content: node.value ? [textNode(node.value)] : undefined,
+    };
+  }
+  if (node.lang === 'excalidraw') {
+    return {
+      type: 'excalidrawBlock',
+      attrs: { data: node.value || '{}' },
+    };
+  }
   return codeBlockNode(node.value, node.lang ?? undefined);
 }
 
@@ -215,8 +257,42 @@ function convertImage(node: Image): PMNodeJSON {
   return imageNode(node.url, node.alt ?? undefined, node.title ?? undefined);
 }
 
-function convertText(node: Text, marks: PMMarkJSON[]): PMNodeJSON {
-  return textNode(node.value, marks.length > 0 ? marks : undefined);
+const HASHTAG_RE = /(?:^|\s)#([a-zA-Z0-9_/][a-zA-Z0-9_/-]*)/g;
+
+function convertText(node: Text, marks: PMMarkJSON[]): PMNodeJSON | PMNodeJSON[] {
+  // If text has marks (bold, italic, etc.) or no hashtags, return as-is
+  if (marks.length > 0 || !HASHTAG_RE.test(node.value)) {
+    return textNode(node.value, marks.length > 0 ? marks : undefined);
+  }
+
+  HASHTAG_RE.lastIndex = 0;
+  const parts: PMNodeJSON[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = HASHTAG_RE.exec(node.value)) !== null) {
+    const fullMatch = match[0];
+    const tag = match[1];
+    const prefixLen = fullMatch.length - tag.length - 1; // space or start-of-string before #
+
+    const beforeEnd = match.index + prefixLen;
+    if (beforeEnd > lastIndex) {
+      parts.push(textNode(node.value.slice(lastIndex, beforeEnd)));
+    }
+
+    parts.push(hashTagNode(tag));
+    lastIndex = match.index + fullMatch.length;
+  }
+
+  if (parts.length === 0) {
+    return textNode(node.value);
+  }
+
+  if (lastIndex < node.value.length) {
+    parts.push(textNode(node.value.slice(lastIndex)));
+  }
+
+  return parts;
 }
 
 function convertEmphasis(node: Emphasis, parentMarks: PMMarkJSON[]): PMNodeJSON[] {
@@ -266,6 +342,17 @@ function convertMathInline(
     type: 'mathInline',
     content: node.value ? [textNode(node.value)] : undefined,
   };
+}
+
+function convertWikiLink(
+  node: RootContent & { value: string; data?: { alias?: string } },
+  parentMarks: PMMarkJSON[],
+): PMNodeJSON {
+  const target = node.value;
+  const alias = node.data?.alias !== target ? node.data?.alias : undefined;
+  const displayText = alias || target;
+  const mark = wikiLinkMark(target, alias);
+  return textNode(displayText, [...parentMarks, mark]);
 }
 
 function convertPhrasingContent(

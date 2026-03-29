@@ -4,15 +4,52 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Kivi Markdown Editor — Demo</title>
+  <meta name="description" content="A high-performance, WYSIWYG-first Markdown editor with lossless round-trip editing." />
+  <meta name="theme-color" content="#1a1a2e" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta property="og:title" content="Kivi Markdown Editor" />
+  <meta property="og:description" content="WYSIWYG Markdown editor with lossless round-trip editing." />
+  <meta property="og:image" content="/icon-512.png" />
+  <meta property="og:type" content="website" />
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
 <body>
   <div id="app">
     <header id="toolbar"></header>
-    <main id="editor-container">
-      <div id="editor"></div>
-      <div id="markdown-source"></div>
-    </main>
+    <div id="main-layout">
+      <aside id="sidebar">
+        <div id="sidebar-header">
+          <span class="sidebar-title">Files</span>
+          <button id="new-file-btn" title="New File">+</button>
+        </div>
+        <div id="file-list"></div>
+        <div id="backlinks-section">
+          <div class="sidebar-title">Backlinks</div>
+          <div id="backlinks-list"></div>
+        </div>
+      </aside>
+      <main id="editor-container">
+        <div id="breadcrumbs"></div>
+        <div id="editor-split">
+          <div id="editor"></div>
+          <div id="markdown-source"></div>
+        </div>
+      </main>
+      <aside id="outline-panel">
+        <div class="sidebar-title">Outline</div>
+        <div id="outline-list"></div>
+      </aside>
+    </div>
+    <div id="graph-overlay" style="display:none;">
+      <div id="graph-header">
+        <span>Graph View</span>
+        <button id="close-graph">✕</button>
+      </div>
+      <div id="graph-container"></div>
+    </div>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>

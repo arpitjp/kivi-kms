@@ -3,6 +3,7 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkFrontmatter from 'remark-frontmatter';
 import remarkMath from 'remark-math';
+import wikiLinkPlugin from 'remark-wiki-link';
 import type { Root } from 'mdast';
 import type { KiviDocument, BlockMeta, BlockGap, SourceMap, SourcePosition } from '@kivi/shared-types';
 import type { ParseOptions } from './types.js';
@@ -30,6 +31,7 @@ export function parseMarkdown(source: string, options?: ParseOptions): KiviDocum
     gfm: options?.gfm ?? true,
     frontmatter: options?.frontmatter ?? true,
     math: options?.math ?? true,
+    wikiLinks: options?.wikiLinks ?? true,
   };
 
   const processor = buildProcessor(opts);
@@ -70,6 +72,13 @@ function buildProcessor(opts: Required<ParseOptions>): any {
   }
   if (opts.math) {
     processor = processor.use(remarkMath);
+  }
+  if (opts.wikiLinks) {
+    processor = processor.use(wikiLinkPlugin, {
+      aliasDivider: '|',
+      pageResolver: (name: string) => [name],
+      hrefTemplate: (permalink: string) => permalink,
+    });
   }
 
   return processor;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { parseMarkdown, resetBlockIdCounter } from '../src/parser.js';
+import { parseMarkdown, resetBlockIdCounter } from '../src/index.js';
 
 beforeEach(() => {
   resetBlockIdCounter();
@@ -167,5 +167,158 @@ describe('source map', () => {
     const block = result.sourceMap.blocks.get(result.blockOrder[0])!;
     expect(block.styleHints.codeFenceChar).toBe('~');
     expect(block.styleHints.codeFenceLength).toBe(3);
+  });
+});
+
+type PMText = {
+  type: string;
+  text?: string;
+  marks?: { type: string; attrs?: { target?: string; alias?: string | null } }[];
+};
+
+type PMParagraph = { type: string; content?: PMNode[] };
+type PMNode = PMText | PMParagraph | { type: string; attrs?: Record<string, unknown>; content?: PMNode[] };
+
+function paragraphContent(doc: { content: PMNode[] }): PMNode[] {
+  const first = doc.content[0] as PMParagraph;
+  expect(first.type).toBe('paragraph');
+  return first.content ?? [];
+}
+
+describe('wiki links', () => {
+  it('parses [[page-name]] into text with wikiLink mark (target, alias)', () => {
+    const result = parseMarkdown('See [[page-name]] here.');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const wiki = nodes.find(
+      (n): n is PMText =>
+        n.type === 'text' && Boolean((n as PMText).marks?.some((m) => m.type === 'wikiLink')),
+    );
+    expect(wiki).toBeDefined();
+    expect(wiki?.text).toBe('page-name');
+    const mark = wiki?.marks?.find((m) => m.type === 'wikiLink');
+    expect(mark?.attrs?.target).toBe('page-name');
+    expect(mark?.attrs?.alias).toBeNull();
+  });
+
+  it('parses [[page-name|display text]] into wikiLink with target and alias', () => {
+    const result = parseMarkdown('Link: [[page-name|display text]].');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const wiki = nodes.find(
+      (n): n is PMText =>
+        n.type === 'text' && Boolean((n as PMText).marks?.some((m) => m.type === 'wikiLink')),
+    );
+    expect(wiki?.text).toBe('display text');
+    const mark = wiki?.marks?.find((m) => m.type === 'wikiLink');
+    expect(mark?.attrs?.target).toBe('page-name');
+    expect(mark?.attrs?.alias).toBe('display text');
+  });
+
+  it('does not parse wiki links when wikiLinks option is false', () => {
+    const result = parseMarkdown('[[not-a-link]]', { wikiLinks: false });
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const wiki = nodes.find(
+      (n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'wikiLink'),
+    );
+    expect(wiki).toBeUndefined();
+    const text = nodes.find((n) => n.type === 'text') as PMText | undefined;
+    expect(text?.text).toContain('not-a-link');
+  });
+});
+
+describe('hashtags', () => {
+  it('parses #tag-name in plain text into hashTag nodes', () => {
+    const result = parseMarkdown('Track #tag-name in prose.');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const tag = nodes.find((n) => n.type === 'hashTag') as { type: string; attrs?: { tag: string } };
+    expect(tag).toBeDefined();
+    expect(tag.attrs?.tag).toBe('tag-name');
+  });
+
+  it('parses hashtag after whitespace', () => {
+    const result = parseMarkdown('Hello world #my_tag');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const tag = nodes.find((n) => n.type === 'hashTag') as { type: string; attrs?: { tag: string } };
+    expect(tag?.attrs?.tag).toBe('my_tag');
+  });
+
+  it('parses multiple hashtags in one paragraph', () => {
+    const result = parseMarkdown('#first and #second');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const tags = nodes.filter((n) => n.type === 'hashTag') as { attrs?: { tag: string } }[];
+    expect(tags.map((t) => t.attrs?.tag)).toEqual(['first', 'second']);
+  });
+
+  it('does not split hashtags inside inline code', () => {
+    const result = parseMarkdown('Use `#not-a-tag` here.');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    expect(nodes.some((n) => n.type === 'hashTag')).toBe(false);
+    const codeText = nodes.find(
+      (n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'code'),
+    ) as PMText | undefined;
+    expect(codeText?.text).toBe('#not-a-tag');
+  });
+
+  it('does not emit hashTag nodes inside fenced code blocks', () => {
+    const md = '```\n#comment-not-tag\n```';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: PMNode[] };
+    expect(doc.content[0].type).toBe('codeBlock');
+    const block = doc.content[0] as { content?: PMText[] };
+    expect(block.content?.[0]?.text).toContain('#comment-not-tag');
+  });
+});
+
+describe('TOC marker', () => {
+  it('parses standalone [TOC] paragraph into tocBlock', () => {
+    const result = parseMarkdown('[TOC]');
+    const doc = result.doc as { type: string; content: { type: string }[] };
+    expect(doc.content).toHaveLength(1);
+    expect(doc.content[0].type).toBe('tocBlock');
+  });
+
+  it('parses standalone [[toc]] paragraph into tocBlock', () => {
+    const result = parseMarkdown('[[toc]]');
+    const doc = result.doc as { type: string; content: { type: string }[] };
+    expect(doc.content[0].type).toBe('tocBlock');
+  });
+
+  it('parses [toc] case-insensitively', () => {
+    const result = parseMarkdown('[ToC]');
+    const doc = result.doc as { type: string; content: { type: string }[] };
+    expect(doc.content[0].type).toBe('tocBlock');
+  });
+
+  it('does not treat [TOC] inside a longer paragraph as tocBlock', () => {
+    const result = parseMarkdown('See [TOC] for more.');
+    const doc = result.doc as { type: string; content: PMNode[] };
+    expect(doc.content[0].type).toBe('paragraph');
+  });
+});
+
+describe('mermaid and excalidraw fenced blocks', () => {
+  it('parses ```mermaid fences into mermaidBlock', () => {
+    const md = '```mermaid\nflowchart LR\n  A --> B\n```';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; attrs?: { language: string }; content?: PMText[] }[] };
+    expect(doc.content[0].type).toBe('mermaidBlock');
+    expect(doc.content[0].attrs?.language).toBe('mermaid');
+    expect(doc.content[0].content?.[0]?.text).toContain('flowchart');
+  });
+
+  it('parses ```excalidraw fences into excalidrawBlock', () => {
+    const md = '```excalidraw\n{"foo":1}\n```';
+    const result = parseMarkdown(md);
+    const doc = result.doc as {
+      content: { type: string; attrs?: { data: string } }[];
+    };
+    expect(doc.content[0].type).toBe('excalidrawBlock');
+    expect(doc.content[0].attrs?.data).toContain('foo');
   });
 });

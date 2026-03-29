@@ -1,7 +1,9 @@
 node_modules/
 dist/
+out/
 .turbo/
 *.tsbuildinfo
 .vscode-test/
 *.vsix
 .DS_Store
+tests/ui/screenshots/

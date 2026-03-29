@@ -7,6 +7,8 @@ export interface ParseOptions {
   frontmatter?: boolean;
   /** Enable math parsing */
   math?: boolean;
+  /** Enable wiki-link parsing ([[page]] and [[page|alias]]) */
+  wikiLinks?: boolean;
 }
 
 export interface ParseResult extends KiviDocument {}

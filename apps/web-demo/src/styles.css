@@ -46,6 +46,8 @@ body {
   letter-spacing: 0.05em;
   color: var(--accent);
   margin-right: 8px;
+  padding-left: 28px;
+  background: url('/kivi-logo.png') left center / 22px 22px no-repeat;
 }
 
 .toolbar-btn {
@@ -82,7 +84,175 @@ body {
   flex-shrink: 0;
 }
 
+.theme-picker {
+  background: var(--bg);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+.theme-picker:hover { border-color: var(--accent); }
+.theme-picker option { background: var(--bg-surface); color: var(--text); }
+
+#main-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+#sidebar {
+  width: 220px;
+  min-width: 180px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-title {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 8px 12px 4px;
+}
+
+#sidebar-header .sidebar-title {
+  padding: 0;
+}
+
+#new-file-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+#new-file-btn:hover {
+  background: rgba(129, 140, 248, 0.1);
+  color: var(--text);
+}
+
+#file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.file-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: all 0.1s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-item:hover { background: rgba(129, 140, 248, 0.08); color: var(--text); }
+.file-item.active { background: rgba(129, 140, 248, 0.15); color: var(--accent); }
+
+#backlinks-section {
+  border-top: 1px solid var(--border);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.backlink-item {
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: all 0.1s ease;
+}
+.backlink-item:hover { color: var(--accent); }
+
+.empty-state {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.6;
+  font-style: italic;
+}
+
+#outline-panel {
+  width: 200px;
+  min-width: 150px;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+#outline-list {
+  padding: 4px 0;
+}
+
+.outline-item {
+  padding: 3px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: color 0.1s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outline-item:hover { color: var(--accent); }
+.outline-item[data-level="1"] { padding-left: 12px; font-weight: 600; }
+.outline-item[data-level="2"] { padding-left: 22px; }
+.outline-item[data-level="3"] { padding-left: 32px; }
+.outline-item[data-level="4"] { padding-left: 42px; }
+.outline-item[data-level="5"] { padding-left: 52px; }
+.outline-item[data-level="6"] { padding-left: 62px; }
+
 #editor-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+#breadcrumbs {
+  padding: 4px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+}
+.breadcrumb-item {
+  cursor: pointer;
+  transition: color 0.1s;
+}
+.breadcrumb-item:hover { color: var(--accent); }
+.breadcrumb-sep { color: var(--border); }
+.breadcrumb-current { color: var(--text); font-weight: 500; }
+
+#editor-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
   flex: 1;
@@ -162,6 +332,195 @@ body {
 #editor .ProseMirror th {
   background: rgba(129, 140, 248, 0.05);
   font-weight: 600;
+}
+
+#editor .ProseMirror .kivi-wiki-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+}
+#editor .ProseMirror .kivi-wiki-link:hover {
+  border-bottom-style: solid;
+}
+
+#editor .ProseMirror .kivi-hashtag {
+  color: #34d399;
+  font-weight: 500;
+  cursor: pointer;
+}
+#editor .ProseMirror .kivi-hashtag:hover {
+  text-decoration: underline;
+}
+
+.kivi-toc {
+  background: rgba(129, 140, 248, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 1em 0;
+}
+.kivi-toc-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.kivi-toc-item {
+  padding: 3px 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: color 0.1s;
+}
+.kivi-toc-item:hover { color: var(--accent); }
+.kivi-toc-empty { color: var(--text-muted); font-size: 12px; opacity: 0.6; }
+
+.kivi-slash-menu {
+  background: var(--bg-surface, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-family: inherit;
+}
+.kivi-slash-category {
+  padding: 6px 12px 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #94a3b8);
+  font-weight: 600;
+}
+.kivi-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.kivi-slash-item:hover,
+.kivi-slash-item.selected {
+  background: rgba(129, 140, 248, 0.15);
+}
+.kivi-slash-icon {
+  width: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--accent, #818cf8);
+  flex-shrink: 0;
+}
+.kivi-slash-label {
+  font-size: 13px;
+  color: var(--text, #e2e8f0);
+}
+.kivi-slash-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+}
+
+.kivi-mermaid-block {
+  margin: 1em 0;
+  padding: 16px;
+  background: rgba(129, 140, 248, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.kivi-mermaid-preview { text-align: center; }
+.kivi-mermaid-preview svg { max-width: 100%; height: auto; }
+.kivi-mermaid-source {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  background: #0d1117;
+  padding: 12px;
+  border-radius: 6px;
+  outline: none;
+}
+.kivi-mermaid-empty,
+.kivi-mermaid-error {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px;
+}
+.kivi-mermaid-error { color: #f87171; }
+
+.kivi-excalidraw-block {
+  margin: 1em 0;
+  padding: 16px;
+  background: rgba(129, 140, 248, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.kivi-excalidraw-header {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.kivi-excalidraw-canvas {
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kivi-excalidraw-preview { color: var(--accent); font-size: 14px; }
+.kivi-excalidraw-empty { color: var(--text-muted); font-size: 12px; }
+.kivi-excalidraw-edit {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  margin-top: 8px;
+  transition: all 0.15s;
+}
+.kivi-excalidraw-edit:hover { border-color: var(--accent); color: var(--text); }
+
+#graph-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+#graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 14px;
+}
+#close-graph {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+#close-graph:hover { color: var(--text); background: rgba(129, 140, 248, 0.1); }
+#graph-container {
+  flex: 1;
+  overflow: hidden;
 }
 
 .kivi-search-highlight { background: rgba(255, 200, 0, 0.3); border-radius: 2px; }

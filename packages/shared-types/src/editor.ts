@@ -14,6 +14,27 @@ export interface EditorConfig {
   autoFocus?: boolean | 'start' | 'end';
   /** Custom CSS class for the editor root */
   editorClass?: string;
+  /** Theme name */
+  theme?: 'dark' | 'light' | 'sepia' | 'nord';
+  /** Font family override */
+  fontFamily?: string;
+  /** Font size in pixels */
+  fontSize?: number;
+  /** Line height multiplier */
+  lineHeight?: number;
+}
+
+export type KiviTheme = 'dark' | 'light' | 'sepia' | 'nord';
+
+export interface ThemeColors {
+  bg: string;
+  bgSurface: string;
+  bgEditor: string;
+  text: string;
+  textMuted: string;
+  border: string;
+  accent: string;
+  accentHover: string;
 }
 
 /**

@@ -29,30 +29,45 @@ export function serializeDocument(kiviDoc: KiviDocument, options?: SerializeOpti
     return options?.trailingNewline !== false ? '\n' : '';
   }
 
+  // If block count changed (user added/removed blocks), the 1:1
+  // mapping between blockOrder and topLevelNodes is broken.
+  // Fall back to full re-serialization to avoid duplicated/missing content.
+  const blockCountChanged = topLevelNodes.length !== blockOrder.length;
+
   const parts: string[] = [];
 
-  parts.push(sourceMap.preamble);
+  if (!blockCountChanged) {
+    parts.push(sourceMap.preamble);
+  }
 
   for (let i = 0; i < topLevelNodes.length; i++) {
-    const blockId = blockOrder[i];
+    const blockId = !blockCountChanged ? blockOrder[i] : undefined;
     const blockMeta = blockId ? sourceMap.blocks.get(blockId) : undefined;
     const node = topLevelNodes[i];
 
-    if (blockMeta && !blockMeta.dirty && blockMeta.originalSource !== null) {
+    if (!blockCountChanged && blockMeta && !blockMeta.dirty && blockMeta.originalSource !== null) {
       parts.push(blockMeta.originalSource);
     } else {
       parts.push(serializeNode(node, blockMeta?.styleHints));
     }
 
-    const gap = sourceMap.gaps.find((g) => g.afterBlockIndex === i);
-    if (gap) {
-      parts.push(gap.text);
+    if (!blockCountChanged) {
+      const gap = sourceMap.gaps.find((g) => g.afterBlockIndex === i);
+      if (gap) {
+        parts.push(gap.text);
+      } else if (i < topLevelNodes.length - 1) {
+        parts.push('\n\n');
+      }
     } else if (i < topLevelNodes.length - 1) {
       parts.push('\n\n');
     }
   }
 
-  parts.push(sourceMap.postamble);
+  if (!blockCountChanged) {
+    parts.push(sourceMap.postamble);
+  } else {
+    parts.push('\n');
+  }
 
   return parts.join('');
 }
@@ -70,6 +85,16 @@ export function serializeNode(node: PMNodeJSON, styleHints?: StyleHints): string
 }
 
 function stringifyMdast(root: Root, styleHints?: StyleHints): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wikiLinkHandler = (node: any) => {
+    const target = node.value || '';
+    const alias = node.data?.alias;
+    if (alias && alias !== target) {
+      return `[[${target}|${alias}]]`;
+    }
+    return `[[${target}]]`;
+  };
+
   const processor = unified().use(remarkStringify, {
     bullet: (styleHints?.listMarker as '-' | '*' | '+') || '-',
     emphasis: styleHints?.emphasisMarker || '*',
@@ -77,7 +102,11 @@ function stringifyMdast(root: Root, styleHints?: StyleHints): string {
     fence: styleHints?.codeFenceChar || '`',
     rule: '-',
     listItemIndent: 'one',
-  }).use(remarkGfm);
+    // Custom handler for wiki-link nodes; remark-stringify passes through
+    // to mdast-util-to-markdown which supports `handlers`
+    handlers: { wikiLink: wikiLinkHandler },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any).use(remarkGfm);
 
   const result = processor.stringify(root);
   return result.trimEnd();

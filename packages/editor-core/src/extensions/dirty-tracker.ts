@@ -39,18 +39,32 @@ export const DirtyTracker = Extension.create({
             const doc = newEditorState.doc;
 
             tr.steps.forEach((step) => {
+              const ranges: [number, number][] = [];
+
+              // Position-mapping steps (insert, delete, replace)
               const stepMap = step.getMap();
-              stepMap.forEach((oldStart, oldEnd, _newStart, _newEnd) => {
+              stepMap.forEach((oldStart, oldEnd) => {
+                ranges.push([oldStart, oldEnd]);
+              });
+
+              // Mark steps (AddMarkStep / RemoveMarkStep) don't shift positions
+              // but they change the document. They expose `from` and `to`.
+              const anyStep = step as unknown as { from?: number; to?: number };
+              if (ranges.length === 0 && typeof anyStep.from === 'number' && typeof anyStep.to === 'number') {
+                ranges.push([anyStep.from, anyStep.to]);
+              }
+
+              for (const [rangeStart, rangeEnd] of ranges) {
                 let pos = 0;
                 for (let i = 0; i < doc.childCount; i++) {
                   const child = doc.child(i);
                   const childEnd = pos + child.nodeSize;
-                  if (oldEnd > pos && oldStart < childEnd) {
+                  if (rangeEnd > pos && rangeStart < childEnd) {
                     newDirty.add(i);
                   }
                   pos = childEnd;
                 }
-              });
+              }
             });
 
             return { dirtyBlockIndices: newDirty };

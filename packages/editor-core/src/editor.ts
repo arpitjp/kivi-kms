@@ -19,6 +19,12 @@ import { FootnoteRef, FootnoteDef } from './extensions/footnote.js';
 import { KiviSearch } from './extensions/search.js';
 import { KiviClipboard } from './extensions/clipboard.js';
 import { DirtyTracker, getDirtyBlockIndices, applyDirtyFlags, resetDirtyTracking } from './extensions/dirty-tracker.js';
+import { WikiLink } from './extensions/wiki-link.js';
+import { HashTag } from './extensions/hashtag.js';
+import { TocBlock } from './extensions/toc.js';
+import { SlashCommands } from './extensions/slash-commands.js';
+import { MermaidBlock } from './extensions/mermaid.js';
+import { ExcalidrawBlock } from './extensions/excalidraw.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -28,6 +34,7 @@ export class KiviEditor {
   private updateCallbacks: EditorUpdateCallback[] = [];
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private debounceMs = 300;
+  private suppressUpdates = false;
 
   constructor(options: KiviEditorOptions) {
     this.editor = new Editor({
@@ -64,6 +71,12 @@ export class KiviEditor {
         KiviSearch,
         KiviClipboard,
         DirtyTracker,
+        WikiLink,
+        HashTag,
+        TocBlock,
+        SlashCommands,
+        MermaidBlock,
+        ExcalidrawBlock,
       ],
       editorProps: {
         attributes: {
@@ -84,10 +97,16 @@ export class KiviEditor {
    * Load Markdown content into the editor.
    */
   loadMarkdown(source: string): void {
+    this.suppressUpdates = true;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
     resetBlockIdCounter();
     this.kiviDoc = parseMarkdown(source);
     this.editor.commands.setContent(this.kiviDoc.doc);
     resetDirtyTracking(this.editor);
+    this.suppressUpdates = false;
   }
 
   /**
@@ -159,6 +178,24 @@ export class KiviEditor {
     return this.editor;
   }
 
+  /**
+   * Get the document outline (headings).
+   */
+  getOutline(): { level: number; text: string; pos: number }[] {
+    const outline: { level: number; text: string; pos: number }[] = [];
+    const doc = this.editor.state.doc;
+    doc.forEach((node, offset) => {
+      if (node.type.name === 'heading') {
+        outline.push({
+          level: node.attrs.level as number,
+          text: node.textContent,
+          pos: offset,
+        });
+      }
+    });
+    return outline;
+  }
+
   isEmpty(): boolean {
     return this.editor.isEmpty;
   }
@@ -175,6 +212,7 @@ export class KiviEditor {
   }
 
   private scheduleUpdate(): void {
+    if (this.suppressUpdates) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.notifyUpdate();

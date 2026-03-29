@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { parseMarkdown, resetBlockIdCounter } from '@kivi/markdown-parser';
-import { serializeDocument, serializeNode } from '../src/serializer.js';
+import { serializeDocument, serializeNode } from '../src/index.js';
 
 beforeEach(() => {
   resetBlockIdCounter();
@@ -122,5 +122,102 @@ describe('serializeNode', () => {
     const result = serializeNode(node);
     expect(result).toContain('```js');
     expect(result).toContain('code()');
+  });
+});
+
+describe('serializeDocument wiki-link round-trip', () => {
+  it('round-trips `[[page-name]]`', () => {
+    const md = 'Link to [[page-name]] here.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+
+  it('round-trips `[[page-name|display text]]`', () => {
+    const md = 'See [[page-name|display text]] for details.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument TOC round-trip', () => {
+  it('round-trips `[TOC]` marker as `[TOC]`', () => {
+    const md = '[TOC]';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument mermaid and excalidraw round-trip', () => {
+  it('round-trips a mermaid fenced code block', () => {
+    const md = '```mermaid\ngraph TD\n  A --> B\n```';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+
+  it('round-trips an excalidraw fenced code block', () => {
+    const md = '```excalidraw\n{}\n```';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument hashtag round-trip', () => {
+  it('round-trips a hashtag in a paragraph', () => {
+    const md = 'Track #mytag in prose.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeNode wiki-link, hashtag, TOC, mermaid, excalidraw', () => {
+  it('serializes a wiki-link mark as `[[target]]`', () => {
+    const node = {
+      type: 'paragraph',
+      content: [
+        { type: 'text', text: 'page-name', marks: [{ type: 'wikiLink', attrs: { target: 'page-name', alias: null } }] },
+      ],
+    };
+    expect(serializeNode(node)).toBe('[[page-name]]');
+  });
+
+  it('serializes a wiki-link with alias as `[[target|alias]]`', () => {
+    const node = {
+      type: 'paragraph',
+      content: [
+        {
+          type: 'text',
+          text: 'display text',
+          marks: [{ type: 'wikiLink', attrs: { target: 'page-name', alias: 'display text' } }],
+        },
+      ],
+    };
+    expect(serializeNode(node)).toBe('[[page-name|display text]]');
+  });
+
+  it('serializes tocBlock (remark-stringify escapes brackets in plain text)', () => {
+    expect(serializeNode({ type: 'tocBlock' })).toBe('\\[TOC]');
+  });
+
+  it('serializes mermaidBlock as fenced mermaid code', () => {
+    const node = {
+      type: 'mermaidBlock',
+      attrs: { language: 'mermaid' },
+      content: [{ type: 'text', text: 'graph TD\n  A --> B' }],
+    };
+    const out = serializeNode(node);
+    expect(out).toBe('```mermaid\ngraph TD\n  A --> B\n```');
+  });
+
+  it('serializes excalidrawBlock from attrs.data as fenced excalidraw code', () => {
+    const node = { type: 'excalidrawBlock', attrs: { data: '{}' } };
+    expect(serializeNode(node)).toBe('```excalidraw\n{}\n```');
+  });
+
+  it('serializes a hashTag node (remark-stringify escapes leading # in paragraph)', () => {
+    const node = {
+      type: 'paragraph',
+      content: [{ type: 'hashTag', attrs: { tag: 'mytag' } }],
+    };
+    expect(serializeNode(node)).toBe('\\#mytag');
   });
 });

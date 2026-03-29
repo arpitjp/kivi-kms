@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "echo 'Web demo tests run via: bash tests/ui/browser-test.sh (requires dev server)'"
   },
   "dependencies": {
-    "@kivi/editor-core": "workspace:*"
+    "@kivi/editor-core": "workspace:*",
+    "@kivi/vault": "workspace:*"
   },
   "devDependencies": {
     "vite": "^6",

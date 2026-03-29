@@ -5,6 +5,22 @@ import { parseMarkdown } from '@kivi/markdown-parser';
 
 const clipboardPluginKey = new PluginKey('kiviClipboard');
 
+export interface ImageStorageAdapter {
+  store(blob: Blob, filename: string): Promise<string>;
+}
+
+/** Default adapter: converts images to data URLs */
+export const dataUrlImageAdapter: ImageStorageAdapter = {
+  async store(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  },
+};
+
 /**
  * Heuristic to detect if text looks like Markdown.
  * Requires at least 2 distinct Markdown patterns to trigger rich paste.
@@ -34,11 +50,20 @@ export function looksLikeMarkdown(text: string): boolean {
   return score >= 2;
 }
 
-export const KiviClipboard = Extension.create({
+export interface KiviClipboardOptions {
+  imageAdapter?: ImageStorageAdapter;
+}
+
+export const KiviClipboard = Extension.create<KiviClipboardOptions>({
   name: 'kiviClipboard',
+
+  addOptions() {
+    return { imageAdapter: undefined };
+  },
 
   addProseMirrorPlugins() {
     const editor = this.editor;
+    const imageAdapter = this.options.imageAdapter ?? dataUrlImageAdapter;
 
     return [
       new Plugin({
@@ -47,6 +72,24 @@ export const KiviClipboard = Extension.create({
           handlePaste(_view, event, _slice) {
             const clipboardData = event.clipboardData;
             if (!clipboardData) return false;
+
+            // Handle image paste
+            const items = Array.from(clipboardData.items || []);
+            const imageItem = items.find((i) => i.type.startsWith('image/'));
+            if (imageItem) {
+              event.preventDefault();
+              const blob = imageItem.getAsFile();
+              if (blob) {
+                const ext = imageItem.type.split('/')[1] || 'png';
+                const filename = `pasted-${Date.now()}.${ext}`;
+                imageAdapter.store(blob, filename).then((url) => {
+                  editor.commands.setImage({ src: url, alt: filename });
+                }).catch(() => {
+                  // Silently fail — user can paste again
+                });
+              }
+              return true;
+            }
 
             const plainText = clipboardData.getData('text/plain');
             const htmlText = clipboardData.getData('text/html');
@@ -66,7 +109,6 @@ export const KiviClipboard = Extension.create({
                   return true;
                 }
               } catch {
-                // Fallback: insert as plain text
                 editor.commands.insertContent(plainText);
                 return true;
               }

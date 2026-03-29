@@ -1,0 +1,21 @@
+import { defineConfig } from 'vitest/config';
+import path from 'path';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    include: ['tests/**/*.test.ts'],
+    environmentMatchGlobs: [
+      ['tests/e2e/**', 'node'],
+      ['tests/unit/**', 'happy-dom'],
+      ['tests/integration/**', 'happy-dom'],
+    ],
+  },
+  resolve: {
+    alias: {
+      '@kivi/markdown-parser': path.resolve(__dirname, '../markdown-parser/src/index.ts'),
+      '@kivi/markdown-serializer': path.resolve(__dirname, '../markdown-serializer/src/index.ts'),
+      '@kivi/shared-types': path.resolve(__dirname, '../shared-types/src/index.ts'),
+    },
+  },
+});

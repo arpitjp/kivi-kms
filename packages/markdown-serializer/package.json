@@ -1,0 +1,40 @@
+{
+  "name": "@kivi/markdown-serializer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kivi/shared-types": "workspace:*",
+    "unified": "^11",
+    "remark-stringify": "^11",
+    "remark-gfm": "^4",
+    "remark-frontmatter": "^5",
+    "remark-math": "^6",
+    "mdast-util-gfm": "^3",
+    "mdast-util-frontmatter": "^2",
+    "mdast-util-math": "^3",
+    "@tiptap/pm": "^2"
+  },
+  "devDependencies": {
+    "tsup": "^8",
+    "typescript": "^5.7",
+    "vitest": "^3",
+    "@types/mdast": "^4"
+  }
+}

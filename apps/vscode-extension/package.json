@@ -1,0 +1,42 @@
+{
+  "name": "kivi",
+  "displayName": "Kivi",
+  "description": "WYSIWYG Markdown editor and knowledge management system",
+  "version": "0.0.1",
+  "publisher": "kivi",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "kivi.markdownEditor",
+        "displayName": "Kivi Markdown Editor",
+        "selector": [
+          { "filenamePattern": "*.md" },
+          { "filenamePattern": "*.markdown" }
+        ],
+        "priority": "option"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "clean": "rm -rf dist",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@kivi/editor-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24",
+    "vite": "^6",
+    "typescript": "^5.7"
+  }
+}

@@ -5,11 +5,11 @@
 }
 
 body {
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
-  font-size: var(--vscode-font-size, 14px);
-  color: var(--vscode-editor-foreground, #d4d4d4);
-  background: var(--vscode-editor-background, #1e1e1e);
-  line-height: 1.6;
+  font-family: var(--kivi-font-family, var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif));
+  font-size: var(--kivi-font-size, var(--vscode-font-size, 14px));
+  color: var(--kivi-text, var(--vscode-editor-foreground, #d4d4d4));
+  background: var(--kivi-editor-bg, var(--vscode-editor-background, #1e1e1e));
+  line-height: var(--kivi-line-height, 1.6);
   padding: 0;
   overflow: hidden;
   height: 100vh;
@@ -52,15 +52,15 @@ body {
   border: 1px solid transparent;
   color: var(--vscode-foreground, #ccc);
   cursor: pointer;
-  padding: 3px 7px;
+  padding: 4px;
   border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-width: 26px;
-  text-align: center;
+  min-height: 26px;
 }
+.kivi-toolbar-btn svg { display: block; }
 
 .kivi-toolbar-btn:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
@@ -162,7 +162,7 @@ body {
   font-size: 2em;
   font-weight: 600;
   margin: 0.8em 0 0.4em;
-  color: var(--vscode-editor-foreground);
+  color: var(--kivi-heading-color, var(--vscode-editor-foreground));
   border-bottom: 1px solid var(--vscode-panel-border, #333);
   padding-bottom: 0.2em;
 }
@@ -191,29 +191,135 @@ body {
 .kivi-vscode-editor em { font-style: italic; }
 .kivi-vscode-editor s { text-decoration: line-through; opacity: 0.7; }
 
+/* Inline code */
 .kivi-vscode-editor code {
-  background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.05));
-  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e06c75;
+  padding: 1.5px 5px;
   border-radius: 3px;
-  font-family: var(--vscode-editor-font-family, 'Fira Code', monospace);
-  font-size: 0.9em;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+  font-size: 0.88em;
 }
 
+/* Code blocks */
 .kivi-vscode-editor pre {
-  background: var(--vscode-textCodeBlock-background, #0d1117);
-  padding: 14px 18px;
-  border-radius: 6px;
-  overflow-x: auto;
+  background: var(--kivi-codeblock-bg, rgba(0, 0, 0, 0.2));
+  padding: 32px 16px 14px;
+  border-radius: 8px;
+  overflow: hidden;
   margin: 0.8em 0;
-  border: 1px solid var(--vscode-panel-border, #333);
+  position: relative;
 }
 
 .kivi-vscode-editor pre code {
   background: none;
+  color: var(--vscode-editor-foreground, #d4d4d4);
   padding: 0;
-  font-size: 0.85em;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.6;
+  display: block;
+  white-space: pre;
+  overflow-x: auto;
 }
+
+/* Collapsed code block */
+.kivi-vscode-editor pre.kivi-codeblock-collapsed code {
+  max-height: calc(1.6em * 15);
+  overflow: hidden;
+}
+.kivi-vscode-editor pre.kivi-codeblock-collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 30px;
+  left: 0;
+  right: 0;
+  height: 48px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+  border-radius: 0 0 8px 8px;
+}
+
+/* Syntax highlighting */
+.kivi-vscode-editor pre .hljs-keyword,
+.kivi-vscode-editor pre .hljs-selector-tag,
+.kivi-vscode-editor pre .hljs-built_in,
+.kivi-vscode-editor pre .hljs-name { color: #569cd6; }
+.kivi-vscode-editor pre .hljs-string,
+.kivi-vscode-editor pre .hljs-attr,
+.kivi-vscode-editor pre .hljs-template-variable { color: #ce9178; }
+.kivi-vscode-editor pre .hljs-type,
+.kivi-vscode-editor pre .hljs-title { color: #4ec9b0; }
+.kivi-vscode-editor pre .hljs-number,
+.kivi-vscode-editor pre .hljs-literal { color: #b5cea8; }
+.kivi-vscode-editor pre .hljs-comment,
+.kivi-vscode-editor pre .hljs-doctag { color: #6a9955; font-style: italic; }
+.kivi-vscode-editor pre .hljs-variable,
+.kivi-vscode-editor pre .hljs-params { color: #9cdcfe; }
+.kivi-vscode-editor pre .hljs-function { color: #dcdcaa; }
+.kivi-vscode-editor pre .hljs-regexp { color: #d16969; }
+.kivi-vscode-editor pre .hljs-meta { color: #c586c0; }
+.kivi-vscode-editor pre .hljs-symbol,
+.kivi-vscode-editor pre .hljs-bullet { color: #d7ba7d; }
+.kivi-vscode-editor pre .hljs-property { color: #9cdcfe; }
+.kivi-vscode-editor pre .hljs-operator { color: #d4d4d4; }
+.kivi-vscode-editor pre .hljs-punctuation { color: #808080; }
+
+/* Code block controls */
+.kivi-codeblock-controls {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  border-radius: 8px 8px 0 0;
+  z-index: 45;
+  pointer-events: auto;
+  height: 28px;
+}
+.kivi-codeblock-lang {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  opacity: 0.45;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+.kivi-codeblock-btn {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground, #888);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+  opacity: 0.4;
+}
+.kivi-codeblock-btn svg { display: block; }
+.kivi-codeblock-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); color: var(--vscode-foreground, #ccc); }
+.kivi-codeblock-btn.active { opacity: 1; color: var(--vscode-focusBorder, #007fd4); }
+
+.kivi-codeblock-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 0 2px;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground, #888);
+  font-size: 11px;
+  opacity: 0.6;
+  transition: opacity 0.12s;
+  user-select: none;
+  position: relative;
+  z-index: 2;
+}
+.kivi-codeblock-expand svg { display: block; flex-shrink: 0; }
+.kivi-codeblock-expand:hover { opacity: 1; color: var(--vscode-focusBorder, #007fd4); }
+.kivi-codeblock-expand span { font-weight: 500; }
 
 .kivi-vscode-editor blockquote {
   border-left: 3px solid var(--vscode-textLink-foreground, #4fc1ff);
@@ -243,7 +349,7 @@ body {
 }
 
 .kivi-vscode-editor a {
-  color: var(--vscode-textLink-foreground, #4fc1ff);
+  color: var(--kivi-accent, var(--vscode-textLink-foreground, #4fc1ff));
   text-decoration: none;
 }
 
@@ -358,3 +464,264 @@ body {
   font-size: 0.9em;
   color: var(--vscode-descriptionForeground, #aaa);
 }
+
+/* ---------- Table Controls ---------- */
+.kivi-table-controls {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 4px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 6px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+}
+.kivi-table-ctrl-btn {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground, #858585);
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.kivi-table-ctrl-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground, #d4d4d4);
+}
+.kivi-table-ctrl-btn svg { display: block; }
+.kivi-table-ctrl-danger { color: var(--vscode-errorForeground, #f44747) !important; }
+.kivi-table-ctrl-danger:hover { background: rgba(244, 71, 71, 0.15); color: #f44747 !important; }
+.kivi-table-ctrl-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--vscode-panel-border, #444);
+  margin: 0 3px;
+}
+
+/* ---------- Image Controls ---------- */
+.kivi-image-controls {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 4px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 6px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  transform: translateY(-100%) translateX(-50%);
+}
+.kivi-img-ctrl-btn {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground, #858585);
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.kivi-img-ctrl-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground, #d4d4d4);
+}
+.kivi-img-ctrl-btn svg { display: block; }
+.kivi-img-ctrl-danger { color: var(--vscode-errorForeground, #f44747) !important; }
+.kivi-img-ctrl-danger:hover { background: rgba(244, 71, 71, 0.15); color: #f44747 !important; }
+.kivi-img-ctrl-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--vscode-panel-border, #444);
+  margin: 0 3px;
+}
+/* Size preset buttons inline in toolbar */
+.kivi-img-size-group { display: flex; gap: 1px; align-items: center; }
+.kivi-img-size-inline {
+  background: none; border: none;
+  color: var(--vscode-descriptionForeground, #858585);
+  cursor: pointer; padding: 2px 5px; border-radius: 3px;
+  font-size: 10px; font-weight: 600;
+  transition: background 0.1s, color 0.1s;
+}
+.kivi-img-size-inline:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); color: var(--vscode-foreground, #d4d4d4); }
+.kivi-img-size-inline.active { color: var(--vscode-focusBorder, #007fd4); background: rgba(0, 127, 212, 0.1); }
+
+/* Detail panel (alt text, URL, size) */
+.kivi-img-detail-panel {
+  position: fixed; z-index: 51;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+  min-width: 220px; max-width: 360px;
+}
+.kivi-img-detail-label {
+  font-size: 11px; color: var(--vscode-descriptionForeground, #858585);
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.kivi-img-detail-input {
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 4px; color: var(--vscode-input-foreground, #ccc);
+  padding: 4px 8px; font-size: 12px; font-family: inherit; outline: none; width: 100%;
+}
+.kivi-img-detail-input:focus { border-color: var(--vscode-focusBorder, #007fd4); }
+.kivi-img-detail-apply {
+  background: var(--vscode-button-background, #007fd4);
+  color: var(--vscode-button-foreground, #fff);
+  border: none; border-radius: 4px; padding: 4px 12px;
+  font-size: 11px; font-weight: 600; cursor: pointer; align-self: flex-end;
+}
+.kivi-img-detail-apply:hover { opacity: 0.85; }
+.kivi-img-size-row { display: flex; gap: 4px; }
+.kivi-img-size-btn {
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 4px; color: var(--vscode-descriptionForeground, #858585);
+  cursor: pointer; padding: 3px 10px; font-size: 11px; font-weight: 600;
+  transition: background 0.1s, color 0.1s;
+}
+.kivi-img-size-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); color: var(--vscode-foreground, #d4d4d4); }
+.kivi-img-size-btn.active { border-color: var(--vscode-focusBorder, #007fd4); color: var(--vscode-focusBorder, #007fd4); }
+.kivi-img-size-custom { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.kivi-img-size-custom .kivi-img-detail-input { width: 70px; }
+.kivi-img-size-x { color: var(--vscode-descriptionForeground, #858585); font-size: 12px; }
+
+/* Resize handles */
+.kivi-image-resize-handle {
+  width: 10px; height: 10px;
+  background: var(--vscode-focusBorder, #007fd4);
+  border: 2px solid var(--vscode-editorWidget-background, #252526);
+  border-radius: 2px; position: absolute; z-index: 10;
+}
+.kivi-resize-se { right: -4px; bottom: -4px; cursor: se-resize; }
+.kivi-resize-sw { left: -4px; bottom: -4px; cursor: sw-resize; }
+
+.kivi-vscode-editor img {
+  cursor: pointer;
+}
+.kivi-vscode-editor img.ProseMirror-selectednode {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 2px;
+}
+
+/* ---------- Link Popup ---------- */
+.kivi-link-popup {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 6px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  max-width: 420px;
+}
+.kivi-link-popup-url {
+  font-size: 12px;
+  color: var(--vscode-textLink-foreground, #4fc1ff);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+.kivi-link-popup-url:hover {
+  text-decoration: underline;
+}
+.kivi-link-popup-btn {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground, #888);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.kivi-link-popup-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground, #ccc);
+}
+.kivi-link-popup-btn svg { display: block; }
+
+/* ---------- Table cell selection ---------- */
+.kivi-vscode-editor .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 127, 212, 0.08);
+  pointer-events: none;
+}
+.kivi-vscode-editor td,
+.kivi-vscode-editor th {
+  position: relative;
+}
+
+/* ---------- Slash Commands ---------- */
+.kivi-slash-menu {
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 8px; padding: 4px 0; min-width: 220px;
+  max-height: 320px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); font-family: var(--vscode-font-family, sans-serif);
+}
+.kivi-slash-category {
+  padding: 6px 12px 2px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--vscode-descriptionForeground, #858585); font-weight: 600;
+}
+.kivi-slash-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; transition: background 0.1s; }
+.kivi-slash-item:hover, .kivi-slash-item.selected { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)); }
+.kivi-slash-icon { width: 24px; text-align: center; font-size: 13px; color: var(--vscode-focusBorder, #007fd4); flex-shrink: 0; }
+.kivi-slash-label-wrap { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.kivi-slash-label { font-size: 13px; color: var(--vscode-foreground, #d4d4d4); }
+.kivi-slash-alias { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); opacity: 0.5; font-family: var(--vscode-editor-font-family, monospace); }
+.kivi-slash-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--vscode-descriptionForeground, #858585); }
+
+/* ---------- Selection Toolbar ---------- */
+.kivi-selection-toolbar {
+  position: fixed;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 4px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 6px;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.5);
+  pointer-events: auto;
+  animation: kivi-sel-fade-in 0.1s ease-out;
+}
+@keyframes kivi-sel-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.kivi-sel-btn {
+  background: none;
+  border: none;
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  padding: 5px 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+.kivi-sel-btn svg { display: block; }
+.kivi-sel-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1)); }
+.kivi-sel-btn.active { background: rgba(0, 127, 212, 0.2); color: var(--vscode-textLink-foreground, #4fc1ff); }

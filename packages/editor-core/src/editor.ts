@@ -25,6 +25,13 @@ import { TocBlock } from './extensions/toc.js';
 import { SlashCommands } from './extensions/slash-commands.js';
 import { MermaidBlock } from './extensions/mermaid.js';
 import { ExcalidrawBlock } from './extensions/excalidraw.js';
+import { TableControls } from './extensions/table-controls.js';
+import { ImageControls } from './extensions/image-controls.js';
+import { LinkPopup } from './extensions/link-popup.js';
+import { CodeBlockEnhanced } from './extensions/code-block-enhanced.js';
+import { InlineCodeInput } from './extensions/inline-code-input.js';
+import { SelectionToolbar } from './extensions/selection-toolbar.js';
+import { DevWatchdog } from './extensions/dev-watchdog.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -57,8 +64,36 @@ export class KiviEditor {
         TaskItem.configure({ nested: true }),
         Table.configure({ resizable: false }),
         TableRow,
-        TableCell,
-        TableHeader,
+        TableCell.extend({
+          addAttributes() {
+            return {
+              ...this.parent?.(),
+              textAlign: {
+                default: null,
+                parseHTML: (el: HTMLElement) => el.style.textAlign || null,
+                renderHTML: (attrs: Record<string, unknown>) => {
+                  if (!attrs.textAlign) return {};
+                  return { style: `text-align: ${attrs.textAlign}` };
+                },
+              },
+            };
+          },
+        }),
+        TableHeader.extend({
+          addAttributes() {
+            return {
+              ...this.parent?.(),
+              textAlign: {
+                default: null,
+                parseHTML: (el: HTMLElement) => el.style.textAlign || null,
+                renderHTML: (attrs: Record<string, unknown>) => {
+                  if (!attrs.textAlign) return {};
+                  return { style: `text-align: ${attrs.textAlign}` };
+                },
+              },
+            };
+          },
+        }),
         Underline,
         Placeholder.configure({
           placeholder: options.placeholder || 'Start writing...',
@@ -74,9 +109,18 @@ export class KiviEditor {
         WikiLink,
         HashTag,
         TocBlock,
-        SlashCommands,
+        SlashCommands.configure({
+          onCreatePage: options.onCreatePage,
+        }),
         MermaidBlock,
         ExcalidrawBlock,
+        TableControls,
+        ImageControls,
+        LinkPopup,
+        CodeBlockEnhanced,
+        InlineCodeInput,
+        SelectionToolbar,
+        DevWatchdog,
       ],
       editorProps: {
         attributes: {
@@ -155,22 +199,26 @@ export class KiviEditor {
 
   /** Search within the document. */
   search(options: SearchOptions): void {
-    (this.editor.commands as Record<string, (...args: unknown[]) => boolean>)['setSearchQuery'](options);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editor.commands as any).setSearchQuery(options);
   }
 
   /** Clear active search. */
   clearSearch(): void {
-    (this.editor.commands as Record<string, (...args: unknown[]) => boolean>)['clearSearch']();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editor.commands as any).clearSearch();
   }
 
   /** Move to the next search result. */
   nextSearchResult(): void {
-    (this.editor.commands as Record<string, (...args: unknown[]) => boolean>)['nextSearchResult']();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editor.commands as any).nextSearchResult();
   }
 
   /** Move to the previous search result. */
   previousSearchResult(): void {
-    (this.editor.commands as Record<string, (...args: unknown[]) => boolean>)['previousSearchResult']();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editor.commands as any).previousSearchResult();
   }
 
   /** Get the underlying Tiptap editor instance. */

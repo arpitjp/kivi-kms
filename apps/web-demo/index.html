@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Kivi Markdown Editor — Demo</title>
   <meta name="description" content="A high-performance, WYSIWYG-first Markdown editor with lossless round-trip editing." />
-  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="theme-color" content="#1e1e1e" />
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
@@ -18,39 +18,135 @@
 </head>
 <body>
   <div id="app">
-    <header id="toolbar"></header>
+    <!-- Header toolbar — collapsible -->
+    <header id="toolbar">
+      <div id="toolbar-left">
+        <span class="toolbar-brand">Kivi</span>
+      </div>
+      <div id="toolbar-format"></div>
+      <div id="toolbar-right"></div>
+    </header>
+
     <div id="main-layout">
+      <!-- Left pane -->
       <aside id="sidebar">
-        <div id="sidebar-header">
-          <span class="sidebar-title">Files</span>
-          <button id="new-file-btn" title="New File">+</button>
+        <div id="section-explorer" class="panel-section" data-section="explorer">
+          <div class="section-header">
+            <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
+            <span class="sidebar-title">Explorer</span>
+            <div class="section-header-actions">
+              <button id="new-file-btn" type="button" title="New Page (Ctrl+N)" aria-label="Create new page"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2H4.5A1.5 1.5 0 0 0 3 3.5v9A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V6z"/><polyline points="9,2 9,6 13,6"/><line x1="6" y1="9.5" x2="10" y2="9.5" stroke-width="1.6"/><line x1="8" y1="7.5" x2="8" y2="11.5" stroke-width="1.6"/></svg></button>
+              <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
+              <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="vault-search" style="display:none;">
+              <input id="vault-search-input" type="search" placeholder="Search notes..." aria-label="Search notes" />
+              <div id="vault-search-results"></div>
+            </div>
+            <div id="file-list" role="tree" aria-label="File explorer"></div>
+          </div>
         </div>
-        <div id="file-list"></div>
-        <div id="backlinks-section">
-          <div class="sidebar-title">Backlinks</div>
-          <div id="backlinks-list"></div>
+        <div id="section-backlinks" class="panel-section" data-section="backlinks">
+          <div class="section-header">
+            <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
+            <span class="sidebar-title">Backlinks</span>
+            <div class="section-header-actions">
+              <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
+              <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="backlinks-list"></div>
+          </div>
         </div>
       </aside>
+      <div class="resize-handle" data-resize="left" title="Drag to resize"></div>
+
+      <!-- Main editor area -->
       <main id="editor-container">
-        <div id="breadcrumbs"></div>
+        <div id="breadcrumbs">
+          <div id="breadcrumbs-path"></div>
+          <div id="breadcrumbs-actions"></div>
+        </div>
+        <div id="find-widget" style="display:none;" role="search" aria-label="Find and replace">
+          <div class="find-widget-row">
+            <div class="find-input-wrap">
+              <input id="find-input" type="text" placeholder="Find" aria-label="Search text" autocomplete="off" spellcheck="false" />
+              <button id="find-case" type="button" class="find-toggle" title="Match Case (Alt+C)" aria-pressed="false">Aa</button>
+              <button id="find-regex" type="button" class="find-toggle" title="Use Regular Expression (Alt+R)" aria-pressed="false">.*</button>
+            </div>
+            <span id="find-count" class="find-count"></span>
+            <button id="find-prev" type="button" class="find-nav-btn" title="Previous Match (Shift+Enter)" aria-label="Previous match"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,10 8,6 12,10"/></svg></button>
+            <button id="find-next" type="button" class="find-nav-btn" title="Next Match (Enter)" aria-label="Next match"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
+            <button id="find-close" type="button" class="find-nav-btn" title="Close (Escape)" aria-label="Close find"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
+          </div>
+          <div class="find-widget-row">
+            <div class="find-input-wrap">
+              <input id="replace-input" type="text" placeholder="Replace" aria-label="Replacement text" autocomplete="off" spellcheck="false" />
+            </div>
+            <button id="replace-one" type="button" class="find-nav-btn" title="Replace (Ctrl+Shift+1)" aria-label="Replace"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h7"/><polyline points="8,5.5 10.5,8 8,10.5"/><path d="M12 3v10"/></svg></button>
+            <button id="replace-all" type="button" class="find-nav-btn" title="Replace All (Ctrl+Alt+Enter)" aria-label="Replace all"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6h6"/><polyline points="6,3.5 8.5,6 6,8.5"/><path d="M2 11h6"/><polyline points="6,8.5 8.5,11 6,13.5"/><path d="M12 2v12"/></svg></button>
+          </div>
+        </div>
         <div id="editor-split">
           <div id="editor"></div>
+          <div class="resize-handle" data-resize="split" title="Drag to resize split"></div>
           <div id="markdown-source"></div>
         </div>
       </main>
+
+      <div class="resize-handle" data-resize="right" title="Drag to resize"></div>
+      <!-- Right pane -->
       <aside id="outline-panel">
-        <div class="sidebar-title">Outline</div>
-        <div id="outline-list"></div>
+        <div id="section-outline" class="panel-section" data-section="outline">
+          <div class="section-header">
+            <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
+            <span class="sidebar-title">Outline</span>
+            <div class="section-header-actions">
+              <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
+              <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="outline-list"></div>
+          </div>
+        </div>
       </aside>
     </div>
+
+    <!-- Graph overlay -->
     <div id="graph-overlay" style="display:none;">
       <div id="graph-header">
-        <span>Graph View</span>
-        <button id="close-graph">✕</button>
+        <div id="graph-header-left">
+          <span>Graph</span>
+          <input id="graph-filter" type="text" placeholder="Filter by tag or title..." aria-label="Filter graph nodes" />
+          <div id="graph-depth-controls">
+            <label for="graph-depth">Depth:</label>
+            <input id="graph-depth" type="number" min="1" max="10" value="3" aria-label="Graph depth" />
+          </div>
+        </div>
+        <button id="close-graph" aria-label="Close graph view">✕</button>
       </div>
-      <div id="graph-container"></div>
+      <div id="graph-container">
+        <div id="graph-legend"></div>
+      </div>
     </div>
   </div>
+  <script>
+    window.__kiviErrors=[];
+    function __kiviShowErr(msg){
+      window.__kiviErrors.push(msg);
+      var d=document.getElementById('kivi-error-overlay');
+      if(!d){d=document.createElement('div');d.id='kivi-error-overlay';
+        d.style.cssText='position:fixed;bottom:0;left:0;right:0;max-height:40vh;overflow:auto;background:#1a0000;color:#ff6b6b;font:13px/1.5 monospace;padding:12px 16px;z-index:99999;border-top:2px solid #ff4444;white-space:pre-wrap;';
+        document.body.appendChild(d);}
+      d.textContent=window.__kiviErrors.join('\n\n');
+    }
+    window.onerror=function(m,s,l,c,e){__kiviShowErr('[onerror] '+m+'\n  at '+s+':'+l+':'+c+(e&&e.stack?'\n'+e.stack:''));};
+    window.addEventListener('unhandledrejection',function(ev){__kiviShowErr('[unhandledrejection] '+(ev.reason&&ev.reason.stack||ev.reason));});
+  </script>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

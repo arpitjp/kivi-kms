@@ -35,7 +35,8 @@
     "@tiptap/extension-task-list": "^2",
     "@tiptap/extension-underline": "^2",
     "@tiptap/pm": "^2",
-    "@tiptap/starter-kit": "^2"
+    "@tiptap/starter-kit": "^2",
+    "lowlight": "^3.3.0"
   },
   "devDependencies": {
     "happy-dom": "^20.8.9",

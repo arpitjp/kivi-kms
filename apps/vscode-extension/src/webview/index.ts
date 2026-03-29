@@ -7,9 +7,24 @@ declare function acquireVsCodeApi(): {
   setState(state: unknown): void;
 };
 
+interface KiviSettings {
+  editorBackground: string;
+  codeBlockBackground: string;
+  accentColor: string;
+  textColor: string;
+  headingColor: string;
+  fontSize: number;
+  fontFamily: string;
+  lineHeight: number;
+  customCSS: string;
+  showToolbar: boolean;
+  showLineNumbers: boolean;
+}
+
 interface VsCodeMessage {
-  type: 'load' | 'externalChange' | 'themeChanged';
+  type: 'load' | 'externalChange' | 'themeChanged' | 'settings';
   content?: string;
+  settings?: KiviSettings;
 }
 
 const vscode = acquireVsCodeApi();
@@ -17,6 +32,73 @@ const vscode = acquireVsCodeApi();
 let editor: KiviEditor | null = null;
 let isUpdatingFromExtension = false;
 let lastSentContent = '';
+let overrideStyleEl: HTMLStyleElement | null = null;
+let customCSSStyleEl: HTMLStyleElement | null = null;
+
+function applySettings(s: KiviSettings) {
+  if (!overrideStyleEl) {
+    overrideStyleEl = document.createElement('style');
+    overrideStyleEl.id = 'kivi-setting-overrides';
+    document.head.appendChild(overrideStyleEl);
+  }
+  if (!customCSSStyleEl) {
+    customCSSStyleEl = document.createElement('style');
+    customCSSStyleEl.id = 'kivi-custom-css';
+    document.head.appendChild(customCSSStyleEl);
+  }
+
+  const props: string[] = [];
+  if (s.editorBackground) props.push(`--kivi-editor-bg: ${s.editorBackground};`);
+  if (s.codeBlockBackground) props.push(`--kivi-codeblock-bg: ${s.codeBlockBackground};`);
+  if (s.accentColor) props.push(`--kivi-accent: ${s.accentColor};`);
+  if (s.textColor) props.push(`--kivi-text: ${s.textColor};`);
+  if (s.headingColor) props.push(`--kivi-heading-color: ${s.headingColor};`);
+  if (s.fontSize && s.fontSize > 0) props.push(`--kivi-font-size: ${s.fontSize}px;`);
+  if (s.fontFamily) props.push(`--kivi-font-family: ${s.fontFamily};`);
+  if (s.lineHeight && s.lineHeight > 0) props.push(`--kivi-line-height: ${s.lineHeight};`);
+
+  let css = '';
+  if (props.length > 0) {
+    css += `:root { ${props.join(' ')} }\n`;
+  }
+
+  if (s.editorBackground) {
+    css += `body { background: var(--kivi-editor-bg) !important; }\n`;
+    css += `#editor { background: var(--kivi-editor-bg) !important; }\n`;
+  }
+  if (s.textColor) {
+    css += `body { color: var(--kivi-text) !important; }\n`;
+    css += `.kivi-vscode-editor { color: var(--kivi-text) !important; }\n`;
+  }
+  if (s.headingColor) {
+    css += `.kivi-vscode-editor h1, .kivi-vscode-editor h2, .kivi-vscode-editor h3, .kivi-vscode-editor h4, .kivi-vscode-editor h5, .kivi-vscode-editor h6 { color: var(--kivi-heading-color) !important; }\n`;
+  }
+  if (s.codeBlockBackground) {
+    css += `.kivi-vscode-editor pre { background: var(--kivi-codeblock-bg) !important; }\n`;
+  }
+  if (s.accentColor) {
+    css += `.kivi-vscode-editor a { color: var(--kivi-accent) !important; }\n`;
+    css += `.kivi-toolbar-btn.active { border-color: var(--kivi-accent) !important; }\n`;
+  }
+  if (s.fontSize && s.fontSize > 0) {
+    css += `#editor { font-size: var(--kivi-font-size) !important; }\n`;
+  }
+  if (s.fontFamily) {
+    css += `#editor { font-family: var(--kivi-font-family) !important; }\n`;
+  }
+  if (s.lineHeight && s.lineHeight > 0) {
+    css += `#editor { line-height: var(--kivi-line-height) !important; }\n`;
+  }
+
+  overrideStyleEl.textContent = css;
+
+  customCSSStyleEl.textContent = s.customCSS || '';
+
+  const toolbar = document.getElementById('kivi-toolbar');
+  if (toolbar) {
+    toolbar.style.display = s.showToolbar ? '' : 'none';
+  }
+}
 
 function init() {
   const editorEl = document.getElementById('editor');
@@ -25,25 +107,14 @@ function init() {
   const toolbarEl = document.createElement('div');
   toolbarEl.id = 'kivi-toolbar';
 
-  const iconUri = document.body.dataset.iconUri;
-  if (iconUri) {
-    const brand = document.createElement('span');
-    brand.className = 'kivi-toolbar-brand';
-    const img = document.createElement('img');
-    img.src = iconUri;
-    img.alt = 'Kivi';
-    img.width = 18;
-    img.height = 18;
-    brand.appendChild(img);
-    const label = document.createElement('span');
-    label.textContent = 'Kivi';
-    brand.appendChild(label);
-    toolbarEl.appendChild(brand);
+  const brand = document.createElement('span');
+  brand.className = 'kivi-toolbar-brand';
+  brand.textContent = 'Kivi';
+  toolbarEl.appendChild(brand);
 
-    const sep = document.createElement('span');
-    sep.className = 'kivi-toolbar-sep';
-    toolbarEl.appendChild(sep);
-  }
+  const brandSep = document.createElement('span');
+  brandSep.className = 'kivi-toolbar-sep';
+  toolbarEl.appendChild(brandSep);
 
   document.body.insertBefore(toolbarEl, editorEl);
 
@@ -80,6 +151,9 @@ function init() {
         break;
       case 'themeChanged':
         break;
+      case 'settings':
+        if (msg.settings) applySettings(msg.settings);
+        break;
     }
   });
 
@@ -97,23 +171,26 @@ function initToolbar(el: HTMLElement) {
   if (!editor) return;
   const tiptap = editor.getTiptapEditor();
 
+  const _s = (d: string) =>
+    `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
   const actions = [
-    { id: 'bold', icon: 'B', title: 'Bold (⌘B)', cmd: () => tiptap.chain().focus().toggleBold().run(), active: () => tiptap.isActive('bold') },
-    { id: 'italic', icon: 'I', title: 'Italic (⌘I)', cmd: () => tiptap.chain().focus().toggleItalic().run(), active: () => tiptap.isActive('italic') },
-    { id: 'strike', icon: 'S̶', title: 'Strikethrough (⌘⇧X)', cmd: () => tiptap.chain().focus().toggleStrike().run(), active: () => tiptap.isActive('strike') },
-    { id: 'code', icon: '‹›', title: 'Code (⌘E)', cmd: () => tiptap.chain().focus().toggleCode().run(), active: () => tiptap.isActive('code') },
+    { id: 'bold', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5h4.5a3 3 0 0 1 2.12 5.12A3.25 3.25 0 0 1 9 13.5H4V2.5zM4 8h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`, title: 'Bold (⌘B)', cmd: () => tiptap.chain().focus().toggleBold().run(), active: () => tiptap.isActive('bold') },
+    { id: 'italic', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="10" y1="2.5" x2="6" y2="13.5"/><line x1="7.5" y1="2.5" x2="11.5" y2="2.5"/><line x1="4.5" y1="13.5" x2="8.5" y2="13.5"/></svg>`, title: 'Italic (⌘I)', cmd: () => tiptap.chain().focus().toggleItalic().run(), active: () => tiptap.isActive('italic') },
+    { id: 'strike', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="8" x2="14" y2="8" stroke-width="1.5"/><path d="M10.2 4.8C9.7 3.6 8.6 3 7.5 3 5.8 3 4.5 4 4.5 5.5c0 1 .5 1.7 1.3 2.2" stroke-width="1.6" fill="none"/><path d="M5.8 11.2c.5 1.2 1.6 1.8 2.7 1.8 1.7 0 3-1 3-2.5 0-.7-.3-1.3-.8-1.7" stroke-width="1.6" fill="none"/></svg>`, title: 'Strikethrough (⌘⇧X)', cmd: () => tiptap.chain().focus().toggleStrike().run(), active: () => tiptap.isActive('strike') },
+    { id: 'code', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="5,3.5 1.5,8 5,12.5"/><polyline points="11,3.5 14.5,8 11,12.5"/></svg>`, title: 'Code (⌘E)', cmd: () => tiptap.chain().focus().toggleCode().run(), active: () => tiptap.isActive('code') },
     { id: 'sep' },
-    { id: 'h1', icon: 'H1', title: 'Heading 1', cmd: () => tiptap.chain().focus().toggleHeading({ level: 1 }).run(), active: () => tiptap.isActive('heading', { level: 1 }) },
-    { id: 'h2', icon: 'H2', title: 'Heading 2', cmd: () => tiptap.chain().focus().toggleHeading({ level: 2 }).run(), active: () => tiptap.isActive('heading', { level: 2 }) },
-    { id: 'h3', icon: 'H3', title: 'Heading 3', cmd: () => tiptap.chain().focus().toggleHeading({ level: 3 }).run(), active: () => tiptap.isActive('heading', { level: 3 }) },
+    { id: 'h1', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3v10M2.5 8h5M7.5 3v10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M11 11V6l-1.2.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`, title: 'Heading 1', cmd: () => tiptap.chain().focus().toggleHeading({ level: 1 }).run(), active: () => tiptap.isActive('heading', { level: 1 }) },
+    { id: 'h2', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3v10M2 8h4.5M6.5 3v10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M9.5 6.5a2 2 0 0 1 3.8.7c0 1.2-1.3 2.3-3.3 3.8h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`, title: 'Heading 2', cmd: () => tiptap.chain().focus().toggleHeading({ level: 2 }).run(), active: () => tiptap.isActive('heading', { level: 2 }) },
+    { id: 'h3', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3v10M1.5 8h4M5.5 3v10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M9.5 6.3a1.8 1.8 0 0 1 3.2.5 1.6 1.6 0 0 1-1.2 1.7 1.8 1.8 0 0 1 1.5 1.8 2 2 0 0 1-3.5 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`, title: 'Heading 3', cmd: () => tiptap.chain().focus().toggleHeading({ level: 3 }).run(), active: () => tiptap.isActive('heading', { level: 3 }) },
     { id: 'sep' },
-    { id: 'bullet', icon: '•', title: 'Bullet List', cmd: () => tiptap.chain().focus().toggleBulletList().run(), active: () => tiptap.isActive('bulletList') },
-    { id: 'ordered', icon: '1.', title: 'Ordered List', cmd: () => tiptap.chain().focus().toggleOrderedList().run(), active: () => tiptap.isActive('orderedList') },
-    { id: 'task', icon: '☑', title: 'Task List', cmd: () => tiptap.chain().focus().toggleTaskList().run(), active: () => tiptap.isActive('taskList') },
+    { id: 'bullet', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="3" cy="4" r="1.3" fill="currentColor" stroke="none"/><circle cx="3" cy="8" r="1.3" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="6.5" y1="4" x2="14" y2="4"/><line x1="6.5" y1="8" x2="14" y2="8"/><line x1="6.5" y1="12" x2="14" y2="12"/></svg>`, title: 'Bullet List', cmd: () => tiptap.chain().focus().toggleBulletList().run(), active: () => tiptap.isActive('bulletList') },
+    { id: 'ordered', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-linecap="round"><text x="1.5" y="5.5" font-size="5.5" font-family="system-ui,-apple-system,sans-serif" font-weight="700" stroke="none">1</text><text x="1.5" y="9.5" font-size="5.5" font-family="system-ui,-apple-system,sans-serif" font-weight="700" stroke="none">2</text><text x="1.5" y="13.5" font-size="5.5" font-family="system-ui,-apple-system,sans-serif" font-weight="700" stroke="none">3</text><line x1="6.5" y1="4" x2="14" y2="4" stroke-width="1.6" fill="none"/><line x1="6.5" y1="8" x2="14" y2="8" stroke-width="1.6" fill="none"/><line x1="6.5" y1="12" x2="14" y2="12" stroke-width="1.6" fill="none"/></svg>`, title: 'Ordered List', cmd: () => tiptap.chain().focus().toggleOrderedList().run(), active: () => tiptap.isActive('orderedList') },
+    { id: 'task', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="1.5" width="5" height="5" rx="1"/><polyline points="3,4 4,5.2 6,2.8" stroke-width="1.6"/><line x1="9" y1="4" x2="14.5" y2="4"/><rect x="1.5" y="9.5" width="5" height="5" rx="1"/><line x1="9" y1="12" x2="14.5" y2="12"/></svg>`, title: 'Task List', cmd: () => tiptap.chain().focus().toggleTaskList().run(), active: () => tiptap.isActive('taskList') },
     { id: 'sep' },
-    { id: 'quote', icon: '❝', title: 'Blockquote', cmd: () => tiptap.chain().focus().toggleBlockquote().run(), active: () => tiptap.isActive('blockquote') },
-    { id: 'codeblock', icon: '{ }', title: 'Code Block', cmd: () => tiptap.chain().focus().toggleCodeBlock().run(), active: () => tiptap.isActive('codeBlock') },
-    { id: 'hr', icon: '—', title: 'Horizontal Rule', cmd: () => tiptap.chain().focus().setHorizontalRule().run(), active: () => false },
+    { id: 'quote', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round"><line x1="1.5" y1="2.5" x2="1.5" y2="13.5" stroke-width="2.5"/><line x1="5" y1="4" x2="14" y2="4" stroke-width="1.5"/><line x1="5" y1="8" x2="11" y2="8" stroke-width="1.5"/><line x1="5" y1="12" x2="13" y2="12" stroke-width="1.5"/></svg>`, title: 'Blockquote', cmd: () => tiptap.chain().focus().toggleBlockquote().run(), active: () => tiptap.isActive('blockquote') },
+    { id: 'codeblock', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="1" width="13" height="14" rx="2"/><polyline points="5.5,5.5 3.5,8 5.5,10.5"/><polyline points="10.5,5.5 12.5,8 10.5,10.5"/></svg>`, title: 'Code Block', cmd: () => tiptap.chain().focus().toggleCodeBlock().run(), active: () => tiptap.isActive('codeBlock') },
+    { id: 'hr', svg: _s('<line x1="2" y1="8" x2="14" y2="8" stroke-width="1.5" stroke-dasharray="3,2"/>'), title: 'Horizontal Rule', cmd: () => tiptap.chain().focus().setHorizontalRule().run(), active: () => false },
   ];
 
   for (const action of actions) {
@@ -127,7 +204,7 @@ function initToolbar(el: HTMLElement) {
     const btn = document.createElement('button');
     btn.className = 'kivi-toolbar-btn';
     btn.title = action.title || '';
-    btn.textContent = action.icon || '';
+    if (action.svg) btn.innerHTML = action.svg;
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       action.cmd?.();

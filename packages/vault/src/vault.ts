@@ -5,6 +5,8 @@ export class Vault {
   readonly files = new Map<string, VaultFile>();
   private fsAdapter?: FileSystemAdapter;
   private stopWatcher?: () => void;
+  private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  private needsRebuild = false;
 
   constructor(adapter?: FileSystemAdapter) {
     this.fsAdapter = adapter;
@@ -29,17 +31,64 @@ export class Vault {
     this.files.set(path, file);
     this.rebuildBacklinks();
     this.rebuildHierarchy();
+    this.needsRebuild = false;
     return file;
   }
 
+  /**
+   * Update a file's content. Defers index rebuild for performance
+   * during rapid edits (e.g. per-keystroke). Call `flush()` or read
+   * through `getBacklinks()`/`getGraph()` to force an immediate rebuild.
+   */
   updateFile(path: string, content: string): VaultFile {
-    return this.addFile(path, content);
+    const scan = scanMarkdown(content);
+    const existing = this.files.get(path);
+
+    const file: VaultFile = {
+      path,
+      title: scan.title || this.titleFromPath(path),
+      wikiLinks: scan.wikiLinks,
+      backlinks: existing?.backlinks ?? [],
+      tags: scan.tags,
+      frontmatter: scan.frontmatter,
+      headings: scan.headings,
+      parent: this.inferParent(path, scan.frontmatter),
+      children: existing?.children ?? [],
+    };
+
+    this.files.set(path, file);
+    this.scheduleRebuild();
+    return file;
   }
 
   removeFile(path: string): void {
     this.files.delete(path);
     this.rebuildBacklinks();
     this.rebuildHierarchy();
+    this.needsRebuild = false;
+  }
+
+  /** Force immediate index rebuild (useful before reading backlinks/graph). */
+  flush(): void {
+    if (this.needsRebuild) {
+      if (this.rebuildTimer) { clearTimeout(this.rebuildTimer); this.rebuildTimer = null; }
+      this.rebuildBacklinks();
+      this.rebuildHierarchy();
+      this.needsRebuild = false;
+    }
+  }
+
+  private scheduleRebuild(): void {
+    this.needsRebuild = true;
+    if (this.rebuildTimer) return;
+    this.rebuildTimer = setTimeout(() => {
+      this.rebuildTimer = null;
+      if (this.needsRebuild) {
+        this.rebuildBacklinks();
+        this.rebuildHierarchy();
+        this.needsRebuild = false;
+      }
+    }, 50);
   }
 
   getFile(path: string): VaultFile | undefined {
@@ -47,6 +96,7 @@ export class Vault {
   }
 
   getBacklinks(path: string): VaultFile[] {
+    this.flush();
     const file = this.files.get(path);
     if (!file) return [];
     return file.backlinks
@@ -55,23 +105,28 @@ export class Vault {
   }
 
   getTagIndex(): Map<string, string[]> {
-    const index = new Map<string, string[]>();
+    this.flush();
+    const sets = new Map<string, Set<string>>();
     for (const [path, file] of this.files) {
       for (const tag of file.tags) {
         const parts = tag.split('/');
-        // Index both the full tag and all parent segments
         for (let i = 1; i <= parts.length; i++) {
           const key = parts.slice(0, i).join('/');
-          const list = index.get(key) ?? [];
-          if (!list.includes(path)) list.push(path);
-          index.set(key, list);
+          let s = sets.get(key);
+          if (!s) { s = new Set(); sets.set(key, s); }
+          s.add(path);
         }
       }
+    }
+    const index = new Map<string, string[]>();
+    for (const [key, s] of sets) {
+      index.set(key, [...s]);
     }
     return index;
   }
 
   getGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    this.flush();
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
     const pathSet = new Set(this.files.keys());
@@ -122,9 +177,11 @@ export class Vault {
     }
   }
 
-  /** Start watching for file changes. Returns a cleanup function. */
+  /** Start watching for file changes. Returns a cleanup function. Stops any previous watcher. */
   watch(dir: string): () => void {
     if (!this.fsAdapter?.watchFiles) return () => {};
+
+    this.stopWatcher?.();
 
     this.stopWatcher = this.fsAdapter.watchFiles(dir, async (event, path) => {
       if (!path.endsWith('.md')) return;
@@ -145,6 +202,7 @@ export class Vault {
 
   destroy(): void {
     this.stopWatcher?.();
+    if (this.rebuildTimer) { clearTimeout(this.rebuildTimer); this.rebuildTimer = null; }
     this.files.clear();
   }
 

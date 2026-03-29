@@ -100,9 +100,9 @@ function convertNode(
     case 'table':
       return convertTable(node);
     case 'tableRow':
-      return convertTableRow(node, false);
+      return convertTableRow(node, false, []);
     case 'tableCell':
-      return convertTableCell(node, parentMarks, false);
+      return convertTableCell(node, parentMarks, false, null);
     case 'image':
       return convertImage(node);
     case 'text':
@@ -228,17 +228,18 @@ function convertTable(node: Table): PMNodeJSON {
     return tableNode([]);
   }
 
+  const align = node.align || [];
   const rows: PMNodeJSON[] = [];
   for (let i = 0; i < node.children.length; i++) {
-    rows.push(convertTableRow(node.children[i], i === 0));
+    rows.push(convertTableRow(node.children[i], i === 0, align));
   }
 
   return tableNode(rows);
 }
 
-function convertTableRow(node: TableRow, isHeader: boolean): PMNodeJSON {
-  const cells = node.children.map((cell) =>
-    convertTableCell(cell, [], isHeader),
+function convertTableRow(node: TableRow, isHeader: boolean, align: (string | null)[]): PMNodeJSON {
+  const cells = node.children.map((cell, colIdx) =>
+    convertTableCell(cell, [], isHeader, align[colIdx] || null),
   );
   return tableRowNode(cells);
 }
@@ -247,10 +248,15 @@ function convertTableCell(
   node: TableCell,
   marks: PMMarkJSON[],
   isHeader: boolean,
+  textAlign: string | null,
 ): PMNodeJSON {
   const content = convertPhrasingContent(node.children, marks);
   const para = paragraphNode(content);
-  return isHeader ? tableHeaderNode([para]) : tableCellNode([para]);
+  const cellNode = isHeader ? tableHeaderNode([para]) : tableCellNode([para]);
+  if (textAlign) {
+    cellNode.attrs = { ...(cellNode.attrs || {}), textAlign };
+  }
+  return cellNode;
 }
 
 function convertImage(node: Image): PMNodeJSON {

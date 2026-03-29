@@ -142,16 +142,46 @@ function convertTaskItem(node: PMNode): import('mdast').ListItem {
 }
 
 function convertTable(node: PMNode): import('mdast').Table {
+  let colCount = 0;
+  const firstRow = node.content?.[0];
+  if (firstRow?.content) {
+    for (const cell of firstRow.content) {
+      colCount += (cell.attrs?.colspan as number) || 1;
+    }
+  }
+
+  const align: (('left' | 'center' | 'right') | null)[] = new Array(colCount).fill(null);
+
+  if (firstRow?.content) {
+    let col = 0;
+    for (const cell of firstRow.content) {
+      const span = (cell.attrs?.colspan as number) || 1;
+      const ta = cell.attrs?.textAlign as string | null;
+      if (ta === 'center' || ta === 'right' || ta === 'left') {
+        for (let c = 0; c < span; c++) align[col + c] = ta;
+      }
+      col += span;
+    }
+  }
+
   const rows = (node.content || []).map((row) => {
-    const cells = (row.content || []).map((cell) => {
+    const cells: import('mdast').TableCell[] = [];
+    for (const cell of row.content || []) {
       const paraContent = cell.content?.[0]?.content || [];
       const children = convertInlineContent(paraContent);
-      return { type: 'tableCell' as const, children };
-    });
+      cells.push({ type: 'tableCell' as const, children });
+      const colspan = ((cell.attrs?.colspan as number) || 1) - 1;
+      for (let i = 0; i < colspan; i++) {
+        cells.push({ type: 'tableCell' as const, children: [] });
+      }
+    }
+    while (cells.length < colCount) {
+      cells.push({ type: 'tableCell' as const, children: [] });
+    }
     return { type: 'tableRow' as const, children: cells };
   });
 
-  return { type: 'table', children: rows };
+  return { type: 'table', align, children: rows };
 }
 
 function convertInlineContent(nodes: PMNode[]): PhrasingContent[] {

@@ -58,6 +58,71 @@
           "name": "Backlinks"
         }
       ]
+    },
+    "configuration": {
+      "title": "Kivi",
+      "properties": {
+        "kivi.appearance.editorBackground": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Override the editor background color (e.g. `#1f1f1f`). Leave empty to inherit from the current VS Code theme."
+        },
+        "kivi.appearance.codeBlockBackground": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Override the code block background color (e.g. `#181818`). Leave empty to use the default."
+        },
+        "kivi.appearance.accentColor": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Override the accent/link color (e.g. `#4daafc`). Leave empty to inherit from the current VS Code theme."
+        },
+        "kivi.appearance.textColor": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Override the main editor text color (e.g. `#d4d4d4`). Leave empty to inherit from the current VS Code theme."
+        },
+        "kivi.appearance.headingColor": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Override the heading text color (e.g. `#e6e6e6`). Leave empty to derive from the text color."
+        },
+        "kivi.appearance.fontSize": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 72,
+          "markdownDescription": "Editor font size in pixels. Set to `0` to inherit from VS Code's `editor.fontSize`."
+        },
+        "kivi.appearance.fontFamily": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Editor font family (e.g. `'Inter', sans-serif`). Leave empty to use the system default."
+        },
+        "kivi.appearance.lineHeight": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 5,
+          "markdownDescription": "Editor line height as a unitless ratio (e.g. `1.7`). Set to `0` for the default."
+        },
+        "kivi.appearance.customCSS": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "markdownDescription": "Custom CSS to inject into the Kivi editor webview. Useful for advanced theming. Example:\n```css\n.kivi-vscode-editor h1 { color: #ff8800; }\n```"
+        },
+        "kivi.ui.showToolbar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the formatting toolbar at the top of the editor."
+        },
+        "kivi.ui.showLineNumbers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show line numbers in the editor gutter (experimental)."
+        }
+      }
     }
   },
   "scripts": {

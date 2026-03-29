@@ -22,6 +22,8 @@ export interface EditorConfig {
   fontSize?: number;
   /** Line height multiplier */
   lineHeight?: number;
+  /** Callback for "New Page" slash command */
+  onCreatePage?: () => void;
 }
 
 export type KiviTheme = 'dark' | 'light' | 'sepia' | 'nord';

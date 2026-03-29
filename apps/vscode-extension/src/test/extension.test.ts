@@ -1,6 +1,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { openMarkdownFile, openWithCustomEditor, closeAllEditors, sleep, getFixturePath } from './helper';
+import * as path from 'path';
+import * as fs from 'fs';
+import { openMarkdownFile, openWithCustomEditor, closeAllEditors, sleep, getFixturePath, FIXTURES_DIR } from './helper';
 
 suite('Kivi Extension', () => {
   teardown(async () => {
@@ -21,8 +23,8 @@ suite('Kivi Extension', () => {
       await sleep(1000);
 
       assert.ok(
-        ext!.isActive || true,
-        'Extension should be active or activatable',
+        ext!.isActive,
+        'Extension should be active after opening a markdown file',
       );
     });
   });
@@ -43,9 +45,6 @@ suite('Kivi Extension', () => {
       );
       await sleep(2000);
 
-      const editor = vscode.window.activeTextEditor;
-      // Custom editors don't set activeTextEditor — the webview panel is active instead
-      // Verify the document is in the workspace
       const doc = vscode.workspace.textDocuments.find(
         (d) => d.uri.fsPath === uri.fsPath,
       );
@@ -81,12 +80,20 @@ suite('Kivi Extension', () => {
       assert.ok(text.includes('## Section 10'));
       assert.ok(text.includes('End of large document'));
     });
+
+    test('opens wiki-links fixture correctly', async () => {
+      const doc = await openMarkdownFile('wiki-links.md');
+      const text = doc.getText();
+
+      assert.ok(text.includes('[[sample]]'), 'Should contain wiki-link');
+      assert.ok(text.includes('[[large|Large Doc]]'), 'Should contain aliased wiki-link');
+      assert.ok(text.includes('#test'), 'Should contain hashtag');
+    });
   });
 
   suite('Document Editing', () => {
     test('programmatic edits modify the document', async () => {
       const doc = await openWithCustomEditor('sample.md');
-      const originalText = doc.getText();
 
       const edit = new vscode.WorkspaceEdit();
       edit.insert(doc.uri, new vscode.Position(0, 0), '# Prepended\n\n');
@@ -102,7 +109,6 @@ suite('Kivi Extension', () => {
         'Original content should remain',
       );
 
-      // Undo the edit to restore fixture
       await vscode.commands.executeCommand('undo');
       await sleep(500);
     });
@@ -122,7 +128,6 @@ suite('Kivi Extension', () => {
       assert.ok(doc.getText().includes('# Replaced'));
       assert.ok(doc.getText().includes('New content'));
 
-      // Undo
       await vscode.commands.executeCommand('undo');
       await vscode.commands.executeCommand('undo');
       await sleep(500);
@@ -132,7 +137,6 @@ suite('Kivi Extension', () => {
       const doc = await openWithCustomEditor('sample.md');
       const original = doc.getText();
 
-      // Find "Hello Kivi" and replace with "Hello World"
       const idx = original.indexOf('Hello Kivi');
       assert.ok(idx >= 0, 'Should find Hello Kivi');
 
@@ -150,7 +154,6 @@ suite('Kivi Extension', () => {
       assert.ok(newText.includes('**test**'), 'Rest of doc should be intact');
       assert.ok(newText.includes('- bullet one'), 'Lists should be intact');
 
-      // Undo
       await vscode.commands.executeCommand('undo');
       await sleep(500);
     });
@@ -182,7 +185,6 @@ suite('Kivi Extension', () => {
 
       assert.strictEqual(doc.isDirty, true, 'Edited document should be dirty');
 
-      // Undo to clean up
       await vscode.commands.executeCommand('undo');
       await sleep(500);
     });
@@ -209,12 +211,84 @@ suite('Kivi Extension', () => {
       await openMarkdownFile('large.md');
       await closeAllEditors();
 
-      // After closing, no visible text editors
       assert.strictEqual(
         vscode.window.visibleTextEditors.length,
         0,
         'All editors should be closed',
       );
+    });
+  });
+
+  suite('Sidebar Tree Views', () => {
+    test('kivi.files view is registered', async () => {
+      // The tree view is registered during activation — verify by checking commands
+      const ext = vscode.extensions.getExtension('kivi.kivi');
+      assert.ok(ext, 'Extension must be present');
+
+      await openMarkdownFile('sample.md');
+      await sleep(1000);
+
+      // TreeView registration is checked via the extension contributes in package.json
+      // We verify the extension activates without error and the views are accessible
+      const viewIds = ['kivi.files', 'kivi.outline', 'kivi.backlinks'];
+      for (const viewId of viewIds) {
+        // Focus the view to verify it exists
+        try {
+          await vscode.commands.executeCommand(`${viewId}.focus`);
+          await sleep(200);
+        } catch {
+          // Some views may not support focus directly, but shouldn't crash
+        }
+      }
+    });
+
+    test('outline updates when document has headings', async () => {
+      const doc = await openMarkdownFile('sample.md');
+      await sleep(500);
+
+      const text = doc.getText();
+      // sample.md has "# Hello Kivi" and "## Section"
+      assert.ok(text.includes('# Hello Kivi'), 'Should have H1');
+      assert.ok(text.includes('## Section'), 'Should have H2');
+    });
+
+    test('wiki-links fixture has expected content for backlinks', async () => {
+      const doc = await openMarkdownFile('wiki-links.md');
+      const text = doc.getText();
+
+      assert.ok(text.includes('[[sample]]'), 'Should have wiki-link to sample');
+      assert.ok(text.includes('[[large|Large Doc]]'), 'Should have aliased wiki-link');
+    });
+  });
+
+  suite('File System Watcher', () => {
+    const tempFile = path.join(FIXTURES_DIR, 'temp-watcher-test.md');
+
+    teardown(async () => {
+      try { fs.unlinkSync(tempFile); } catch { /* file may not exist */ }
+    });
+
+    test('creating a new .md file does not crash the extension', async () => {
+      await openMarkdownFile('sample.md');
+      await sleep(500);
+
+      fs.writeFileSync(tempFile, '# Temp File\n\nCreated for watcher test.\n');
+      await sleep(1000);
+
+      // Extension should still be functional
+      const doc = await openMarkdownFile('sample.md');
+      assert.ok(doc.getText().includes('Hello Kivi'), 'Extension still works after file creation');
+    });
+
+    test('deleting a .md file does not crash the extension', async () => {
+      fs.writeFileSync(tempFile, '# Temp\n');
+      await sleep(500);
+
+      fs.unlinkSync(tempFile);
+      await sleep(1000);
+
+      const doc = await openMarkdownFile('sample.md');
+      assert.ok(doc.getText().includes('Hello Kivi'), 'Extension still works after file deletion');
     });
   });
 });

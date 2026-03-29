@@ -1,5 +1,36 @@
 import * as vscode from 'vscode';
 
+export interface KiviSettings {
+  editorBackground: string;
+  codeBlockBackground: string;
+  accentColor: string;
+  textColor: string;
+  headingColor: string;
+  fontSize: number;
+  fontFamily: string;
+  lineHeight: number;
+  customCSS: string;
+  showToolbar: boolean;
+  showLineNumbers: boolean;
+}
+
+function readKiviSettings(): KiviSettings {
+  const cfg = vscode.workspace.getConfiguration('kivi');
+  return {
+    editorBackground: cfg.get<string>('appearance.editorBackground', ''),
+    codeBlockBackground: cfg.get<string>('appearance.codeBlockBackground', ''),
+    accentColor: cfg.get<string>('appearance.accentColor', ''),
+    textColor: cfg.get<string>('appearance.textColor', ''),
+    headingColor: cfg.get<string>('appearance.headingColor', ''),
+    fontSize: cfg.get<number>('appearance.fontSize', 0),
+    fontFamily: cfg.get<string>('appearance.fontFamily', ''),
+    lineHeight: cfg.get<number>('appearance.lineHeight', 0),
+    customCSS: cfg.get<string>('appearance.customCSS', ''),
+    showToolbar: cfg.get<boolean>('ui.showToolbar', true),
+    showLineNumbers: cfg.get<boolean>('ui.showLineNumbers', false),
+  };
+}
+
 export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'kivi.markdownEditor';
 
@@ -43,6 +74,11 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       }
     };
 
+    const sendSettings = () => {
+      const settings = readKiviSettings();
+      webviewPanel.webview.postMessage({ type: 'settings', settings });
+    };
+
     let suppressNextChange = false;
 
     const changeDocSubscription = vscode.workspace.onDidChangeTextDocument((e) => {
@@ -56,14 +92,22 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       sendContent(lastKnownContent);
     });
 
+    const configSubscription = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('kivi')) {
+        sendSettings();
+      }
+    });
+
     webviewPanel.onDidDispose(() => {
       changeDocSubscription.dispose();
+      configSubscription.dispose();
     });
 
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
         case 'ready':
           isWebviewReady = true;
+          sendSettings();
           if (pendingContent !== null) {
             webviewPanel.webview.postMessage({ type: 'load', content: pendingContent });
             lastKnownContent = pendingContent;
@@ -79,7 +123,6 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
           const edit = new vscode.WorkspaceEdit();
 
-          // Compute targeted diff: find the first and last differing characters
           const oldText = lastKnownContent;
           const newText = newContent;
 
@@ -118,10 +161,6 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'webview.css'),
     );
-    const iconUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'images', 'icon.png'),
-    );
-
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
@@ -134,7 +173,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   <link href="${styleUri}" rel="stylesheet" />
   <title>Kivi</title>
 </head>
-<body data-icon-uri="${iconUri}">
+<body>
   <div id="editor"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

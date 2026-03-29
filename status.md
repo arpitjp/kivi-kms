@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 2 — Knowledge Management & Advanced Editor Features (COMPLETE)
+Phase 3 — Performance, Polish & Comprehensive Testing (COMPLETE)
 
 ## Completed
 
@@ -45,6 +45,37 @@ Phase 2 — Knowledge Management & Advanced Editor Features (COMPLETE)
 - **Tests**: 165 unit/integration tests + 16 VS Code integration tests = 181 total
 - **README & Status**: Updated documentation
 
+### Phase 3 — Performance, Polish & Comprehensive Testing
+
+#### Performance
+- **Debounced textarea→editor sync** (250ms) prevents full `parseMarkdown` + `setContent` on every keystroke
+- **Vault rebuild optimization**: `updateFile()` defers `rebuildBacklinks`/`rebuildHierarchy` via 50ms debounce timer; auto-flushes on read APIs (`getBacklinks`, `getGraph`, `getTagIndex`)
+- **Tag index uses `Set<string>`** instead of `Array.includes()` for O(1) dedup
+- **Graph renderer**: Adaptive iteration cap `min(200, 60 + 2n)` and repulsion distance cutoff for large graphs
+- **HiDPI fix**: Uses `devicePixelRatio` with `setTransform` reset (no compound scale bug)
+- **Content store sync**: `SAMPLE_FILES` always updated on edit to prevent stale content on file switch
+
+#### Editor Polish
+- **Find & Replace UI bar** (Cmd/Ctrl+F): Input-driven search, match count, next/prev navigation, case-sensitive and regex toggles, replace one/all
+- **Vault-wide search panel**: Debounced query input, result list with file navigation, toggle via toolbar button
+- **Extended theme system**: Added `tagColor`, `selectionBg`, `focusRing`, `successColor`, `errorColor` tokens per theme; Nord `textMuted` improved for contrast
+- **Hard-coded colors replaced**: `pre`, `.kivi-hashtag`, `.kivi-mermaid-source`, `.kivi-mermaid-error` all use CSS custom properties
+
+#### UX Improvements
+- **Graph overlay**: `role="dialog"` + `aria-modal="true"`, Escape to close, close button; `loadFile` scope bug fixed
+- **Graph interaction**: Drag vs click separation (5px threshold), hover highlighting with outline ring, tooltip showing label/backlinks/tags
+- **Slash menu**: Repositions on scroll/resize, ARIA `role="listbox"` + `role="option"`, filters by category too, `stopPropagation` for arrow keys
+- **Sidebar toggle**: Collapse/expand button in toolbar with CSS class transition
+- **Accessibility**: Focus rings on all interactive elements (`.toolbar-btn`, `.theme-picker`, `.file-item`, `.outline-item`, etc.), `type="button"` on toolbar buttons, `aria-pressed` for toggle states, `aria-label` on theme picker
+- **Responsive layout**: Two breakpoints (900px, 640px) — sidebar shrinks, outline panel collapses, split view becomes single-column on mobile
+
+#### Tests
+- **Phase 2 editor integration tests**: 11 new round-trip tests (wiki-link, hashtag, ToC, mermaid, excalidraw, complex mixed doc)
+- **Search extension unit tests**: 7 tests covering find, case-sensitive, regex, next/prev, invalid regex safety
+- **Theme unit tests**: 12 tests covering `allThemes`, `getThemeColors`, `applyTheme` CSS vars, font options, cross-theme color difference
+- **VS Code extension tests expanded**: Wiki-links fixture, tree view registration, outline heading detection, file system watcher create/delete resilience
+- **Agent-browser UI tests**: 19 new Phase 2 test sections (P2-1 through P2-19) covering sidebar, file nav, wiki-links, hashtags, backlinks, outline, breadcrumbs, themes, graph view, slash commands, ToC, mermaid, excalidraw, find bar, vault search, sidebar toggle, accessibility, two-way sync
+
 ## Technical Decisions
 
 - **Tiptap + custom remark bridge** instead of `@tiptap/markdown` (which uses Marked and normalizes aggressively)
@@ -71,11 +102,12 @@ Phase 2 — Knowledge Management & Advanced Editor Features (COMPLETE)
 ```
 @kivi/markdown-parser:     32 tests passing
 @kivi/markdown-serializer: 29 tests passing
-@kivi/editor-core:         71 tests passing
+@kivi/editor-core:        101 tests passing  (+30 in Phase 3)
 @kivi/vault:               33 tests passing
-VS Code extension:         16 tests passing
+VS Code extension:         22 tests passing  (+6 in Phase 3)
+Agent-browser UI tests:    ~70 Phase 1 + ~40 Phase 2 assertions
 ────────────────────────────────────────────
-Total:                    181 tests passing
+Total unit/integration:   195 tests passing  (was 181)
 ```
 
 ## New Packages (Phase 2)

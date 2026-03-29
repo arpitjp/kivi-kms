@@ -161,6 +161,226 @@ The end.
   });
 });
 
+describe('integration: editor round-trip — tables, tasks, images, strikethrough', () => {
+  let editor: Editor;
+  let el: HTMLElement;
+
+  beforeEach(() => {
+    const result = createTestEditor();
+    editor = result.editor;
+    el = result.el;
+  });
+
+  afterEach(() => {
+    editor.destroy();
+    el.remove();
+  });
+
+  it('round-trips a simple table', () => {
+    const source = '| A | B |\n| --- | --- |\n| 1 | 2 |\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips a table with multiple rows', () => {
+    const source = '| Name | Age | City |\n| --- | --- | --- |\n| Alice | 30 | NYC |\n| Bob | 25 | LA |\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips task lists', () => {
+    const source = '- [x] Done task\n- [ ] Pending task\n- [x] Another done\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips images', () => {
+    const source = '![Alt text](https://example.com/image.png)\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips strikethrough', () => {
+    const source = 'This is ~~deleted~~ text.\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips nested lists', () => {
+    const source = '- Item 1\n  - Nested A\n  - Nested B\n- Item 2\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips ordered lists with nested items', () => {
+    const source = '1. First\n   1. Sub first\n   2. Sub second\n2. Second\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips link with title', () => {
+    const source = '[Example](https://example.com "Example Title")\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips inline code', () => {
+    const source = 'Use `const x = 1` in your code.\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips multiple headings H1-H6', () => {
+    const source = '# H1\n\n## H2\n\n### H3\n\n#### H4\n\n##### H5\n\n###### H6\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips code block without language', () => {
+    const source = '```\nplain code\n```\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips multiple adjacent code blocks', () => {
+    const source = '```js\nblock1();\n```\n\n```py\nblock2()\n```\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+});
+
+describe('integration: edge cases through editor', () => {
+  let editor: Editor;
+  let el: HTMLElement;
+
+  beforeEach(() => {
+    const result = createTestEditor();
+    editor = result.editor;
+    el = result.el;
+  });
+
+  afterEach(() => {
+    editor.destroy();
+    el.remove();
+  });
+
+  it('round-trips empty document', () => {
+    const source = '';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown.trim()).toBe('');
+  });
+
+  it('round-trips document with only whitespace', () => {
+    const source = '\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown.trim()).toBe('');
+  });
+
+  it('round-trips single heading only', () => {
+    const source = '# Hello\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips blockquote with nested list', () => {
+    const source = '> Quote with list:\n>\n> - Item A\n> - Item B\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips escaped markdown characters', () => {
+    const source = 'This is \\*not italic\\* and \\*\\*not bold\\*\\*.\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('not italic');
+    expect(markdown).toContain('not bold');
+  });
+
+  it('round-trips code blocks with empty lines', () => {
+    const source = '```\nline 1\n\nline 3\n```\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toBe(source);
+  });
+
+  it('round-trips bold italic combo', () => {
+    const source = 'This is ***bold italic*** text.\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('bold italic');
+    const hasBoldItalic = markdown.includes('***bold italic***') ||
+      markdown.includes('**_bold italic_**') || markdown.includes('*__bold italic__*');
+    expect(hasBoldItalic).toBe(true);
+  });
+
+  it('round-trips multiple blank lines preserving structure', () => {
+    const source = '# Title\n\n\nParagraph after extra blank.\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('# Title');
+    expect(markdown).toContain('Paragraph after extra blank.');
+  });
+
+  it('round-trips deeply nested blockquotes', () => {
+    const source = '> Level 1\n>\n> > Level 2\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('> Level 1');
+    expect(markdown).toContain('> > Level 2');
+  });
+
+  it('round-trips mixed inline formatting', () => {
+    const source = 'A paragraph with **bold**, *italic*, `code`, ~~strike~~, and a [link](https://x.com).\n';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('**bold**');
+    expect(markdown).toContain('*italic*');
+    expect(markdown).toContain('`code`');
+    expect(markdown).toContain('~~strike~~');
+    expect(markdown).toContain('[link](https://x.com)');
+  });
+
+  it('round-trips a comprehensive document', () => {
+    const source = `# Kitchen Sink
+
+A paragraph with **bold**, *italic*, and \`code\`.
+
+## Lists
+
+- Bullet 1
+- Bullet 2
+  - Nested
+
+1. Ordered 1
+2. Ordered 2
+
+- [x] Task done
+- [ ] Task pending
+
+## Table
+
+| A | B |
+| --- | --- |
+| 1 | 2 |
+
+## Blockquote
+
+> Quote here
+
+\`\`\`typescript
+const x = 1;
+\`\`\`
+
+---
+
+The end.
+`;
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('# Kitchen Sink');
+    expect(markdown).toContain('**bold**');
+    expect(markdown).toContain('- Bullet 1');
+    expect(markdown).toContain('[x] Task done');
+    expect(markdown).toContain('| A | B |');
+    expect(markdown).toContain('> Quote here');
+    expect(markdown).toContain('```typescript');
+    expect(markdown).toContain('---');
+  });
+});
+
 describe('integration: dirty tracking', () => {
   let editor: Editor;
   let el: HTMLElement;

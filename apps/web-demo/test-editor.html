@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Kivi Editor Test</title>
+  <style>
+    body { background: #1e1e1e; color: #d4d4d4; font-family: system-ui; padding: 20px; }
+    #log { font-family: monospace; font-size: 13px; white-space: pre-wrap; margin-bottom: 20px; background: #111; padding: 12px; border-radius: 4px; max-height: 300px; overflow: auto; }
+    #editor { border: 1px solid #444; min-height: 200px; padding: 12px; }
+    .ok { color: #4ec9b0; }
+    .fail { color: #f44747; }
+    .ProseMirror { outline: none; }
+    .ProseMirror h1 { color: #fff; }
+  </style>
+</head>
+<body>
+  <h2>Kivi Editor — Extension Bisect Test</h2>
+  <div id="log"></div>
+  <div id="editor"></div>
+
+  <script type="module">
+    const logEl = document.getElementById('log');
+    function log(msg, cls = '') {
+      const line = document.createElement('div');
+      line.textContent = msg;
+      if (cls) line.className = cls;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    const MD = `# Test\n\nHello **world**.\n\n\`\`\`typescript\nconst x = 1;\n\`\`\`\n\n| A | B |\n|---|---|\n| 1 | 2 |\n`;
+
+    async function test() {
+      log('Importing @kivi/editor-core...');
+      const mod = await import('/@fs/Users/arpit.jain/personal/kivi/packages/editor-core/src/editor.ts');
+      log('Import OK', 'ok');
+
+      log('Creating editor...');
+      const t0 = performance.now();
+
+      // Set a watchdog: if this takes > 5s, something is looping
+      let done = false;
+      const watchdog = setTimeout(() => {
+        if (!done) {
+          log('⚠️ WATCHDOG: createKiviEditor or loadMarkdown took > 5s — likely infinite loop!', 'fail');
+          log('Reloading without extensions to bisect...', 'fail');
+        }
+      }, 5000);
+
+      try {
+        const editor = mod.createKiviEditor({ element: document.getElementById('editor') });
+        log(`Editor created in ${(performance.now() - t0).toFixed(0)}ms`, 'ok');
+
+        const t1 = performance.now();
+        editor.loadMarkdown(MD);
+        log(`loadMarkdown in ${(performance.now() - t1).toFixed(0)}ms`, 'ok');
+
+        done = true;
+        clearTimeout(watchdog);
+
+        // Yield to let ProseMirror process mutations
+        log('Yielding to check for post-load infinite loops...');
+        await new Promise(r => setTimeout(r, 100));
+        log('Yield returned OK — no infinite loop detected!', 'ok');
+
+        await new Promise(r => setTimeout(r, 500));
+        log('500ms yield OK', 'ok');
+
+        const md = editor.getMarkdown();
+        log(`getMarkdown returned ${md.length} chars`, 'ok');
+        log('\n✅ ALL TESTS PASSED', 'ok');
+      } catch (e) {
+        done = true;
+        clearTimeout(watchdog);
+        log(`❌ ERROR: ${e.message}\n${e.stack}`, 'fail');
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

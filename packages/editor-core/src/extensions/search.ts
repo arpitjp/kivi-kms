@@ -18,7 +18,7 @@ interface SearchState {
   decorations: DecorationSet;
 }
 
-const searchPluginKey = new PluginKey('kiviSearch');
+export const searchPluginKey = new PluginKey('kiviSearch');
 
 export const KiviSearch = Extension.create<KiviSearchOptions>({
   name: 'kiviSearch',
@@ -70,18 +70,40 @@ export const KiviSearch = Extension.create<KiviSearchOptions>({
         },
       replaceCurrentResult:
         (replacement: string) =>
-        ({ tr, dispatch }: CommandProps) => {
+        ({ tr, dispatch, state }: CommandProps & { state: import('@tiptap/pm/state').EditorState }) => {
+          const searchState = searchPluginKey.getState(state) as SearchState | undefined;
+          if (!searchState || searchState.activeIndex < 0 || searchState.activeIndex >= searchState.results.length) {
+            return false;
+          }
+          const match = searchState.results[searchState.activeIndex];
           if (dispatch) {
-            tr.setMeta(searchPluginKey, { type: 'replace', replacement });
+            if (replacement) {
+              tr.insertText(replacement, match.from, match.to);
+            } else {
+              tr.delete(match.from, match.to);
+            }
+            tr.setMeta(searchPluginKey, { type: 'rerun' });
             dispatch(tr);
           }
           return true;
         },
       replaceAllResults:
         (replacement: string) =>
-        ({ tr, dispatch }: CommandProps) => {
+        ({ tr, dispatch, state }: CommandProps & { state: import('@tiptap/pm/state').EditorState }) => {
+          const searchState = searchPluginKey.getState(state) as SearchState | undefined;
+          if (!searchState || searchState.results.length === 0) {
+            return false;
+          }
           if (dispatch) {
-            tr.setMeta(searchPluginKey, { type: 'replaceAll', replacement });
+            const sorted = [...searchState.results].sort((a, b) => b.from - a.from);
+            for (const match of sorted) {
+              if (replacement) {
+                tr.insertText(replacement, match.from, match.to);
+              } else {
+                tr.delete(match.from, match.to);
+              }
+            }
+            tr.setMeta(searchPluginKey, { type: 'rerun' });
             dispatch(tr);
           }
           return true;
@@ -108,11 +130,13 @@ export const KiviSearch = Extension.create<KiviSearchOptions>({
           apply(tr, state): SearchState {
             const meta = tr.getMeta(searchPluginKey);
             if (!meta) {
-              if (tr.docChanged) {
-                return {
-                  ...state,
-                  decorations: state.decorations.map(tr.mapping, tr.doc),
-                };
+              if (tr.docChanged && state.query) {
+                const results = findMatches(tr.doc, state.options);
+                const activeIndex = results.length > 0
+                  ? Math.min(state.activeIndex, results.length - 1)
+                  : -1;
+                const decorations = buildDecorations(tr.doc, results, activeIndex, options);
+                return { ...state, results, activeIndex, decorations };
               }
               return state;
             }
@@ -151,6 +175,15 @@ export const KiviSearch = Extension.create<KiviSearchOptions>({
                 const decorations = buildDecorations(tr.doc, state.results, prevIndex, options);
                 return { ...state, activeIndex: prevIndex, decorations };
               }
+              case 'rerun': {
+                if (!state.query) return state;
+                const results = findMatches(tr.doc, state.options);
+                const activeIndex = results.length > 0
+                  ? Math.min(state.activeIndex, results.length - 1)
+                  : -1;
+                const decorations = buildDecorations(tr.doc, results, activeIndex, options);
+                return { ...state, results, activeIndex, decorations };
+              }
               default:
                 return state;
             }
@@ -167,11 +200,6 @@ export const KiviSearch = Extension.create<KiviSearchOptions>({
 
   addKeyboardShortcuts() {
     return {
-      'Mod-f': () => {
-        // The actual search UI should be triggered by the host app
-        // This is a hook point
-        return true;
-      },
       Escape: () => {
         // @ts-expect-error — custom command
         return this.editor.commands.clearSearch();
@@ -192,7 +220,8 @@ function findMatches(
   let pattern: RegExp;
   try {
     if (options.regex) {
-      pattern = new RegExp(query, options.caseSensitive ? 'g' : 'gi');
+      const wb = options.wholeWord ? '\\b' : '';
+      pattern = new RegExp(`${wb}${query}${wb}`, options.caseSensitive ? 'g' : 'gi');
     } else {
       const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const wordBoundary = options.wholeWord ? '\\b' : '';

@@ -1,6 +1,6 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
-import { Slice } from '@tiptap/pm/model';
+import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
 import { parseMarkdown } from '@kivi/markdown-parser';
 
 const clipboardPluginKey = new PluginKey('kiviClipboard');
@@ -23,7 +23,7 @@ export const dataUrlImageAdapter: ImageStorageAdapter = {
 
 /**
  * Heuristic to detect if text looks like Markdown.
- * Requires at least 2 distinct Markdown patterns to trigger rich paste.
+ * A single distinct Markdown pattern is enough to trigger rich paste.
  */
 export function looksLikeMarkdown(text: string): boolean {
   const patterns = [
@@ -40,14 +40,14 @@ export function looksLikeMarkdown(text: string): boolean {
     /^\s*[-*_]{3,}\s*$/m,
     /^\|.+\|/m,
     /\[[ x]\]/,
+    /^---\s*$/m,
   ];
 
-  let score = 0;
   for (const pattern of patterns) {
-    if (pattern.test(text)) score++;
+    if (pattern.test(text)) return true;
   }
 
-  return score >= 2;
+  return false;
 }
 
 export interface KiviClipboardOptions {
@@ -94,27 +94,46 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
             const plainText = clipboardData.getData('text/plain');
             const htmlText = clipboardData.getData('text/html');
 
-            if (htmlText && !looksLikeMarkdown(plainText)) {
+            if (!plainText) return false;
+
+            const isMarkdown = looksLikeMarkdown(plainText);
+
+            // If text looks like markdown, ALWAYS prefer markdown parsing.
+            // HTML from code editors (VS Code, Cursor) wraps text in <pre>/<div style>
+            // which ProseMirror turns into a code block — wrong behavior for markdown.
+            // Only let HTML through if the plain text doesn't look like markdown
+            // AND the HTML looks like rich content (from a web page, Google Docs, etc.)
+            if (!isMarkdown && htmlText) {
               return false;
             }
 
-            if (plainText && looksLikeMarkdown(plainText)) {
-              event.preventDefault();
+            event.preventDefault();
 
-              try {
-                const parsed = parseMarkdown(plainText);
-                const doc = parsed.doc as { content?: unknown[] };
-                if (doc.content && doc.content.length > 0) {
-                  editor.commands.insertContent(doc.content);
+            try {
+              const parsed = parseMarkdown(plainText);
+              const docJson = parsed.doc as { type: string; content?: unknown[] };
+              if (docJson.content && docJson.content.length > 0) {
+                const schema = _view.state.schema;
+                const nodes: PMNode[] = [];
+                for (const nodeJson of docJson.content) {
+                  try {
+                    nodes.push(PMNode.fromJSON(schema, nodeJson));
+                  } catch {
+                    // Skip nodes the schema doesn't understand
+                  }
+                }
+                if (nodes.length > 0) {
+                  const fragment = Fragment.from(nodes);
+                  const slice = new Slice(fragment, 0, 0);
+                  const tr = _view.state.tr.replaceSelection(slice);
+                  _view.dispatch(tr);
                   return true;
                 }
-              } catch {
-                editor.commands.insertContent(plainText);
-                return true;
               }
-            }
+            } catch { /* fall through to plain insert */ }
 
-            return false;
+            editor.commands.insertContent(plainText);
+            return true;
           },
 
           clipboardTextSerializer(slice) {

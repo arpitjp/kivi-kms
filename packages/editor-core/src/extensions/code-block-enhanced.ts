@@ -85,7 +85,6 @@ const COLLAPSED_MAX_LINES = 15;
 
 const SVG_COPY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/></svg>';
 const SVG_CHECK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,8 6.5,11.5 13,4.5"/></svg>';
-const SVG_WRAP = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10"/><path d="M3 8h7a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H8"/><polyline points="9.5,10.5 8,12 9.5,13.5"/></svg>';
 const SVG_EXPAND = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,6 8,10 12,6"/></svg>';
 const SVG_COLLAPSE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,10 8,6 12,10"/></svg>';
 
@@ -126,22 +125,11 @@ export const CodeBlockEnhanced = Extension.create({
 
         const langLabel = document.createElement('span');
         langLabel.className = 'kivi-codeblock-lang';
-        langLabel.style.pointerEvents = 'auto';
         controls.appendChild(langLabel);
 
         const spacer = document.createElement('span');
         spacer.style.flex = '1';
-        spacer.style.pointerEvents = 'none';
         controls.appendChild(spacer);
-
-        const wrapBtn = document.createElement('button');
-        wrapBtn.className = 'kivi-codeblock-btn';
-        wrapBtn.type = 'button';
-        wrapBtn.title = 'Toggle word wrap';
-        wrapBtn.innerHTML = SVG_WRAP;
-        wrapBtn.setAttribute('aria-label', 'Toggle word wrap');
-        wrapBtn.style.pointerEvents = 'auto';
-        controls.appendChild(wrapBtn);
 
         const copyBtn = document.createElement('button');
         copyBtn.className = 'kivi-codeblock-btn';
@@ -149,7 +137,6 @@ export const CodeBlockEnhanced = Extension.create({
         copyBtn.title = 'Copy code';
         copyBtn.innerHTML = SVG_COPY;
         copyBtn.setAttribute('aria-label', 'Copy code');
-        copyBtn.style.pointerEvents = 'auto';
         controls.appendChild(copyBtn);
 
         const scrollParent = editorView.dom.parentElement || editorView.dom;
@@ -162,23 +149,10 @@ export const CodeBlockEnhanced = Extension.create({
         let cursorPre: HTMLElement | null = null;
         let activePre: HTMLElement | null = null;
         let hoveringControls = false;
+        let editingLang = false;
         const collapsedBlocks = new WeakSet<HTMLElement>();
-        const wrapByPre = new WeakMap<HTMLElement, boolean>();
-
-        function applyWrapStylesToPre(pre: HTMLElement, wrapped: boolean) {
-          // User-initiated one-shot mutation on PM `<pre>`. Guard against no-op
-          // sets to avoid triggering ProseMirror's MutationObserver unnecessarily.
-          const ws = wrapped ? 'pre-wrap' : '';
-          const wb = wrapped ? 'break-all' : '';
-          if (pre.style.whiteSpace !== ws) pre.style.whiteSpace = ws;
-          if (pre.style.wordBreak !== wb) pre.style.wordBreak = wb;
-        }
 
         copyBtn.addEventListener('mousedown', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        });
-        wrapBtn.addEventListener('mousedown', (e) => {
           e.preventDefault();
           e.stopPropagation();
         });
@@ -196,14 +170,69 @@ export const CodeBlockEnhanced = Extension.create({
           });
         });
 
-        wrapBtn.addEventListener('click', (e) => {
+        function startLangEdit() {
+          if (editingLang || !activePre) return;
+          editingLang = true;
+          const currentLang = langLabel.textContent === 'plain text' ? '' : langLabel.textContent || '';
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'kivi-codeblock-lang-input';
+          input.value = currentLang;
+          input.placeholder = 'language';
+          langLabel.style.display = 'none';
+          controls.insertBefore(input, langLabel.nextSibling);
+          input.focus();
+          input.select();
+
+          let committed = false;
+          function commit() {
+            if (committed) return;
+            committed = true;
+            const newLang = input.value.trim().toLowerCase();
+            input.remove();
+            langLabel.style.display = '';
+            editingLang = false;
+
+            if (!activePre) return;
+            const pos = editorView.posAtDOM(activePre, 0);
+            if (pos >= 0) {
+              const resolved = editorView.state.doc.resolve(pos);
+              for (let d = resolved.depth; d >= 0; d--) {
+                const node = resolved.node(d);
+                if (node.type.name === 'codeBlock') {
+                  const nodePos = resolved.before(d);
+                  editorView.dispatch(
+                    editorView.state.tr.setNodeMarkup(nodePos, undefined, {
+                      ...node.attrs,
+                      language: newLang,
+                    }),
+                  );
+                  langLabel.textContent = newLang || 'plain text';
+                  break;
+                }
+              }
+            }
+          }
+
+          function cancel() {
+            if (committed) return;
+            committed = true;
+            input.remove();
+            langLabel.style.display = '';
+            editingLang = false;
+          }
+
+          input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+            if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+          });
+          input.addEventListener('blur', commit);
+        }
+
+        langLabel.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (!activePre) return;
-          const next = !wrapByPre.get(activePre);
-          wrapByPre.set(activePre, next);
-          applyWrapStylesToPre(activePre, next);
-          wrapBtn.classList.toggle('active', next);
+          startLangEdit();
         });
 
         function onControlsPointerEnter() {
@@ -213,14 +242,13 @@ export const CodeBlockEnhanced = Extension.create({
           const related = e.relatedTarget as Node | null;
           if (related && controls.contains(related)) return;
           hoveringControls = false;
-          reconcile();
+          if (!editingLang) reconcile();
         }
-        for (const el of [langLabel, wrapBtn, copyBtn]) {
+        for (const el of [langLabel, copyBtn]) {
           el.addEventListener('mouseenter', onControlsPointerEnter);
           el.addEventListener('mouseleave', onControlsPointerLeave);
         }
 
-        /** Convert viewport rect to scroll-parent content coordinates. */
         function toContentCoords(viewportRect: DOMRect) {
           const pr = scrollParent.getBoundingClientRect();
           return {
@@ -241,13 +269,6 @@ export const CodeBlockEnhanced = Extension.create({
 
         function showControls(preEl: HTMLElement) {
           activePre = preEl;
-          const wrapped = wrapByPre.get(preEl) ?? false;
-          // Do NOT call applyWrapStylesToPre here — this function runs on every
-          // ProseMirror transaction via update() → reconcile(). Setting inline
-          // styles on PM-managed <pre> triggers MutationObserver → new
-          // transaction → infinite loop. Only the wrap button click handler
-          // should mutate the <pre> style.
-          wrapBtn.classList.toggle('active', wrapped);
 
           let lang = '';
           const pos = editorView.posAtDOM(preEl, 0);
@@ -278,6 +299,7 @@ export const CodeBlockEnhanced = Extension.create({
         }
 
         function reconcile() {
+          if (editingLang) return;
           const target = hoveredPre || cursorPre;
           if (target) {
             showControls(target);
@@ -416,7 +438,7 @@ export const CodeBlockEnhanced = Extension.create({
           destroy() {
             editorView.dom.removeEventListener('mouseover', onMouseOver);
             editorView.dom.removeEventListener('mouseout', onMouseOut);
-            for (const el of [langLabel, wrapBtn, copyBtn]) {
+            for (const el of [langLabel, copyBtn]) {
               el.removeEventListener('mouseenter', onControlsPointerEnter);
               el.removeEventListener('mouseleave', onControlsPointerLeave);
             }

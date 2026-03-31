@@ -24,6 +24,12 @@ export interface EditorConfig {
   lineHeight?: number;
   /** Callback for "New Page" slash command */
   onCreatePage?: () => void;
+  /** Callback to resolve link preview data (for hover tooltips) */
+  onResolveLink?: (link: { kind: string; target: string; alias?: string }) => Promise<Record<string, unknown> | null>;
+  /** Callback to navigate to a link target (Cmd/Ctrl+click) */
+  onNavigateLink?: (link: { kind: string; target: string; alias?: string }) => void;
+  /** Custom image storage adapter (saves pasted images to disk instead of data URLs) */
+  imageStorageAdapter?: { store(blob: Blob, filename: string): Promise<string> };
 }
 
 export type KiviTheme = 'dark' | 'light' | 'sepia' | 'nord';

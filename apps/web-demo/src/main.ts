@@ -1,6 +1,7 @@
 import { createKiviEditor, applyTheme, allThemes, searchPluginKey } from '@kivi/editor-core';
 import type { KiviTheme } from '@kivi/shared-types';
 import { Vault, GraphRenderer } from '@kivi/vault';
+import type { GraphMode, EdgeType } from '@kivi/vault';
 import {
   iconBold, iconItalic, iconStrike, iconCode,
   iconH1, iconH2, iconH3,
@@ -9,10 +10,12 @@ import {
   iconViewLive, iconViewSplit, iconViewMarkdown,
   iconGraph, iconSearch, iconChevronDown, iconChevronUp, iconToolbar,
   iconZoomIn, iconZoomOut, iconNewFile, iconSettings,
+  iconFileMarkdown, iconFolder, iconFolderOpen, iconCollapseAll, iconChevronRight,
+  iconBacklink,
 } from './icons.js';
 
 // ── Settings persistence ──────────────────────────────────────────
-type SectionId = 'explorer' | 'backlinks' | 'outline';
+type SectionId = 'explorer' | 'tags' | 'backlinks' | 'outline' | 'warnings';
 
 interface AppearanceOverrides {
   editorBackground?: string;
@@ -43,6 +46,7 @@ interface LayoutSettings {
   showSidebar: boolean;
   showOutline: boolean;
   showBreadcrumbs: boolean;
+  wordWrap: boolean;
 }
 
 const DEFAULT_SETTINGS: LayoutSettings = {
@@ -62,6 +66,7 @@ const DEFAULT_SETTINGS: LayoutSettings = {
   showSidebar: true,
   showOutline: true,
   showBreadcrumbs: true,
+  wordWrap: true,
 };
 
 function loadSettings(): LayoutSettings {
@@ -258,6 +263,7 @@ async function main() {
   const fileListEl = document.getElementById('file-list')!;
   const backlinksListEl = document.getElementById('backlinks-list')!;
   const newFileBtn = document.getElementById('new-file-btn')!;
+  const collapseAllBtn = document.getElementById('collapse-all-btn');
   const sidebar = document.getElementById('sidebar')!;
   const outlinePanel = document.getElementById('outline-panel')!;
 
@@ -273,10 +279,55 @@ async function main() {
   editor.loadMarkdown(SAMPLE_FILES[currentFile]);
   await yieldToUI();
 
+  const sourceEditorRow = document.createElement('div');
+  sourceEditorRow.className = 'markdown-source-row';
+
+  const lineGutter = document.createElement('div');
+  lineGutter.className = 'line-gutter';
+  const lineGutterInner = document.createElement('div');
+  lineGutterInner.className = 'line-gutter-inner';
+  lineGutter.appendChild(lineGutterInner);
+
   const sourceTextarea = document.createElement('textarea');
   sourceTextarea.value = SAMPLE_FILES[currentFile];
   sourceTextarea.spellcheck = false;
-  sourceEl.appendChild(sourceTextarea);
+
+  sourceEditorRow.append(lineGutter, sourceTextarea);
+  sourceEl.appendChild(sourceEditorRow);
+
+  function syncLineGutterScroll(): void {
+    lineGutter.scrollTop = sourceTextarea.scrollTop;
+  }
+
+  function caretLineIndex(text: string, pos: number): number {
+    let line = 0;
+    for (let i = 0; i < pos && i < text.length; i++) {
+      if (text[i] === '\n') line++;
+    }
+    return line;
+  }
+
+  function refreshSourceLineGutter(): void {
+    const text = sourceTextarea.value;
+    const lineCount = text === '' ? 1 : text.split('\n').length;
+    const activeLine = caretLineIndex(text, sourceTextarea.selectionStart);
+
+    lineGutterInner.replaceChildren();
+    for (let i = 0; i < lineCount; i++) {
+      const row = document.createElement('div');
+      row.className = 'line-gutter-num' + (i === activeLine ? ' line-gutter-num--active' : '');
+      row.textContent = String(i + 1);
+      lineGutterInner.appendChild(row);
+    }
+
+    requestAnimationFrame(() => {
+      const taH = sourceTextarea.scrollHeight;
+      const innerH = lineGutterInner.scrollHeight;
+      const extra = Math.max(0, taH - innerH);
+      lineGutterInner.style.paddingBottom = extra > 0 ? `${32 + extra}px` : '';
+      syncLineGutterScroll();
+    });
+  }
 
   let updatingFromEditor = false;
   let updatingFromTextarea = false;
@@ -285,6 +336,7 @@ async function main() {
     if (updatingFromTextarea) return;
     updatingFromEditor = true;
     sourceTextarea.value = markdown;
+    refreshSourceLineGutter();
     vault.updateFile(currentFile, markdown);
     SAMPLE_FILES[currentFile] = markdown;
     renderBacklinks();
@@ -304,8 +356,17 @@ async function main() {
 
   sourceTextarea.addEventListener('input', () => {
     if (updatingFromEditor) return;
+    refreshSourceLineGutter();
     debouncedSourceSync();
   });
+
+  sourceTextarea.addEventListener('scroll', syncLineGutterScroll);
+
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement === sourceTextarea) refreshSourceLineGutter();
+  });
+
+  refreshSourceLineGutter();
 
   // ── File loading ──────────────────────────────────────────────
   function loadFile(filename: string) {
@@ -320,10 +381,13 @@ async function main() {
     const content = SAMPLE_FILES[filename] ?? `# ${filename.replace(/\.md$/, '').split('/').pop()}\n\n`;
     editor.loadMarkdown(content);
     sourceTextarea.value = content;
+    refreshSourceLineGutter();
     renderFileTree();
     renderBacklinks();
     renderBreadcrumbs();
     renderOutline();
+    renderTags();
+    renderWarnings();
   }
 
   _loadFileFn = loadFile;
@@ -338,52 +402,101 @@ async function main() {
   }
 
   // ── File tree (VS Code-style hierarchy) ───────────────────────
-  function buildFileTree(): Map<string, string[]> {
-    const dirs = new Map<string, string[]>();
-    dirs.set('', []);
-    for (const [path] of vault.files) {
-      const parts = path.split('/');
+
+  interface TreeDir {
+    name: string;
+    path: string;
+    files: string[];
+    children: TreeDir[];
+  }
+
+  function buildFileTree(): TreeDir {
+    const root: TreeDir = { name: '', path: '', files: [], children: [] };
+    const dirMap = new Map<string, TreeDir>([['', root]]);
+
+    const ensureDir = (dirPath: string): TreeDir => {
+      if (dirMap.has(dirPath)) return dirMap.get(dirPath)!;
+      const parts = dirPath.split('/');
+      const parentPath = parts.slice(0, -1).join('/');
+      const parent = ensureDir(parentPath);
+      const dir: TreeDir = { name: parts[parts.length - 1], path: dirPath, files: [], children: [] };
+      parent.children.push(dir);
+      dirMap.set(dirPath, dir);
+      return dir;
+    };
+
+    for (const [filePath] of vault.files) {
+      const parts = filePath.split('/');
       if (parts.length === 1) {
-        dirs.get('')!.push(path);
+        root.files.push(filePath);
       } else {
-        const dir = parts.slice(0, -1).join('/');
-        if (!dirs.has(dir)) dirs.set(dir, []);
-        dirs.get(dir)!.push(path);
+        const dirPath = parts.slice(0, -1).join('/');
+        ensureDir(dirPath).files.push(filePath);
       }
     }
-    return dirs;
+
+    const sortDir = (d: TreeDir) => {
+      d.children.sort((a, b) => a.name.localeCompare(b.name));
+      d.files.sort();
+      d.children.forEach(sortDir);
+    };
+    sortDir(root);
+    return root;
+  }
+
+  function collapseAllDirs() {
+    settings.expandedDirs = [];
+    saveSettings(settings);
+    renderFileTree();
   }
 
   function renderFileTree() {
     fileListEl.innerHTML = '';
     const tree = buildFileTree();
-    const dirs = [...tree.keys()].sort();
 
-    for (const dir of dirs) {
-      const files = tree.get(dir) || [];
-      if (dir !== '') {
+    const INDENT_PX = 16;
+
+    function addIndentGuides(el: HTMLElement, depth: number) {
+      for (let i = 1; i <= depth; i++) {
+        const guide = document.createElement('span');
+        guide.className = 'tree-indent-guide';
+        guide.style.left = `${i * INDENT_PX + 2}px`;
+        el.appendChild(guide);
+      }
+    }
+
+    function renderDir(dir: TreeDir, depth: number) {
+      if (dir.path !== '') {
+        const isExpanded = settings.expandedDirs.includes(dir.path);
         const dirItem = document.createElement('div');
         dirItem.className = 'tree-dir';
-        const isExpanded = settings.expandedDirs.includes(dir);
+        dirItem.style.paddingLeft = `${depth * INDENT_PX + 4}px`;
         dirItem.setAttribute('aria-expanded', String(isExpanded));
         dirItem.setAttribute('role', 'treeitem');
 
+        addIndentGuides(dirItem, depth);
+
         const chevron = document.createElement('span');
-        chevron.className = 'tree-chevron';
-        chevron.textContent = isExpanded ? '▾' : '▸';
+        chevron.className = 'tree-chevron' + (isExpanded ? ' expanded' : '');
+        chevron.innerHTML = iconChevronRight();
+
+        const folderIcon = document.createElement('span');
+        folderIcon.className = 'tree-icon';
+        folderIcon.innerHTML = isExpanded ? iconFolderOpen() : iconFolder();
 
         const label = document.createElement('span');
         label.className = 'tree-dir-label';
-        label.textContent = dir.split('/').pop() || dir;
+        label.textContent = dir.name;
 
         dirItem.appendChild(chevron);
+        dirItem.appendChild(folderIcon);
         dirItem.appendChild(label);
 
         dirItem.tabIndex = 0;
         dirItem.addEventListener('click', () => {
-          const idx = settings.expandedDirs.indexOf(dir);
+          const idx = settings.expandedDirs.indexOf(dir.path);
           if (idx >= 0) settings.expandedDirs.splice(idx, 1);
-          else settings.expandedDirs.push(dir);
+          else settings.expandedDirs.push(dir.path);
           saveSettings(settings);
           renderFileTree();
         });
@@ -392,46 +505,210 @@ async function main() {
         });
 
         fileListEl.appendChild(dirItem);
-
-        if (!isExpanded) continue;
+        if (!isExpanded) return;
       }
 
-      const fileContainer = document.createElement('div');
-      fileContainer.className = dir !== '' ? 'tree-children' : '';
+      const childDepth = dir.path !== '' ? depth + 1 : depth;
 
-      for (const path of files.sort()) {
+      for (const child of dir.children) {
+        renderDir(child, childDepth);
+      }
+
+      for (const filePath of dir.files) {
         const item = document.createElement('div');
-        item.className = 'file-item' + (path === currentFile ? ' active' : '');
-        if (dir !== '') item.classList.add('tree-nested');
-        item.textContent = vault.getFile(path)?.title || path.split('/').pop() || path;
-        item.title = path;
+        const isActive = filePath === currentFile;
+        item.className = 'file-item' + (isActive ? ' active' : '');
+        item.style.paddingLeft = `${childDepth * INDENT_PX + 4}px`;
+        item.title = filePath;
         item.setAttribute('role', 'treeitem');
-        makeClickable(item, () => loadFile(path));
-        fileContainer.appendChild(item);
+
+        addIndentGuides(item, childDepth);
+
+        const fileIcon = document.createElement('span');
+        fileIcon.className = 'tree-icon file-icon';
+        fileIcon.innerHTML = iconFileMarkdown();
+        item.appendChild(fileIcon);
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'file-name';
+        nameSpan.textContent = vault.getFile(filePath)?.title || filePath.split('/').pop() || filePath;
+        item.appendChild(nameSpan);
+
+        makeClickable(item, () => loadFile(filePath));
+        fileListEl.appendChild(item);
+
+        if (isActive) {
+          requestAnimationFrame(() => item.scrollIntoView({ block: 'nearest' }));
+        }
       }
-      fileListEl.appendChild(fileContainer);
     }
+
+    renderDir(tree, 0);
   }
 
   // ── Backlinks ─────────────────────────────────────────────────
   function renderBacklinks() {
     backlinksListEl.innerHTML = '';
     const backlinks = vault.getBacklinks(currentFile);
+
+    const countEl = document.querySelector('#section-backlinks .section-count');
+    if (countEl) countEl.textContent = String(backlinks.length);
+
     if (backlinks.length === 0) {
-      backlinksListEl.innerHTML = '<div class="empty-state">No backlinks</div>';
+      backlinksListEl.innerHTML = '<div class="empty-state">No backlinks found</div>';
       return;
     }
     for (const bl of backlinks) {
       const item = document.createElement('div');
       item.className = 'backlink-item';
-      item.textContent = bl.title;
       item.title = bl.path;
+
+      const icon = document.createElement('span');
+      icon.className = 'backlink-icon';
+      icon.innerHTML = iconBacklink();
+      item.appendChild(icon);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'backlink-name';
+      nameSpan.textContent = bl.title;
+      item.appendChild(nameSpan);
+
       makeClickable(item, () => loadFile(bl.path));
       backlinksListEl.appendChild(item);
     }
   }
 
 
+
+  // ── Tags subpane ─────────────────────────────────────────────
+  const tagsListEl = document.getElementById('tags-list')!;
+
+  function renderTags() {
+    tagsListEl.innerHTML = '';
+    const tagIndex = vault.getTagIndex();
+    const rootTags = [...tagIndex.entries()]
+      .filter(([k]) => !k.includes('/'))
+      .sort((a, b) => b[1].length - a[1].length);
+
+    const countEl = document.querySelector('#section-tags .section-count');
+    if (countEl) countEl.textContent = String(rootTags.length);
+
+    if (rootTags.length === 0) {
+      tagsListEl.innerHTML = '<div class="empty-state">No tags</div>';
+      return;
+    }
+    const palette = TAG_PALETTE;
+    rootTags.forEach(([tag, files], i) => {
+      const item = document.createElement('div');
+      item.className = 'tag-item';
+
+      const dot = document.createElement('span');
+      dot.className = 'tag-dot';
+      dot.style.background = palette[i % palette.length];
+      item.appendChild(dot);
+
+      const name = document.createElement('span');
+      name.className = 'tag-name';
+      name.textContent = `#${tag}`;
+      item.appendChild(name);
+
+      const count = document.createElement('span');
+      count.className = 'tag-count';
+      count.textContent = String(files.length);
+      item.appendChild(count);
+
+      item.addEventListener('click', () => {
+        // Filter file list to just files with this tag
+        const filteredFiles = files;
+        fileListEl.innerHTML = '';
+        for (const fp of filteredFiles) {
+          const fi = document.createElement('div');
+          fi.className = 'file-item';
+          fi.textContent = vault.getFile(fp)?.title || fp;
+          fi.title = fp;
+          makeClickable(fi, () => { loadFile(fp); renderFileTree(); });
+          fileListEl.appendChild(fi);
+        }
+      });
+      tagsListEl.appendChild(item);
+    });
+  }
+
+  const TAG_PALETTE = ['#4fc1ff', '#4ec9b0', '#ce9178', '#dcdcaa', '#c586c0', '#9cdcfe', '#6a9955', '#d16969'];
+
+  // ── Integrity / Warnings subpane ───────────────────────────
+  const warningsListEl = document.getElementById('warnings-list')!;
+  const warningsSection = document.getElementById('section-warnings')!;
+
+  interface IntegrityIssue {
+    type: 'broken-link' | 'orphan';
+    file: string;
+    detail: string;
+  }
+
+  function checkIntegrity(): IntegrityIssue[] {
+    const issues: IntegrityIssue[] = [];
+    for (const [path, file] of vault.files) {
+      for (const link of file.wikiLinks) {
+        const resolved = vault.getFile(link) ||
+          vault.getFile(link + '.md') ||
+          [...vault.files.values()].find(f =>
+            f.path.split('/').pop()?.replace(/\.md$/i, '').toLowerCase() === link.toLowerCase()
+          );
+        if (!resolved) {
+          issues.push({ type: 'broken-link', file: path, detail: `Broken link: [[${link}]]` });
+        }
+      }
+    }
+    for (const [path, file] of vault.files) {
+      if (file.backlinks.length === 0 && file.wikiLinks.length === 0) {
+        issues.push({ type: 'orphan', file: path, detail: 'Orphan page (no links in or out)' });
+      }
+    }
+    return issues;
+  }
+
+  function renderWarnings() {
+    const issues = checkIntegrity();
+    const countEl = warningsSection.querySelector('.section-count');
+    if (countEl) countEl.textContent = String(issues.length);
+
+    if (issues.length === 0) {
+      warningsSection.style.display = 'none';
+      return;
+    }
+
+    warningsSection.style.display = '';
+    warningsListEl.innerHTML = '';
+    for (const issue of issues) {
+      const item = document.createElement('div');
+      item.className = 'issue-item';
+
+      const icon = document.createElement('span');
+      icon.className = 'issue-icon' + (issue.type === 'broken-link' ? ' error' : '');
+      icon.innerHTML = issue.type === 'broken-link'
+        ? '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="9"/><circle cx="8" cy="11.5" r="0.8" fill="currentColor" stroke="none"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2L14 13H2z"/><line x1="8" y1="6" x2="8" y2="9.5"/><circle cx="8" cy="11.2" r="0.7" fill="currentColor" stroke="none"/></svg>';
+      item.appendChild(icon);
+
+      const textWrap = document.createElement('div');
+      textWrap.className = 'issue-text';
+      const detail = document.createElement('div');
+      detail.textContent = issue.detail;
+      textWrap.appendChild(detail);
+      const pathEl = document.createElement('div');
+      pathEl.className = 'issue-path';
+      pathEl.textContent = issue.file;
+      textWrap.appendChild(pathEl);
+      item.appendChild(textWrap);
+
+      item.addEventListener('click', () => loadFile(issue.file));
+      warningsListEl.appendChild(item);
+    }
+  }
+
+  // ── Collapse all ────────────────────────────────────────────────
+  collapseAllBtn?.addEventListener('click', collapseAllDirs);
 
   // ── New page ──────────────────────────────────────────────────
   newFileBtn.addEventListener('click', () => {
@@ -484,6 +761,10 @@ async function main() {
   function renderOutline() {
     outlineListEl.innerHTML = '';
     const outline = editor.getOutline();
+
+    const countEl = document.querySelector('#section-outline .section-count');
+    if (countEl) countEl.textContent = String(outline.length);
+
     if (outline.length === 0) {
       outlineListEl.innerHTML = '<div class="empty-state">No headings</div>';
       return;
@@ -492,7 +773,17 @@ async function main() {
       const item = document.createElement('div');
       item.className = 'outline-item';
       item.setAttribute('data-level', String(heading.level));
-      item.textContent = heading.text;
+
+      const badge = document.createElement('span');
+      badge.className = 'outline-badge';
+      badge.textContent = `H${heading.level}`;
+      item.appendChild(badge);
+
+      const text = document.createElement('span');
+      text.className = 'outline-text';
+      text.textContent = heading.text;
+      item.appendChild(text);
+
       makeClickable(item, () => {
         tiptap.commands.focus();
         const resolvedPos = tiptap.state.doc.resolve(heading.pos + 1);
@@ -510,44 +801,138 @@ async function main() {
 
   tiptap.on('update', renderOutline);
   renderOutline();
+
   // ── Breadcrumbs ───────────────────────────────────────────────
   const breadcrumbsPathEl = document.getElementById('breadcrumbs-path')!;
   const breadcrumbsActionsEl = document.getElementById('breadcrumbs-actions')!;
 
+  let activeBreadcrumbDropdown: HTMLElement | null = null;
+
+  function dismissBreadcrumbDropdown() {
+    activeBreadcrumbDropdown?.remove();
+    activeBreadcrumbDropdown = null;
+  }
+
+  function showBreadcrumbDropdown(anchor: HTMLElement, items: { label: string; icon: string; path: string }[]) {
+    dismissBreadcrumbDropdown();
+    const dd = document.createElement('div');
+    dd.className = 'breadcrumb-dropdown';
+    for (const item of items) {
+      const el = document.createElement('div');
+      el.className = 'breadcrumb-dropdown-item';
+      el.innerHTML = `<span class="breadcrumb-icon">${item.icon}</span>${item.label}`;
+      el.addEventListener('click', () => {
+        dismissBreadcrumbDropdown();
+        loadFile(item.path);
+      });
+      dd.appendChild(el);
+    }
+    anchor.style.position = 'relative';
+    anchor.appendChild(dd);
+    activeBreadcrumbDropdown = dd;
+
+    const dismiss = (e: MouseEvent) => {
+      if (!dd.contains(e.target as Node) && e.target !== anchor) {
+        dismissBreadcrumbDropdown();
+        document.removeEventListener('mousedown', dismiss);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+  }
+
   function renderBreadcrumbs() {
     breadcrumbsPathEl.innerHTML = '';
-    const chain: string[] = [];
-    let current: string | undefined = currentFile;
+    dismissBreadcrumbDropdown();
 
-    while (current) {
-      chain.unshift(current);
-      const file = vault.getFile(current);
-      current = file?.parent;
+    const chain: string[] = [];
+    let cur: string | undefined = currentFile;
+    while (cur) {
+      chain.unshift(cur);
+      const file = vault.getFile(cur);
+      cur = file?.parent;
       if (chain.length > 10) break;
     }
 
+    // Root breadcrumb — click shows all root files
+    const rootCrumb = document.createElement('span');
+    rootCrumb.className = 'breadcrumb-item breadcrumb-root';
+    rootCrumb.innerHTML = `<span class="breadcrumb-icon">${iconFolder()}</span>kivi`;
+    rootCrumb.addEventListener('click', () => {
+      const allFiles = [...vault.files.entries()].map(([p, f]) => ({
+        label: f.title, icon: iconFileMarkdown(), path: p,
+      }));
+      showBreadcrumbDropdown(rootCrumb, allFiles);
+    });
+    breadcrumbsPathEl.appendChild(rootCrumb);
+
+    // Directory breadcrumb — click shows sibling files in that folder
+    const fileParts = currentFile.split('/');
+    if (fileParts.length > 1) {
+      const dirPath = fileParts.slice(0, -1).join('/');
+      const addSep = () => {
+        const sep = document.createElement('span');
+        sep.className = 'breadcrumb-sep';
+        sep.textContent = '›';
+        breadcrumbsPathEl.appendChild(sep);
+      };
+      addSep();
+      const dirCrumb = document.createElement('span');
+      dirCrumb.className = 'breadcrumb-item';
+      dirCrumb.innerHTML = `<span class="breadcrumb-icon">${iconFolderOpen()}</span>${dirPath}`;
+      dirCrumb.addEventListener('click', () => {
+        const siblings = [...vault.files.entries()]
+          .filter(([p]) => p.startsWith(dirPath + '/') && !p.slice(dirPath.length + 1).includes('/'))
+          .map(([p, f]) => ({ label: f.title, icon: iconFileMarkdown(), path: p }));
+        showBreadcrumbDropdown(dirCrumb, siblings);
+      });
+      breadcrumbsPathEl.appendChild(dirCrumb);
+    }
+
+    // Parent chain — each clickable with dropdown of siblings
     for (let i = 0; i < chain.length; i++) {
       const filePath = chain[i];
       const file = vault.getFile(filePath);
       const title = file?.title || filePath;
 
-      if (i > 0) {
-        const sep = document.createElement('span');
-        sep.className = 'breadcrumb-sep';
-        sep.textContent = '›';
-        breadcrumbsPathEl.appendChild(sep);
-      }
+      const sep = document.createElement('span');
+      sep.className = 'breadcrumb-sep';
+      sep.textContent = '›';
+      breadcrumbsPathEl.appendChild(sep);
 
       if (i === chain.length - 1) {
         const span = document.createElement('span');
         span.className = 'breadcrumb-current';
-        span.textContent = title;
+        span.innerHTML = `<span class="breadcrumb-icon">${iconFileMarkdown()}</span>${title}`;
+        // Click on current file shows outline headings
+        span.style.cursor = 'pointer';
+        span.addEventListener('click', () => {
+          const outline = editor.getOutline();
+          if (outline.length > 0) {
+            showBreadcrumbDropdown(span, outline.map(h => ({
+              label: `${'  '.repeat(h.level - 1)}${h.text}`,
+              icon: `<span style="font-size:9px;font-weight:700;opacity:0.5">H${h.level}</span>`,
+              path: currentFile,
+            })));
+          }
+        });
         breadcrumbsPathEl.appendChild(span);
       } else {
         const link = document.createElement('span');
         link.className = 'breadcrumb-item';
-        link.textContent = title;
-        makeClickable(link, () => loadFile(filePath));
+        link.innerHTML = `<span class="breadcrumb-icon">${iconFileMarkdown()}</span>${title}`;
+        link.addEventListener('click', () => {
+          // Show children of this parent
+          const children = vault.getFile(filePath)?.children || [];
+          if (children.length > 0) {
+            showBreadcrumbDropdown(link, children.map(p => ({
+              label: vault.getFile(p)?.title || p,
+              icon: iconFileMarkdown(),
+              path: p,
+            })));
+          } else {
+            loadFile(filePath);
+          }
+        });
         breadcrumbsPathEl.appendChild(link);
       }
     }
@@ -715,6 +1100,7 @@ async function main() {
         settings.showSidebar = true;
         settings.showOutline = true;
         settings.showBreadcrumbs = true;
+        settings.wordWrap = true;
         applyAppearanceOverrides(settings.appearance);
         applyUIVisibility();
         saveSettings(settings);
@@ -860,6 +1246,38 @@ async function main() {
 
   // ── Graph ────────────────────────────────────────────────────
   let graphRenderer: GraphRenderer | null = null;
+  let graphMode: GraphMode = 'local';
+  let graphControlsWired = false;
+
+  function getGraphFilter() {
+    const filterInput = document.getElementById('graph-filter') as HTMLInputElement;
+    const edgeToggles = document.querySelectorAll<HTMLInputElement>('#graph-edge-toggles input');
+    const edgeTypes: EdgeType[] = [];
+    edgeToggles.forEach(cb => { if (cb.checked) edgeTypes.push(cb.value as EdgeType); });
+    return {
+      mode: graphMode,
+      focusNode: graphMode === 'local' ? currentFile : undefined,
+      depth: 999,
+      query: filterInput?.value.trim() || '',
+      edgeTypes,
+      tags: [] as string[],
+      orphansOnly: false,
+    };
+  }
+
+  function refreshGraph() {
+    if (!graphRenderer) return;
+    const filter = getGraphFilter();
+    const data = vault.getGraph(filter);
+    graphRenderer.setData(data, filter.focusNode);
+    const gc = document.getElementById('graph-container')!;
+    graphRenderer.resize(gc.clientWidth, gc.clientHeight);
+    buildLegend();
+  }
+
+  function buildLegend() {
+    // Edge types are shown inline in the header toggles; no separate legend needed
+  }
 
   function openGraph() {
     const overlay = document.getElementById('graph-overlay')!;
@@ -873,99 +1291,81 @@ async function main() {
         onNodeClick: (nodeId) => { closeGraph(); _loadFileFn?.(nodeId); },
       });
     }
-    const { nodes, edges } = vault.getGraph();
-    graphRenderer.setData(nodes, edges);
-    graphRenderer.resize(graphContainer.clientWidth, graphContainer.clientHeight);
-    setupGraphControls();
+    refreshGraph();
+    if (!graphControlsWired) wireGraphControls();
   }
 
   function closeGraph() { document.getElementById('graph-overlay')!.style.display = 'none'; }
 
-  function setupGraphControls() {
+  function wireGraphControls() {
+    graphControlsWired = true;
     const filterInput = document.getElementById('graph-filter') as HTMLInputElement;
-    const depthInput = document.getElementById('graph-depth') as HTMLInputElement;
-    const legendEl = document.getElementById('graph-legend')!;
-
-    // Build legend from tags
-    const tagIndex = vault.getTagIndex();
-    const tagColors = new Map<string, string>();
-    const palette = ['#4fc1ff', '#4ec9b0', '#ce9178', '#dcdcaa', '#c586c0', '#9cdcfe', '#6a9955'];
-    let colorIdx = 0;
-    const topTags = [...tagIndex.entries()]
-      .filter(([k]) => !k.includes('/'))
-      .sort((a, b) => b[1].length - a[1].length)
-      .slice(0, 6);
-
-    legendEl.innerHTML = '';
-    for (const [tag] of topTags) {
-      const color = palette[colorIdx % palette.length];
-      tagColors.set(tag, color);
-      colorIdx++;
-      const item = document.createElement('div');
-      item.className = 'graph-legend-item';
-      item.innerHTML = `<span class="graph-legend-dot" style="background:${color}"></span>#${tag}`;
-      legendEl.appendChild(item);
-    }
-
-    if (graphRenderer) {
-      (graphRenderer as any)._tagColors = tagColors;
-    }
-
-    const refreshGraph = () => {
-      const filter = filterInput?.value.trim().toLowerCase() || '';
-      const depth = parseInt(depthInput?.value || '3', 10);
-      const { nodes, edges } = vault.getGraph();
-
-      let filteredNodes = nodes;
-      let filteredEdges = edges;
-
-      if (filter) {
-        const matchIds = new Set(
-          nodes.filter(n =>
-            n.label.toLowerCase().includes(filter) ||
-            n.tags.some(t => t.toLowerCase().includes(filter))
-          ).map(n => n.id)
-        );
-
-        // BFS expand by depth
-        for (let d = 0; d < depth; d++) {
-          const newIds = new Set<string>();
-          for (const edge of edges) {
-            if (matchIds.has(edge.source) && !matchIds.has(edge.target)) newIds.add(edge.target);
-            if (matchIds.has(edge.target) && !matchIds.has(edge.source)) newIds.add(edge.source);
-          }
-          for (const id of newIds) matchIds.add(id);
-        }
-
-        filteredNodes = nodes.filter(n => matchIds.has(n.id));
-        filteredEdges = edges.filter(e => matchIds.has(e.source) && matchIds.has(e.target));
-      }
-
-      if (graphRenderer) {
-        graphRenderer.setData(filteredNodes, filteredEdges);
-        const gc = document.getElementById('graph-container')!;
-        graphRenderer.resize(gc.clientWidth, gc.clientHeight);
-      }
-    };
+    const edgeToggles = document.querySelectorAll<HTMLInputElement>('#graph-edge-toggles input');
+    const modeTabs = document.querySelectorAll<HTMLButtonElement>('.graph-tab');
 
     filterInput?.addEventListener('input', debounce(refreshGraph, 200));
-    depthInput?.addEventListener('input', refreshGraph);
+    edgeToggles.forEach(cb => cb.addEventListener('change', refreshGraph));
+    modeTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        modeTabs.forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+        graphMode = (tab.dataset.mode || 'local') as GraphMode;
+        refreshGraph();
+      });
+    });
   }
 
   document.getElementById('close-graph')!.addEventListener('click', closeGraph);
+
+  // ── Graph search bar (Ctrl/Cmd+F) ──
+  function openGraphSearch() {
+    const bar = document.getElementById('graph-search-bar');
+    const input = document.getElementById('graph-filter') as HTMLInputElement;
+    if (!bar || !input) return;
+    bar.style.display = 'flex';
+    input.focus();
+    input.select();
+  }
+  function closeGraphSearch() {
+    const bar = document.getElementById('graph-search-bar');
+    const input = document.getElementById('graph-filter') as HTMLInputElement;
+    if (!bar) return;
+    bar.style.display = 'none';
+    if (input) { input.value = ''; input.dispatchEvent(new Event('input')); }
+    document.getElementById('graph-container')?.querySelector('canvas')?.focus();
+  }
+  document.getElementById('graph-search-close')?.addEventListener('click', closeGraphSearch);
+
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'g') { e.preventDefault(); openGraph(); }
     const overlay = document.getElementById('graph-overlay');
-    if (e.key === 'Escape' && overlay && overlay.style.display !== 'none' && overlay.style.display !== '') {
-      closeGraph(); e.preventDefault();
+    const isGraphOpen = overlay && overlay.style.display !== 'none' && overlay.style.display !== '';
+    if (!isGraphOpen) return;
+
+    if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      e.preventDefault();
+      openGraphSearch();
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      const searchBar = document.getElementById('graph-search-bar');
+      if (searchBar && searchBar.style.display !== 'none') {
+        closeGraphSearch();
+      } else {
+        closeGraph();
+      }
     }
   });
 
   // ── Panel system: sections are drag-and-drop between left/right panes ──
   const sectionElements: Record<SectionId, HTMLElement> = {
     explorer: document.getElementById('section-explorer')!,
+    tags: document.getElementById('section-tags')!,
     backlinks: document.getElementById('section-backlinks')!,
     outline: document.getElementById('section-outline')!,
+    warnings: document.getElementById('section-warnings')!,
   };
 
   const leftPane = document.getElementById('sidebar')!;
@@ -1004,7 +1404,7 @@ async function main() {
     }
 
     // Collapsed sections
-    for (const id of (['explorer', 'backlinks', 'outline'] as SectionId[])) {
+    for (const id of (['explorer', 'tags', 'backlinks', 'outline', 'warnings'] as SectionId[])) {
       const el = sectionElements[id];
       if (!el) continue;
       const collapsed = settings.collapsedSections.includes(id);
@@ -1225,6 +1625,33 @@ async function main() {
     tiptap.on('selectionUpdate', update);
     tiptap.on('update', update);
 
+    // ── Right section: word wrap toggle ─────────────────────────
+    const wrapBtn = document.createElement('button');
+    wrapBtn.className = 'toolbar-btn';
+    wrapBtn.type = 'button';
+    wrapBtn.title = 'Toggle Word Wrap';
+    wrapBtn.setAttribute('aria-label', 'Toggle word wrap');
+    wrapBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10"/><path d="M3 8h7a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H8"/><polyline points="9.5,10.5 8,12 9.5,13.5"/></svg>';
+    function applyWordWrap() {
+      const pm = document.querySelector('#editor .ProseMirror') as HTMLElement | null;
+      if (pm) {
+        pm.classList.toggle('kivi-word-wrap', settings.wordWrap);
+      }
+      if (sourceTextarea) {
+        sourceTextarea.style.whiteSpace = settings.wordWrap ? 'pre-wrap' : 'pre';
+        sourceTextarea.wrap = settings.wordWrap ? 'soft' : 'off';
+        requestAnimationFrame(() => refreshSourceLineGutter());
+      }
+      wrapBtn.classList.toggle('active', settings.wordWrap);
+    }
+    wrapBtn.addEventListener('click', () => {
+      settings.wordWrap = !settings.wordWrap;
+      applyWordWrap();
+      saveSettings(settings);
+    });
+    toolbarRight.appendChild(wrapBtn);
+    applyWordWrap();
+
     // ── Right section: theme picker ──────────────────────────────
     const themeSelect = document.createElement('select');
     themeSelect.className = 'theme-picker';
@@ -1242,6 +1669,7 @@ async function main() {
       settings.theme = themeSelect.value as KiviTheme;
       applyTheme(document.documentElement, settings.theme);
       saveSettings(settings);
+      requestAnimationFrame(() => graphRenderer?.refreshTheme());
     });
     toolbarRight.appendChild(themeSelect);
   }
@@ -1259,6 +1687,8 @@ async function main() {
   renderFileTree();
   renderBacklinks();
   renderBreadcrumbs();
+  renderTags();
+  renderWarnings();
   applyAppearanceOverrides(settings.appearance);
   applyUIVisibility();
 }

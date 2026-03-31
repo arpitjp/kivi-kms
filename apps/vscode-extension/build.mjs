@@ -25,9 +25,13 @@ if (watch) {
   console.log('Extension host built.');
 }
 
-// Build webview bundle (browser)
+// Build webview bundles (browser)
 if (!watch) {
-  console.log('Building webview...');
+  console.log('Building editor webview...');
   execSync('npx vite build --config vite.webview.config.ts', { stdio: 'inherit' });
-  console.log('Webview built.');
+  console.log('Editor webview built.');
+
+  console.log('Building graph webview...');
+  execSync('npx vite build --config vite.graph.config.ts', { stdio: 'inherit' });
+  console.log('Graph webview built.');
 }

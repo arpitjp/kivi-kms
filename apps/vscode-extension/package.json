@@ -16,7 +16,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "customEditors": [
@@ -39,7 +41,7 @@
         {
           "id": "kivi",
           "title": "Kivi",
-          "icon": "images/icon.png"
+          "icon": "images/kivi-sidebar.svg"
         }
       ]
     },
@@ -59,9 +61,196 @@
         }
       ]
     },
+    "commands": [
+      {
+        "command": "kivi.openInKivi",
+        "title": "Open in Kivi",
+        "category": "Kivi"
+      },
+      {
+        "command": "kivi.openWithTextEditor",
+        "title": "Open with Text Editor",
+        "category": "Kivi"
+      },
+      {
+        "command": "kivi.openGraph",
+        "title": "Open Graph View",
+        "category": "Kivi",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "kivi.refreshFiles",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kivi.collapseFiles",
+        "title": "Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "kivi.refreshOutline",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kivi.refreshBacklinks",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kivi.openGraphGlobal",
+        "title": "Open Global Graph",
+        "category": "Kivi",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "kivi.showGraphInTab",
+        "title": "Show Graph for Current File",
+        "category": "Kivi",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "kivi.setDefaultEditor",
+        "title": "Make Kivi Default Markdown Editor",
+        "category": "Kivi"
+      },
+      {
+        "command": "kivi.removeDefaultEditor",
+        "title": "Remove Kivi as Default Markdown Editor",
+        "category": "Kivi"
+      },
+      {
+        "command": "kivi.openToSide",
+        "title": "Open to Side",
+        "category": "Kivi",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "kivi.revealInExplorer",
+        "title": "Reveal in Explorer",
+        "category": "Kivi",
+        "icon": "$(file-symlink-directory)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "kivi.openInKivi",
+          "when": "resourceExtname == .md || resourceExtname == .markdown"
+        },
+        {
+          "command": "kivi.openWithTextEditor",
+          "when": "resourceExtname == .md || resourceExtname == .markdown"
+        },
+        {
+          "command": "kivi.refreshFiles",
+          "when": "false"
+        },
+        {
+          "command": "kivi.collapseFiles",
+          "when": "false"
+        },
+        {
+          "command": "kivi.refreshOutline",
+          "when": "false"
+        },
+        {
+          "command": "kivi.refreshBacklinks",
+          "when": "false"
+        },
+        {
+          "command": "kivi.openGraphGlobal",
+          "when": "true"
+        },
+        {
+          "command": "kivi.showGraphInTab",
+          "when": "resourceExtname == .md || resourceExtname == .markdown"
+        },
+        {
+          "command": "kivi.setDefaultEditor",
+          "when": "true"
+        },
+        {
+          "command": "kivi.removeDefaultEditor",
+          "when": "true"
+        },
+        {
+          "command": "kivi.openToSide",
+          "when": "resourceExtname == .md || resourceExtname == .markdown"
+        },
+        {
+          "command": "kivi.revealInExplorer",
+          "when": "kivi.editorFocused"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "kivi.openInKivi",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kivi.openToSide",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "kivi.openWithTextEditor",
+          "when": "kivi.editorFocused",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kivi.showGraphInTab",
+          "when": "kivi.editorFocused",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "kivi.revealInExplorer",
+          "when": "kivi.editorFocused",
+          "group": "1_kivi"
+        },
+        {
+          "command": "kivi.openWithTextEditor",
+          "when": "kivi.editorFocused",
+          "group": "1_kivi"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "kivi.refreshFiles",
+          "when": "view == kivi.files",
+          "group": "navigation"
+        },
+        {
+          "command": "kivi.collapseFiles",
+          "when": "view == kivi.files",
+          "group": "navigation"
+        },
+        {
+          "command": "kivi.refreshOutline",
+          "when": "view == kivi.outline",
+          "group": "navigation"
+        },
+        {
+          "command": "kivi.refreshBacklinks",
+          "when": "view == kivi.backlinks",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Kivi",
       "properties": {
+        "kivi.defaultEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use Kivi as the default editor for Markdown files. When disabled, Markdown files open in the text editor and you can use 'Kivi: Open in Kivi' to open individual files."
+        },
         "kivi.appearance.editorBackground": {
           "type": "string",
           "default": "",
@@ -97,7 +286,7 @@
         "kivi.appearance.fontFamily": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Editor font family (e.g. `'Inter', sans-serif`). Leave empty to use the system default."
+          "markdownDescription": "Editor font family (e.g. `'Inter', sans-serif`). Leave empty to inherit from VS Code's `editor.fontFamily`."
         },
         "kivi.appearance.lineHeight": {
           "type": "number",
@@ -105,6 +294,13 @@
           "minimum": 0,
           "maximum": 5,
           "markdownDescription": "Editor line height as a unitless ratio (e.g. `1.7`). Set to `0` for the default."
+        },
+        "kivi.appearance.zoom": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 200,
+          "markdownDescription": "Kivi editor zoom level in percent (e.g. `120`). Set to `100` for normal size."
         },
         "kivi.appearance.customCSS": {
           "type": "string",
@@ -117,10 +313,15 @@
           "default": true,
           "description": "Show the formatting toolbar at the top of the editor."
         },
-        "kivi.ui.showLineNumbers": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show line numbers in the editor gutter (experimental)."
+        "kivi.folders.pages": {
+          "type": "string",
+          "default": "pages",
+          "markdownDescription": "Default folder name for new child pages created via the editor. Relative to workspace root."
+        },
+        "kivi.folders.assets": {
+          "type": "string",
+          "default": "assets",
+          "markdownDescription": "Default folder name for pasted images and other assets. Relative to workspace root."
         }
       }
     }
@@ -134,7 +335,8 @@
     "package": "vsce package"
   },
   "dependencies": {
-    "@kivi/editor-core": "workspace:*"
+    "@kivi/editor-core": "workspace:*",
+    "@kivi/vault": "workspace:*"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

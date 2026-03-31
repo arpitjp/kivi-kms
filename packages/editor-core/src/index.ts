@@ -18,5 +18,6 @@ export { TableControls } from './extensions/table-controls.js';
 export { ImageControls } from './extensions/image-controls.js';
 export { LinkPopup } from './extensions/link-popup.js';
 export { DevWatchdog, type DevWatchdogOptions } from './extensions/dev-watchdog.js';
+export { LinkPreviewExtension, type LinkPreviewOptions, type LinkPreviewData, type DetectedLink, type LinkKind } from './extensions/link-preview.js';
 export { parseMarkdownAsync, terminateParseWorker } from './worker/index.js';
 export { applyTheme, getThemeColors, allThemes } from './themes.js';

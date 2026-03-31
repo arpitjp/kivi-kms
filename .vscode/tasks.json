@@ -6,7 +6,10 @@
       "type": "shell",
       "command": "pnpm build",
       "group": "build",
-      "problemMatcher": []
+      "problemMatcher": [],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
     }
   ]
 }

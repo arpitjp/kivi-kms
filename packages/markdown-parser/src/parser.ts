@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import remarkFrontmatter from 'remark-frontmatter';
 import remarkMath from 'remark-math';
 import wikiLinkPlugin from 'remark-wiki-link';
-import type { Root } from 'mdast';
+import type { Root, RootContent, Paragraph, Text, InlineCode, Code } from 'mdast';
 import type { KiviDocument, BlockMeta, BlockGap, SourceMap, SourcePosition } from '@kivi/shared-types';
 import type { ParseOptions } from './types.js';
 import { mdastToProseMirror } from './mdast-to-prosemirror.js';
@@ -36,6 +36,7 @@ export function parseMarkdown(source: string, options?: ParseOptions): KiviDocum
 
   const processor = buildProcessor(opts);
   const mdast = processor.parse(source) as Root;
+  fixIndentedFences(mdast, source);
 
   const doc = mdastToProseMirror(mdast);
 
@@ -82,6 +83,110 @@ function buildProcessor(opts: Required<ParseOptions>): any {
   }
 
   return processor;
+}
+
+/**
+ * Fix paragraphs where 4+-space-indented fenced code blocks were misinterpreted
+ * as inline code within a paragraph. This happens because CommonMark treats
+ * 4+ space indentation as paragraph continuation, causing ``` to become inline code.
+ *
+ * Also fixes indented code blocks that contain literal ``` markers by stripping them.
+ *
+ * We detect these patterns in the AST and split paragraphs / clean code blocks.
+ */
+function fixIndentedFences(root: Root, _source: string): void {
+  for (let i = root.children.length - 1; i >= 0; i--) {
+    const node = root.children[i];
+
+    // Fix indented code blocks whose content starts/ends with literal ``` markers
+    if (node.type === 'code') {
+      const code = node as Code;
+      const lines = code.value.split('\n');
+      const FENCE = /^`{3,}\s*(\S*)?\s*$/;
+      if (lines.length >= 2 && FENCE.test(lines[0]) && FENCE.test(lines[lines.length - 1])) {
+        const langMatch = lines[0].match(FENCE);
+        const lang = langMatch?.[1] || undefined;
+        const innerLines = lines.slice(1, -1);
+        code.value = innerLines.join('\n');
+        if (lang) code.lang = lang;
+      }
+      continue;
+    }
+
+    if (node.type !== 'paragraph') continue;
+
+    const para = node as Paragraph;
+    const result = splitParagraphAtInlineCode(para);
+    if (result) {
+      root.children.splice(i, 1, ...result);
+    }
+  }
+}
+
+function splitParagraphAtInlineCode(para: Paragraph): RootContent[] | null {
+  const children = para.children;
+
+  let fenceIdx = -1;
+  for (let j = 0; j < children.length; j++) {
+    const child = children[j];
+    if (child.type !== 'inlineCode') continue;
+
+    const prevText = j > 0 && children[j - 1].type === 'text'
+      ? (children[j - 1] as Text).value : '';
+    if (prevText.endsWith('\n') || prevText.trimEnd() === '' || j === 0) {
+      fenceIdx = j;
+      break;
+    }
+  }
+
+  if (fenceIdx < 0) return null;
+
+  const inlineCode = children[fenceIdx] as InlineCode;
+  const codeValue = inlineCode.value.replace(/^\s*\n?/, '').replace(/\n?\s*$/, '');
+
+  const beforeChildren = children.slice(0, fenceIdx);
+  const lastBefore = beforeChildren.length > 0 ? beforeChildren[beforeChildren.length - 1] : null;
+  if (lastBefore?.type === 'text') {
+    const t = lastBefore as Text;
+    t.value = t.value.replace(/\n\s*$/, '');
+    if (!t.value) beforeChildren.pop();
+  }
+
+  const afterChildren = children.slice(fenceIdx + 1);
+  const firstAfter = afterChildren.length > 0 ? afterChildren[0] : null;
+  if (firstAfter?.type === 'text') {
+    const t = firstAfter as Text;
+    t.value = t.value.replace(/^\s*\n/, '');
+    if (!t.value) afterChildren.shift();
+  }
+
+  const codeLines = codeValue.split('\n');
+  const dedented = codeLines.map(line => line.replace(/^ {1,4}/, '')).join('\n');
+
+  const codeNode: Code = {
+    type: 'code',
+    value: dedented,
+    lang: null as unknown as undefined,
+  };
+
+  const newNodes: RootContent[] = [];
+
+  if (beforeChildren.length > 0) {
+    newNodes.push({ ...para, children: beforeChildren as Paragraph['children'] });
+  }
+  newNodes.push(codeNode);
+
+  if (afterChildren.length > 0) {
+    const tailPara: Paragraph = { type: 'paragraph', children: afterChildren as Paragraph['children'] };
+    const tailResult = splitParagraphAtInlineCode(tailPara);
+    if (tailResult) {
+      newNodes.push(...tailResult);
+    } else {
+      newNodes.push(tailPara);
+    }
+  }
+
+  return newNodes;
 }
 
 function toSourcePosition(pos: Root['children'][number]['position']): SourcePosition | null {

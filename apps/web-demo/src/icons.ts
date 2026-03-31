@@ -259,6 +259,50 @@ export const iconGrip = () =>
   `<circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/>` +
   `</svg>`;
 
+// ── File tree icons ─────────────────────────────────────────
+
+export const iconFile = () => s(
+  '<path d="M9 2H4.5A1.5 1.5 0 0 0 3 3.5v9A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V6z"/>' +
+  '<polyline points="9,2 9,6 13,6"/>',
+);
+
+export const iconFileMarkdown = () =>
+  `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">` +
+  `<path d="M9 2H4.5A1.5 1.5 0 0 0 3 3.5v9A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V6z"/>` +
+  `<polyline points="9,2 9,6 13,6"/>` +
+  `<path d="M5.5 11V9l1.2 1.2L8 9v2" stroke-width="1.2"/>` +
+  `</svg>`;
+
+export const iconFolder = () => s(
+  '<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/>',
+);
+
+export const iconFolderOpen = () => s(
+  '<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v1H4L2 12V4.5z"/>' +
+  '<path d="M2 12l2-5h10l-2 5z"/>',
+);
+
+export const iconCollapseAll = () => s(
+  '<polyline points="4,5 8,2 12,5"/>' +
+  '<polyline points="4,11 8,8 12,11"/>',
+);
+
+export const iconChevronRight = () => s('<polyline points="6,4 10,8 6,12"/>');
+
+// ── Sidebar pane icons ──────────────────────────────────────────
+
+export const iconBacklink = () => s(
+  '<path d="M7 11l-1.5 1.5a2.5 2.5 0 0 1-3.5-3.5L3.5 7.5"/>' +
+  '<path d="M9 5l1.5-1.5a2.5 2.5 0 0 1 3.5 3.5L12.5 8.5"/>' +
+  '<line x1="5.5" y1="10.5" x2="10.5" y2="5.5"/>',
+);
+
+export const iconGitCommit = () => s(
+  '<circle cx="8" cy="8" r="2.5"/>' +
+  '<line x1="1" y1="8" x2="5.5" y2="8"/>' +
+  '<line x1="10.5" y1="8" x2="15" y2="8"/>',
+);
+
 // ── Code block controls (Lucide-style) ──────────────────────────
 
 export const iconWrap = () => s(

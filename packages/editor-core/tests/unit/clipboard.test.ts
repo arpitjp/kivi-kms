@@ -6,8 +6,8 @@ describe('looksLikeMarkdown', () => {
     expect(looksLikeMarkdown('Hello world')).toBe(false);
   });
 
-  it('returns false for single markdown pattern', () => {
-    expect(looksLikeMarkdown('# Just a heading')).toBe(false);
+  it('returns true for single markdown pattern', () => {
+    expect(looksLikeMarkdown('# Just a heading')).toBe(true);
   });
 
   it('returns true for heading + list', () => {

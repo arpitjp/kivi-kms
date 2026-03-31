@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
-import { InlineCodeInput } from '../../src/extensions/inline-code-input.js';
 import { DevWatchdog } from '../../src/extensions/dev-watchdog.js';
 
 let editors: Editor[] = [];
@@ -22,28 +21,6 @@ afterEach(() => {
   editors.forEach((e) => { if (!e.isDestroyed) e.destroy(); });
   editors = [];
   document.body.innerHTML = '';
-});
-
-// ── InlineCodeInput ───────────────────────────────────────────
-
-describe('InlineCodeInput', () => {
-  it('registers without errors', () => {
-    const { editor } = createEditor('<p>hello</p>', [InlineCodeInput]);
-    expect(editor.isDestroyed).toBe(false);
-  });
-
-  it('does not interfere with non-backtick input', () => {
-    const { editor } = createEditor('<p>hello</p>', [InlineCodeInput]);
-    editor.commands.setTextSelection(6);
-    editor.commands.insertContent('!');
-    expect(editor.state.doc.textContent).toContain('hello!');
-  });
-
-  it('cleans up without errors', () => {
-    const { editor } = createEditor('<p>hello</p>', [InlineCodeInput]);
-    editor.destroy();
-    expect(editor.isDestroyed).toBe(true);
-  });
 });
 
 // ── DevWatchdog ───────────────────────────────────────────────

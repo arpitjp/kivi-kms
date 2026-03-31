@@ -4,10 +4,14 @@ const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const TAG_RE = /(?:^|\s)#([a-zA-Z0-9_/][a-zA-Z0-9_/-]*)/g;
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
+const MD_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+const ASSET_EXTS = /\.(png|jpe?g|gif|webp|svg|pdf|mp4|webm|mp3|ogg|wav|csv|xlsx?)$/i;
 
 export interface ScanResult {
   title: string;
   wikiLinks: string[];
+  markdownLinks: string[];
+  assetRefs: string[];
   tags: string[];
   headings: VaultHeading[];
   frontmatter: Record<string, unknown>;
@@ -15,12 +19,13 @@ export interface ScanResult {
 
 export function scanMarkdown(content: string): ScanResult {
   const wikiLinks = extractWikiLinks(content);
+  const { markdownLinks, assetRefs } = extractMarkdownLinks(content);
   const tags = extractTags(content);
   const headings = extractHeadings(content);
   const frontmatter = extractFrontmatter(content);
   const title = deriveTitle(frontmatter, headings, '');
 
-  return { title, wikiLinks, tags, headings, frontmatter };
+  return { title, wikiLinks, markdownLinks, assetRefs, tags, headings, frontmatter };
 }
 
 function extractWikiLinks(content: string): string[] {
@@ -38,6 +43,37 @@ function extractWikiLinks(content: string): string[] {
   }
 
   return links;
+}
+
+function extractMarkdownLinks(content: string): { markdownLinks: string[]; assetRefs: string[] } {
+  const markdownLinks: string[] = [];
+  const assetRefs: string[] = [];
+  const seenLinks = new Set<string>();
+  const seenAssets = new Set<string>();
+
+  MD_LINK_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = MD_LINK_RE.exec(content)) !== null) {
+    const href = match[2].trim();
+    if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('#')) continue;
+
+    if (ASSET_EXTS.test(href)) {
+      if (!seenAssets.has(href)) { seenAssets.add(href); assetRefs.push(href); }
+    } else {
+      if (!seenLinks.has(href)) { seenLinks.add(href); markdownLinks.push(href); }
+    }
+  }
+
+  // Also extract image references ![alt](path)
+  const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  imgRe.lastIndex = 0;
+  while ((match = imgRe.exec(content)) !== null) {
+    const href = match[2].trim();
+    if (href.startsWith('http://') || href.startsWith('https://')) continue;
+    if (!seenAssets.has(href)) { seenAssets.add(href); assetRefs.push(href); }
+  }
+
+  return { markdownLinks, assetRefs };
 }
 
 function extractTags(content: string): string[] {

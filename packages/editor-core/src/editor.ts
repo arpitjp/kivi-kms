@@ -1,4 +1,5 @@
-import { Editor } from '@tiptap/core';
+import { Editor, Extension } from '@tiptap/core';
+import { TextSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
@@ -29,9 +30,11 @@ import { TableControls } from './extensions/table-controls.js';
 import { ImageControls } from './extensions/image-controls.js';
 import { LinkPopup } from './extensions/link-popup.js';
 import { CodeBlockEnhanced } from './extensions/code-block-enhanced.js';
-import { InlineCodeInput } from './extensions/inline-code-input.js';
 import { SelectionToolbar } from './extensions/selection-toolbar.js';
 import { DevWatchdog } from './extensions/dev-watchdog.js';
+import { LinkPreviewExtension } from './extensions/link-preview.js';
+import type { DetectedLink, LinkPreviewData } from './extensions/link-preview.js';
+import { SmartTypography } from './extensions/smart-typography.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -104,7 +107,9 @@ export class KiviEditor {
         FootnoteRef,
         FootnoteDef,
         KiviSearch,
-        KiviClipboard,
+        KiviClipboard.configure({
+          imageAdapter: options.imageStorageAdapter,
+        }),
         DirtyTracker,
         WikiLink,
         HashTag,
@@ -118,9 +123,36 @@ export class KiviEditor {
         ImageControls,
         LinkPopup,
         CodeBlockEnhanced,
-        InlineCodeInput,
         SelectionToolbar,
         DevWatchdog,
+        SmartTypography,
+        LinkPreviewExtension.configure({
+          onResolveLink: options.onResolveLink
+            ? async (link: DetectedLink) => {
+                const result = await options.onResolveLink!({ kind: link.kind, target: link.target, alias: link.alias });
+                return result as LinkPreviewData | null;
+              }
+            : undefined,
+          onNavigate: options.onNavigateLink
+            ? (link: DetectedLink) => {
+                options.onNavigateLink!({ kind: link.kind, target: link.target, alias: link.alias });
+              }
+            : undefined,
+        }),
+        Extension.create({
+          name: 'selectAllFix',
+          addKeyboardShortcuts() {
+            return {
+              'Mod-a': ({ editor: ed }) => {
+                const { doc } = ed.state;
+                const from = TextSelection.atStart(doc).from;
+                const to = TextSelection.atEnd(doc).to;
+                ed.commands.setTextSelection({ from, to });
+                return true;
+              },
+            };
+          },
+        }),
       ],
       editorProps: {
         attributes: {

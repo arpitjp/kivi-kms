@@ -20,12 +20,13 @@
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
-    "turbo": "^2",
-    "typescript": "^5.7",
-    "prettier": "^3",
-    "eslint": "^9",
     "@typescript-eslint/eslint-plugin": "^8",
-    "@typescript-eslint/parser": "^8"
+    "@typescript-eslint/parser": "^8",
+    "eslint": "^9",
+    "playwright": "^1.58.2",
+    "prettier": "^3",
+    "turbo": "^2",
+    "typescript": "^5.7"
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {

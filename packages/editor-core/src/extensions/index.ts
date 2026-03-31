@@ -15,6 +15,15 @@ export { TableControls } from './table-controls.js';
 export { ImageControls } from './image-controls.js';
 export { LinkPopup } from './link-popup.js';
 export { CodeBlockEnhanced } from './code-block-enhanced.js';
-export { InlineCodeInput } from './inline-code-input.js';
 export { SelectionToolbar } from './selection-toolbar.js';
 export { DevWatchdog, type DevWatchdogOptions } from './dev-watchdog.js';
+export { SmartTypography } from './smart-typography.js';
+export {
+  LinkPreviewExtension,
+  type LinkPreviewOptions,
+  type LinkPreviewData,
+  type DetectedLink,
+  type LinkKind,
+  type LinkResolver,
+  type LinkNavigator,
+} from './link-preview.js';

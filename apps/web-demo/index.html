@@ -36,6 +36,7 @@
             <span class="sidebar-title">Explorer</span>
             <div class="section-header-actions">
               <button id="new-file-btn" type="button" title="New Page (Ctrl+N)" aria-label="Create new page"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2H4.5A1.5 1.5 0 0 0 3 3.5v9A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V6z"/><polyline points="9,2 9,6 13,6"/><line x1="6" y1="9.5" x2="10" y2="9.5" stroke-width="1.6"/><line x1="8" y1="7.5" x2="8" y2="11.5" stroke-width="1.6"/></svg></button>
+              <button id="collapse-all-btn" type="button" title="Collapse All" aria-label="Collapse all folders"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,5 8,2 12,5"/><polyline points="4,11 8,8 12,11"/></svg></button>
               <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
               <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
             </div>
@@ -48,10 +49,25 @@
             <div id="file-list" role="tree" aria-label="File explorer"></div>
           </div>
         </div>
+        <div id="section-tags" class="panel-section section-collapsed" data-section="tags">
+          <div class="section-header">
+            <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
+            <span class="sidebar-title">Tags</span>
+            <span class="section-count">0</span>
+            <div class="section-header-actions">
+              <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
+              <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><polyline points="6,4 10,8 6,12"/></svg></button>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="tags-list"></div>
+          </div>
+        </div>
         <div id="section-backlinks" class="panel-section" data-section="backlinks">
           <div class="section-header">
             <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
             <span class="sidebar-title">Backlinks</span>
+            <span class="section-count">0</span>
             <div class="section-header-actions">
               <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
               <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
@@ -100,10 +116,25 @@
       <div class="resize-handle" data-resize="right" title="Drag to resize"></div>
       <!-- Right pane -->
       <aside id="outline-panel">
+        <div id="section-warnings" class="panel-section section-collapsed" data-section="warnings" style="display:none;">
+          <div class="section-header">
+            <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
+            <span class="sidebar-title">Issues</span>
+            <span class="section-count issue-count-badge" style="background: rgba(229,168,75,0.2); color: #e5a84b;">0</span>
+            <div class="section-header-actions">
+              <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
+              <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><polyline points="6,4 10,8 6,12"/></svg></button>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="warnings-list"></div>
+          </div>
+        </div>
         <div id="section-outline" class="panel-section" data-section="outline">
           <div class="section-header">
             <span class="section-drag" title="Drag to reorder or move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg></span>
             <span class="sidebar-title">Outline</span>
+            <span class="section-count">0</span>
             <div class="section-header-actions">
               <button class="section-move" type="button" title="Move to other pane" aria-label="Move section"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2,8 5,5"/><polyline points="2,8 5,11"/><polyline points="14,8 11,5"/><polyline points="14,8 11,11"/><line x1="2" y1="8" x2="14" y2="8"/></svg></button>
               <button class="section-toggle" type="button" aria-label="Toggle section" aria-expanded="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="4,6 8,10 12,6"/></svg></button>
@@ -118,19 +149,35 @@
 
     <!-- Graph overlay -->
     <div id="graph-overlay" style="display:none;">
-      <div id="graph-header">
-        <div id="graph-header-left">
-          <span>Graph</span>
-          <input id="graph-filter" type="text" placeholder="Filter by tag or title..." aria-label="Filter graph nodes" />
-          <div id="graph-depth-controls">
-            <label for="graph-depth">Depth:</label>
-            <input id="graph-depth" type="number" min="1" max="10" value="3" aria-label="Graph depth" />
+      <div id="graph-bar">
+        <div id="graph-bar-left">
+          <div id="graph-mode-tabs" role="tablist">
+            <button class="graph-tab active" data-mode="local" role="tab" aria-selected="true">Local</button>
+            <button class="graph-tab" data-mode="global" role="tab">Global</button>
+            <button class="graph-tab" data-mode="hierarchy" role="tab">Hierarchy</button>
+          </div>
+          <span class="graph-bar-sep"></span>
+          <div id="graph-edge-toggles">
+            <label class="graph-toggle"><input type="checkbox" value="link" checked /><span class="dot" style="background:var(--accent)"></span>Links</label>
+            <label class="graph-toggle"><input type="checkbox" value="shared-tag" checked /><span class="dot" style="background:#4ec9b0"></span>Tags</label>
+            <label class="graph-toggle"><input type="checkbox" value="parent" checked /><span class="dot" style="background:#a8b4c8"></span>Hierarchy</label>
+            <label class="graph-toggle"><input type="checkbox" value="sibling" /><span class="dot" style="background:#c586c0"></span>Siblings</label>
           </div>
         </div>
-        <button id="close-graph" aria-label="Close graph view">✕</button>
+        <div id="graph-bar-right">
+          <button id="close-graph" aria-label="Close graph view">✕</button>
+        </div>
       </div>
-      <div id="graph-container">
-        <div id="graph-legend"></div>
+
+      <!-- Search bar — hidden by default, shown via Ctrl/Cmd+F -->
+      <div id="graph-search-bar" style="display:none;">
+        <input id="graph-filter" type="text" placeholder="Search nodes…" aria-label="Search graph nodes" autocomplete="off" />
+        <button id="graph-search-close" aria-label="Close search">✕</button>
+      </div>
+
+      <div id="graph-container"></div>
+      <div id="graph-shortcuts">
+        <kbd>C</kbd> center · <kbd>F</kbd> fit · <kbd>⌘F</kbd> search · <kbd>+</kbd><kbd>-</kbd> zoom · <kbd>Esc</kbd> close
       </div>
     </div>
   </div>

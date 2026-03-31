@@ -123,28 +123,36 @@ tags:
   });
 
   describe('getGraph', () => {
-    it('returns one node per file with expected labels and tags', () => {
+    it('returns one note node per file with expected labels and tags', () => {
       vault.addFile('a.md', '# A\n#t');
       vault.addFile('b.md', '# B');
       const { nodes } = vault.getGraph();
-      expect(nodes).toHaveLength(2);
-      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const noteNodes = nodes.filter(n => n.nodeType === 'note');
+      expect(noteNodes).toHaveLength(2);
+      const byId = new Map(noteNodes.map((n) => [n.id, n]));
       expect(byId.get('a.md')?.label).toBe('A');
       expect(byId.get('a.md')?.tags).toContain('t');
       expect(byId.get('b.md')?.label).toBe('B');
+      // Also creates a tag node
+      const tagNodes = nodes.filter(n => n.nodeType === 'tag');
+      expect(tagNodes.length).toBeGreaterThanOrEqual(1);
     });
 
     it('adds an edge for each resolved wiki-link between existing files', () => {
       vault.addFile('b.md', '# B');
       vault.addFile('a.md', 'Link [[b]].');
       const { edges } = vault.getGraph();
-      expect(edges).toContainEqual({ source: 'a.md', target: 'b.md' });
+      expect(edges).toContainEqual(expect.objectContaining({ source: 'a.md', target: 'b.md', type: 'link' }));
     });
 
-    it('omits edges when the target cannot be resolved', () => {
+    it('creates unresolved edge when target cannot be resolved', () => {
       vault.addFile('orphan.md', '[[DoesNotExist]]');
       const { edges } = vault.getGraph();
-      expect(edges).toEqual([]);
+      const linkEdges = edges.filter(e => e.type === 'link');
+      expect(linkEdges).toEqual([]);
+      const unresolvedEdges = edges.filter(e => e.type === 'unresolved');
+      expect(unresolvedEdges).toHaveLength(1);
+      expect(unresolvedEdges[0].target).toBe('unresolved:DoesNotExist');
     });
 
     it('node backlinkCount matches the number of inbound wiki-links', () => {
@@ -160,7 +168,44 @@ tags:
       vault.addFile('area/nested/target.md', '# Deep');
       vault.addFile('root.md', '[[area/nested/target]]');
       const { edges } = vault.getGraph();
-      expect(edges).toContainEqual({ source: 'root.md', target: 'area/nested/target.md' });
+      expect(edges).toContainEqual(expect.objectContaining({ source: 'root.md', target: 'area/nested/target.md', type: 'link' }));
+    });
+
+    it('includes shared-tag edges between files with the same tag', () => {
+      vault.addFile('a.md', '# A\n#performance');
+      vault.addFile('b.md', '# B\n#performance');
+      const { edges } = vault.getGraph();
+      const tagEdges = edges.filter(e => e.type === 'shared-tag');
+      expect(tagEdges.length).toBeGreaterThanOrEqual(1);
+      expect(tagEdges[0].reason).toContain('#performance');
+    });
+
+    it('includes parent/child edges for hierarchy', () => {
+      vault.addFile('parent.md', '# Parent');
+      vault.addFile('child.md', '---\nparent: parent\n---\n# Child');
+      const { edges } = vault.getGraph();
+      expect(edges).toContainEqual(expect.objectContaining({ source: 'parent.md', target: 'child.md', type: 'parent' }));
+    });
+
+    it('marks orphan nodes correctly', () => {
+      vault.addFile('lonely.md', '# Lonely');
+      vault.addFile('connected.md', '# C\n[[lonely]]');
+      const { nodes } = vault.getGraph();
+      const lonely = nodes.find(n => n.id === 'lonely.md');
+      expect(lonely?.isOrphan).toBe(false); // has backlinks now
+    });
+
+    it('supports local graph mode with depth filter', () => {
+      vault.addFile('center.md', '# Center\n[[leaf1]]\n[[leaf2]]');
+      vault.addFile('leaf1.md', '# Leaf 1\n[[far]]');
+      vault.addFile('leaf2.md', '# Leaf 2');
+      vault.addFile('far.md', '# Far');
+      const data = vault.getGraph({ mode: 'local', focusNode: 'center.md', depth: 1, edgeTypes: [], tags: [], orphansOnly: false, query: '' });
+      const ids = data.nodes.map(n => n.id);
+      expect(ids).toContain('center.md');
+      expect(ids).toContain('leaf1.md');
+      expect(ids).toContain('leaf2.md');
+      expect(ids).not.toContain('far.md');
     });
   });
 

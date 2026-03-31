@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 
 type TreeNode = FileNode | FolderNode;
 
@@ -18,8 +17,10 @@ interface FolderNode {
 export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+  private mdCache = new Map<string, boolean>();
 
   refresh(): void {
+    this.mdCache.clear();
     this._onDidChangeTreeData.fire();
   }
 
@@ -27,7 +28,7 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
     const item = new vscode.TreeItem(
       element.label,
       element.kind === 'folder'
-        ? vscode.TreeItemCollapsibleState.Expanded
+        ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None,
     );
 
@@ -37,11 +38,14 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
         title: 'Open in Kivi',
         arguments: [element.uri, 'kivi.markdownEditor'],
       };
-      item.iconPath = new vscode.ThemeIcon('markdown');
+      item.iconPath = new vscode.ThemeIcon('file-text');
       item.contextValue = 'kiviFile';
+      item.description = '.md';
+      item.resourceUri = element.uri;
     } else {
-      item.iconPath = new vscode.ThemeIcon('folder');
+      item.iconPath = vscode.ThemeIcon.Folder;
       item.contextValue = 'kiviFolder';
+      item.resourceUri = element.uri;
     }
 
     return item;
@@ -59,7 +63,7 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
       const nodes: TreeNode[] = [];
 
       const sorted = entries.sort((a, b) => {
-        if (a[1] !== b[1]) return b[1] - a[1]; // folders first
+        if (a[1] !== b[1]) return b[1] - a[1];
         return a[0].localeCompare(b[0]);
       });
 
@@ -85,20 +89,32 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   private async containsMarkdown(dir: vscode.Uri): Promise<boolean> {
+    const key = dir.toString();
+    const cached = this.mdCache.get(key);
+    if (cached !== undefined) return cached;
+
     try {
       const entries = await vscode.workspace.fs.readDirectory(dir);
       for (const [name, type] of entries) {
         if (type === vscode.FileType.File && (name.endsWith('.md') || name.endsWith('.markdown'))) {
+          this.mdCache.set(key, true);
           return true;
         }
+      }
+      // Only recurse into subdirectories after checking all files at this level
+      for (const [name, type] of entries) {
         if (type === vscode.FileType.Directory && !name.startsWith('.') && name !== 'node_modules') {
           const has = await this.containsMarkdown(vscode.Uri.joinPath(dir, name));
-          if (has) return true;
+          if (has) {
+            this.mdCache.set(key, true);
+            return true;
+          }
         }
       }
     } catch {
       // ignore
     }
+    this.mdCache.set(key, false);
     return false;
   }
 }

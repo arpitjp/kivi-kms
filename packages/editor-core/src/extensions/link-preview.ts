@@ -172,11 +172,12 @@ function detectLinkAtPos(view: EditorView, domEvent: MouseEvent): DetectedLink |
     const tag = tagEl.getAttribute('data-tag');
     if (tag) {
       const pos = view.posAtDOM(tagEl, 0);
+      const textLen = tagEl.textContent?.length || 0;
       return {
         kind: 'tag',
         target: tag,
         from: pos,
-        to: pos + 1,
+        to: pos + textLen,
         element: tagEl,
       };
     }
@@ -344,6 +345,7 @@ const LINK_PREVIEW_CSS = `
   z-index: 9999;
   max-width: 320px;
   min-width: 180px;
+  max-height: 400px;
   background: var(--vscode-editorWidget-background, rgba(30, 30, 34, 0.96));
   color: var(--vscode-editor-foreground, #d4d4d4);
   backdrop-filter: blur(16px);
@@ -353,12 +355,16 @@ const LINK_PREVIEW_CSS = `
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
   font-size: 11px;
   font-family: var(--vscode-font-family, -apple-system, sans-serif);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   opacity: 0;
   transform: translateY(4px) scale(0.97);
   transition: opacity 0.15s ease, transform 0.15s ease;
   pointer-events: auto;
 }
+.kivi-link-preview::-webkit-scrollbar { width: 4px; }
+.kivi-link-preview::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+.kivi-link-preview::-webkit-scrollbar-track { background: transparent; }
 .kivi-link-preview.klp-visible {
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -445,7 +451,7 @@ const LINK_PREVIEW_CSS = `
   line-height: 1.5;
   color: var(--vscode-editor-foreground, #ccc);
   opacity: 0.85;
-  max-height: 80px;
+  max-height: 120px;
   overflow: hidden;
   border-top: 1px solid rgba(255,255,255,0.05);
   margin-top: 4px;

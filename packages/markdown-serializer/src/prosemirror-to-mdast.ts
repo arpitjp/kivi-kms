@@ -26,12 +26,15 @@ function convertBlockNode(node: PMNode): RootContent[] {
     case 'paragraph':
       return [{ type: 'paragraph', children: convertInlineContent(node.content || []) }];
 
-    case 'heading':
+    case 'heading': {
+      const headingChildren = convertInlineContent(node.content || []);
+      trimTrailingWhitespace(headingChildren);
       return [{
         type: 'heading',
         depth: (node.attrs?.level as 1 | 2 | 3 | 4 | 5 | 6) || 1,
-        children: convertInlineContent(node.content || []),
+        children: headingChildren,
       }];
+    }
 
     case 'blockquote':
       return [{
@@ -95,10 +98,21 @@ function convertBlockNode(node: PMNode): RootContent[] {
       return [{ type: 'math' as 'code', value: getTextContent(node) } as unknown as RootContent];
 
     case 'mathInline':
-      return [];
+      return [{
+        type: 'paragraph',
+        children: [{ type: 'inlineMath' as 'text', value: getTextContent(node) } as unknown as import('mdast').PhrasingContent],
+      }];
 
-    case 'footnoteDef':
-      return [];
+    case 'footnoteDef': {
+      const label = (node.attrs?.label as string) || '';
+      const children = (node.content || []).flatMap(convertBlockNode);
+      return [{
+        type: 'footnoteDefinition' as 'code',
+        identifier: label,
+        label,
+        children,
+      } as unknown as RootContent];
+    }
 
     case 'tocBlock':
       return [{ type: 'paragraph', children: [{ type: 'text', value: '[TOC]' }] }];
@@ -213,8 +227,16 @@ function convertInlineContent(nodes: PMNode[]): PhrasingContent[] {
         alt: (node.attrs?.alt as string) || undefined,
         title: (node.attrs?.title as string) || undefined,
       });
-    } else if (node.type === 'hashTag') {
-      result.push({ type: 'text', value: `#${node.attrs?.tag || ''}` });
+    } else if (node.type === 'footnoteRef') {
+      const label = (node.attrs?.label as string) || '';
+      result.push({
+        type: 'footnoteReference' as 'text',
+        identifier: label,
+        label,
+      } as unknown as PhrasingContent);
+    } else if (node.type === 'mathInline') {
+      const value = getTextContent(node);
+      result.push({ type: 'inlineMath' as 'text', value } as unknown as PhrasingContent);
     }
   }
 
@@ -232,6 +254,26 @@ function wrapWithMark(content: PhrasingContent, mark: PMMark): PhrasingContent {
     case 'code':
       if ('value' in content) {
         return { type: 'inlineCode', value: content.value };
+      }
+      return content;
+    case 'subscript':
+      if ('value' in content) {
+        return { type: 'html', value: `<sub>${content.value}</sub>` } as unknown as PhrasingContent;
+      }
+      return content;
+    case 'superscript':
+      if ('value' in content) {
+        return { type: 'html', value: `<sup>${content.value}</sup>` } as unknown as PhrasingContent;
+      }
+      return content;
+    case 'highlight':
+      if ('value' in content) {
+        return { type: 'html', value: `==${content.value}==` } as unknown as PhrasingContent;
+      }
+      return content;
+    case 'underline':
+      if ('value' in content) {
+        return { type: 'html', value: `<u>${content.value}</u>` } as unknown as PhrasingContent;
       }
       return content;
     case 'link':
@@ -254,8 +296,28 @@ function wrapWithMark(content: PhrasingContent, mark: PMMark): PhrasingContent {
         },
       } as unknown as PhrasingContent;
     }
+    case 'hashTag':
+      return content;
     default:
       return content;
+  }
+}
+
+/**
+ * Strip trailing whitespace from the last text node(s) in an inline
+ * content array.  remark-stringify encodes trailing spaces in certain
+ * positions (e.g. headings) as `&#x20;`, which is an unwanted artifact.
+ */
+function trimTrailingWhitespace(children: PhrasingContent[]): void {
+  for (let i = children.length - 1; i >= 0; i--) {
+    const child = children[i];
+    if (child.type === 'text') {
+      child.value = child.value.trimEnd();
+      if (child.value) return;
+      children.splice(i, 1);
+    } else {
+      return;
+    }
   }
 }
 

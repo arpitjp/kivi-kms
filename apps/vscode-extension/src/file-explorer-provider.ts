@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 
 type TreeNode = FileNode | FolderNode;
 
@@ -21,6 +22,8 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
 
   refresh(): void {
     this.mdCache.clear();
+    this.mdDirSet = null;
+    this.mdDirSetPromise = null;
     this._onDidChangeTreeData.fire();
   }
 
@@ -88,33 +91,45 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
     }
   }
 
+  private mdDirSet: Set<string> | null = null;
+  private mdDirSetPromise: Promise<Set<string>> | null = null;
+
+  private async getMdDirSet(): Promise<Set<string>> {
+    if (this.mdDirSet) return this.mdDirSet;
+    if (this.mdDirSetPromise) return this.mdDirSetPromise;
+
+    this.mdDirSetPromise = (async () => {
+      const dirs = new Set<string>();
+      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsRoot) return dirs;
+
+      const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 5000);
+      for (const uri of files) {
+        let dir = path.dirname(uri.fsPath);
+        while (dir && dir.length >= wsRoot.length) {
+          if (dirs.has(dir)) break;
+          dirs.add(dir);
+          const parent = path.dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
+        }
+      }
+      this.mdDirSet = dirs;
+      this.mdDirSetPromise = null;
+      return dirs;
+    })();
+
+    return this.mdDirSetPromise;
+  }
+
   private async containsMarkdown(dir: vscode.Uri): Promise<boolean> {
     const key = dir.toString();
     const cached = this.mdCache.get(key);
     if (cached !== undefined) return cached;
 
-    try {
-      const entries = await vscode.workspace.fs.readDirectory(dir);
-      for (const [name, type] of entries) {
-        if (type === vscode.FileType.File && (name.endsWith('.md') || name.endsWith('.markdown'))) {
-          this.mdCache.set(key, true);
-          return true;
-        }
-      }
-      // Only recurse into subdirectories after checking all files at this level
-      for (const [name, type] of entries) {
-        if (type === vscode.FileType.Directory && !name.startsWith('.') && name !== 'node_modules') {
-          const has = await this.containsMarkdown(vscode.Uri.joinPath(dir, name));
-          if (has) {
-            this.mdCache.set(key, true);
-            return true;
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-    this.mdCache.set(key, false);
-    return false;
+    const dirs = await this.getMdDirSet();
+    const result = dirs.has(dir.fsPath);
+    this.mdCache.set(key, result);
+    return result;
   }
 }

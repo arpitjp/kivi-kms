@@ -17,7 +17,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:markdown"
+    "onLanguage:markdown",
+    "onCustomEditor:kivi.markdownEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -58,6 +59,10 @@
         {
           "id": "kivi.backlinks",
           "name": "Backlinks"
+        },
+        {
+          "id": "kivi.tags",
+          "name": "Tags"
         }
       ]
     },
@@ -65,7 +70,11 @@
       {
         "command": "kivi.openInKivi",
         "title": "Open in Kivi",
-        "category": "Kivi"
+        "category": "Kivi",
+        "icon": {
+          "dark": "images/kivi-dark.svg",
+          "light": "images/kivi-light.svg"
+        }
       },
       {
         "command": "kivi.openWithTextEditor",
@@ -97,6 +106,26 @@
         "command": "kivi.refreshBacklinks",
         "title": "Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "kivi.refreshTags",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kivi.collapseOutline",
+        "title": "Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "kivi.collapseTags",
+        "title": "Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "kivi.searchTag",
+        "title": "Search Tag in Workspace",
+        "category": "Kivi"
       },
       {
         "command": "kivi.openGraphGlobal",
@@ -157,6 +186,22 @@
         },
         {
           "command": "kivi.refreshBacklinks",
+          "when": "false"
+        },
+        {
+          "command": "kivi.refreshTags",
+          "when": "false"
+        },
+        {
+          "command": "kivi.collapseOutline",
+          "when": "false"
+        },
+        {
+          "command": "kivi.collapseTags",
+          "when": "false"
+        },
+        {
+          "command": "kivi.searchTag",
           "when": "false"
         },
         {
@@ -237,8 +282,23 @@
           "group": "navigation"
         },
         {
+          "command": "kivi.collapseOutline",
+          "when": "view == kivi.outline",
+          "group": "navigation"
+        },
+        {
           "command": "kivi.refreshBacklinks",
           "when": "view == kivi.backlinks",
+          "group": "navigation"
+        },
+        {
+          "command": "kivi.refreshTags",
+          "when": "view == kivi.tags",
+          "group": "navigation"
+        },
+        {
+          "command": "kivi.collapseTags",
+          "when": "view == kivi.tags",
           "group": "navigation"
         }
       ]
@@ -336,7 +396,8 @@
   },
   "dependencies": {
     "@kivi/editor-core": "workspace:*",
-    "@kivi/vault": "workspace:*"
+    "@kivi/vault": "workspace:*",
+    "katex": "^0.16.44"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

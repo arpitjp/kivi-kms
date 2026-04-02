@@ -1,11 +1,30 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
-import { common, createLowlight } from 'lowlight';
 
 const codeBlockEnhancedKey = new PluginKey('kiviCodeBlockEnhanced');
 
-const lowlight = createLowlight(common);
+type Lowlight = ReturnType<typeof import('lowlight').createLowlight>;
+let lowlight: Lowlight | null = null;
+let lowlightLoading: Promise<void> | null = null;
+const lowlightReadyCallbacks: (() => void)[] = [];
+
+function ensureLowlight(): Promise<void> {
+  if (lowlight) return Promise.resolve();
+  if (!lowlightLoading) {
+    lowlightLoading = import('lowlight').then(({ common, createLowlight }) => {
+      lowlight = createLowlight(common);
+      for (const cb of lowlightReadyCallbacks.splice(0)) cb();
+    });
+  }
+  return lowlightLoading;
+}
+
+function onLowlightReady(cb: () => void) {
+  if (lowlight) { cb(); return; }
+  lowlightReadyCallbacks.push(cb);
+  ensureLowlight();
+}
 
 interface HastNode {
   type: string;
@@ -39,44 +58,95 @@ function flattenHast(node: HastNode, className?: string): { text: string; classe
   return results;
 }
 
+function highlightCodeBlock(node: any, pos: number): Decoration[] {
+  const decorations: Decoration[] = [];
+  if (!lowlight) return decorations;
+  const language = node.attrs.language || '';
+  const text = node.textContent;
+  if (!text) return decorations;
+
+  let hast;
+  try {
+    if (language && lowlight.registered(language)) {
+      hast = lowlight.highlight(language, text);
+    } else {
+      hast = lowlight.highlightAuto(text);
+    }
+  } catch {
+    return decorations;
+  }
+
+  const tokens = flattenHast(hast as unknown as HastNode);
+  let offset = pos + 1;
+  for (const token of tokens) {
+    const from = offset;
+    const to = from + token.text.length;
+    offset = to;
+    if (token.classes.length > 0 && from < to) {
+      decorations.push(
+        Decoration.inline(from, to, {
+          class: token.classes.join(' '),
+        })
+      );
+    }
+  }
+  return decorations;
+}
+
 function getHighlightDecorations(doc: any): DecorationSet {
   const decorations: Decoration[] = [];
 
   doc.descendants((node: any, pos: number) => {
     if (node.type.name !== 'codeBlock') return;
+    decorations.push(...highlightCodeBlock(node, pos));
+  });
 
-    const language = node.attrs.language || '';
-    const text = node.textContent;
-    if (!text) return;
+  return DecorationSet.create(doc, decorations);
+}
 
-    let hast;
-    try {
-      if (language && lowlight.registered(language)) {
-        hast = lowlight.highlight(language, text);
-      } else {
-        hast = lowlight.highlightAuto(text);
-      }
-    } catch {
-      return;
-    }
+function updateHighlightDecorations(tr: any, oldDecorations: DecorationSet): DecorationSet {
+  // Map existing decorations through the transaction steps
+  const mapped = oldDecorations.map(tr.mapping, tr.doc);
 
-    const tokens = flattenHast(hast as unknown as HastNode);
-    let offset = pos + 1;
-    for (const token of tokens) {
-      const from = offset;
-      const to = from + token.text.length;
-      offset = to;
-      if (token.classes.length > 0 && from < to) {
-        decorations.push(
-          Decoration.inline(from, to, {
-            class: token.classes.join(' '),
-          })
-        );
+  // Find code blocks that overlap with changed ranges and rehighlight only those
+  const changedRanges: { from: number; to: number }[] = [];
+  for (let i = 0; i < tr.steps.length; i++) {
+    const map = tr.mapping.maps[i];
+    map.forEach((oldFrom: number, oldTo: number, newFrom: number, newTo: number) => {
+      changedRanges.push({ from: newFrom, to: newTo });
+    });
+  }
+
+  if (changedRanges.length === 0) return mapped;
+
+  // Collect code blocks that intersect changed ranges
+  const affectedBlocks: { node: any; pos: number }[] = [];
+  tr.doc.descendants((node: any, pos: number) => {
+    if (node.type.name !== 'codeBlock') return;
+    const end = pos + node.nodeSize;
+    for (const range of changedRanges) {
+      if (range.from <= end && range.to >= pos) {
+        affectedBlocks.push({ node, pos });
+        break;
       }
     }
   });
 
-  return DecorationSet.create(doc, decorations);
+  if (affectedBlocks.length === 0) return mapped;
+
+  // Remove old decorations in affected block ranges and add fresh ones
+  let result = mapped;
+  for (const { node, pos } of affectedBlocks) {
+    const end = pos + node.nodeSize;
+    result = result.remove(result.find(pos, end));
+  }
+
+  const newDecorations: Decoration[] = [];
+  for (const { node, pos } of affectedBlocks) {
+    newDecorations.push(...highlightCodeBlock(node, pos));
+  }
+
+  return result.add(tr.doc, newDecorations);
 }
 
 const COLLAPSED_MAX_LINES = 15;
@@ -102,11 +172,14 @@ export const CodeBlockEnhanced = Extension.create({
       key: codeBlockEnhancedKey,
       state: {
         init(_, { doc }) {
+          if (!lowlight) return DecorationSet.empty;
           return getHighlightDecorations(doc);
         },
         apply(tr, oldDecorations) {
+          if (!lowlight) return DecorationSet.empty;
+          if (tr.getMeta('lowlightReady')) return getHighlightDecorations(tr.doc);
           if (!tr.docChanged) return oldDecorations;
-          return getHighlightDecorations(tr.doc);
+          return updateHighlightDecorations(tr, oldDecorations);
         },
       },
       props: {
@@ -114,6 +187,14 @@ export const CodeBlockEnhanced = Extension.create({
           return codeBlockEnhancedKey.getState(state) as DecorationSet;
         },
       },
+    });
+
+    onLowlightReady(() => {
+      const view = editor.view;
+      if (view && !view.isDestroyed) {
+        const tr = view.state.tr.setMeta('lowlightReady', true);
+        view.dispatch(tr);
+      }
     });
 
     const controlsPlugin = new Plugin({

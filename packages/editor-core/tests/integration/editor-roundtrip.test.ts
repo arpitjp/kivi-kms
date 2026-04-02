@@ -12,6 +12,7 @@ import TableHeader from '@tiptap/extension-table-header';
 import Underline from '@tiptap/extension-underline';
 import { parseMarkdown, resetBlockIdCounter } from '@kivi/markdown-parser';
 import { serializeDocument } from '@kivi/markdown-serializer';
+import { createKiviEditor } from '../../src/editor.js';
 import { Frontmatter } from '../../src/extensions/frontmatter.js';
 import { MathBlock, MathInline } from '../../src/extensions/math.js';
 import { FootnoteRef, FootnoteDef } from '../../src/extensions/footnote.js';
@@ -381,6 +382,168 @@ The end.
   });
 });
 
+// ── Mode switch simulation ─────────────────────────────────
+//
+// Mode switching (live ↔ source ↔ split) serializes via getMarkdown()
+// and reloads via loadMarkdown(). These tests verify that content is
+// preserved across multiple cycles through that path.
+
+describe('integration: mode switch (getMarkdown → loadMarkdown round-trip)', () => {
+  let editor: Editor;
+  let el: HTMLElement;
+
+  beforeEach(() => {
+    const result = createTestEditor();
+    editor = result.editor;
+    el = result.el;
+  });
+
+  afterEach(() => {
+    editor.destroy();
+    el.remove();
+  });
+
+  function simulateModeSwitch(source: string): string {
+    resetBlockIdCounter();
+    const kiviDoc = parseMarkdown(source);
+    editor.commands.setContent(kiviDoc.doc);
+    const exported = serializeDocument({
+      ...kiviDoc,
+      doc: editor.getJSON() as Record<string, unknown>,
+    });
+    return exported;
+  }
+
+  function multiCycleRoundTrip(source: string, cycles: number): string {
+    let current = source;
+    for (let i = 0; i < cycles; i++) {
+      current = simulateModeSwitch(current);
+    }
+    return current;
+  }
+
+  it('single live→source→live preserves headings and paragraphs', () => {
+    const source = '# Hello\n\nThis is a test.\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('single cycle preserves links', () => {
+    const source = 'Check [Google](https://google.com) and [MDN](https://mdn.dev).\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('single cycle preserves inline formatting', () => {
+    const source = 'This is **bold**, *italic*, ~~struck~~, and `code`.\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('single cycle preserves lists', () => {
+    const source = '- Item A\n- Item B\n\n1. First\n2. Second\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('single cycle preserves code blocks', () => {
+    const source = '```typescript\nconst x: number = 42;\n```\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('single cycle preserves tables', () => {
+    const source = '| Name | Value |\n| --- | --- |\n| foo | bar |\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('single cycle preserves blockquotes', () => {
+    const source = '> First line\n>\n> Second line\n';
+    const result = multiCycleRoundTrip(source, 1);
+    expect(result).toBe(source);
+  });
+
+  it('three cycles preserve content (no drift)', () => {
+    const source = `# Multi-cycle Test
+
+Paragraph with **bold** and [link](https://example.com).
+
+- List item
+
+\`\`\`js
+console.log("hello");
+\`\`\`
+
+> Blockquote
+`;
+    const result = multiCycleRoundTrip(source, 3);
+    expect(result).toContain('# Multi-cycle Test');
+    expect(result).toContain('**bold**');
+    expect(result).toContain('[link](https://example.com)');
+    expect(result).toContain('- List item');
+    expect(result).toContain('```js');
+    expect(result).toContain('> Blockquote');
+  });
+
+  it('five cycles of kitchen-sink document show no content loss', () => {
+    const source = `# Kitchen Sink
+
+Paragraph with **bold**, *italic*, ~~strikethrough~~, and \`inline code\`.
+
+## Links
+
+Visit [Example](https://example.com) or [MDN](https://mdn.dev).
+
+## Lists
+
+- Bullet 1
+- Bullet 2
+
+1. Ordered 1
+2. Ordered 2
+
+- [x] Done
+- [ ] Pending
+
+## Table
+
+| A | B | C |
+| --- | --- | --- |
+| 1 | 2 | 3 |
+
+## Code
+
+\`\`\`python
+print("hello world")
+\`\`\`
+
+## Blockquote
+
+> This is a quote
+>
+> With multiple paragraphs
+
+---
+
+The end.
+`;
+    const after5 = multiCycleRoundTrip(source, 5);
+    expect(after5).toContain('# Kitchen Sink');
+    expect(after5).toContain('**bold**');
+    expect(after5).toContain('*italic*');
+    expect(after5).toContain('~~strikethrough~~');
+    expect(after5).toContain('`inline code`');
+    expect(after5).toContain('[Example](https://example.com)');
+    expect(after5).toContain('- Bullet 1');
+    expect(after5).toContain('| A | B | C |');
+    expect(after5).toContain('```python');
+    expect(after5).toContain('> This is a quote');
+    expect(after5).toContain('---');
+    expect(after5).toContain('The end.');
+  });
+});
+
 describe('integration: dirty tracking', () => {
   let editor: Editor;
   let el: HTMLElement;
@@ -435,5 +598,71 @@ describe('integration: dirty tracking', () => {
 
     expect(block0?.dirty).toBe(false);
     expect(block1?.dirty).toBe(true);
+  });
+});
+
+// ── deferContent + loadMarkdownAsync ──────────────────────────
+
+describe('deferContent and loadMarkdownAsync', () => {
+  let kiviEditors: ReturnType<typeof createKiviEditor>[] = [];
+
+  afterEach(() => {
+    for (const ke of kiviEditors) ke.destroy();
+    kiviEditors = [];
+    document.body.innerHTML = '';
+  });
+
+  it('deferContent=true creates an empty editor', () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const kivi = createKiviEditor({
+      element: el,
+      content: '# Hello\n\nWorld\n',
+      deferContent: true,
+    });
+    kiviEditors.push(kivi);
+    const md = kivi.getMarkdown();
+    expect(md.trim()).toBe('');
+  });
+
+  it('loadMarkdownAsync loads content into a deferred editor', async () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const kivi = createKiviEditor({
+      element: el,
+      content: '# Hello\n\nWorld\n',
+      deferContent: true,
+    });
+    kiviEditors.push(kivi);
+    await kivi.loadMarkdownAsync('# Hello\n\nWorld\n');
+    const md = kivi.getMarkdown();
+    expect(md).toContain('# Hello');
+    expect(md).toContain('World');
+  });
+
+  it('deferContent=false loads content synchronously', () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const kivi = createKiviEditor({
+      element: el,
+      content: '# Sync\n\nLoaded\n',
+      deferContent: false,
+    });
+    kiviEditors.push(kivi);
+    const md = kivi.getMarkdown();
+    expect(md).toContain('# Sync');
+    expect(md).toContain('Loaded');
+  });
+
+  it('loadMarkdownAsync round-trips task lists', async () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const kivi = createKiviEditor({ element: el, deferContent: true });
+    kiviEditors.push(kivi);
+    const source = '- [ ] unchecked\n- [x] checked\n';
+    await kivi.loadMarkdownAsync(source);
+    const md = kivi.getMarkdown();
+    expect(md).toContain('- [ ] unchecked');
+    expect(md).toContain('- [x] checked');
   });
 });

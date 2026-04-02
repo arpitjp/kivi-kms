@@ -30,6 +30,10 @@ export interface EditorConfig {
   onNavigateLink?: (link: { kind: string; target: string; alias?: string }) => void;
   /** Custom image storage adapter (saves pasted images to disk instead of data URLs) */
   imageStorageAdapter?: { store(blob: Blob, filename: string): Promise<string> };
+  /** Tag autocomplete: returns matching tags for a query prefix */
+  tagSuggestion?: { items: (query: string) => string[] | Promise<string[]> };
+  /** When true, content is stored but not loaded synchronously; call loadMarkdownAsync() after creation */
+  deferContent?: boolean;
 }
 
 export type KiviTheme = 'dark' | 'light' | 'sepia' | 'nord';

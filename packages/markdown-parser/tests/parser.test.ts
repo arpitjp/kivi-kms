@@ -229,43 +229,55 @@ describe('wiki links', () => {
 });
 
 describe('hashtags', () => {
-  it('parses #tag-name in plain text into hashTag nodes', () => {
+  it('parses #tag-name in plain text into hashTag marks', () => {
     const result = parseMarkdown('Track #tag-name in prose.');
     const doc = result.doc as { type: string; content: PMNode[] };
     const nodes = paragraphContent(doc);
-    const tag = nodes.find((n) => n.type === 'hashTag') as { type: string; attrs?: { tag: string } };
-    expect(tag).toBeDefined();
-    expect(tag.attrs?.tag).toBe('tag-name');
+    const tagged = nodes.find(
+      (n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'hashTag'),
+    ) as PMText | undefined;
+    expect(tagged).toBeDefined();
+    expect(tagged?.text).toBe('#tag-name');
+    const mark = (tagged as PMText).marks?.find((m) => m.type === 'hashTag');
+    expect(mark?.attrs?.tag).toBe('tag-name');
   });
 
   it('parses hashtag after whitespace', () => {
     const result = parseMarkdown('Hello world #my_tag');
     const doc = result.doc as { type: string; content: PMNode[] };
     const nodes = paragraphContent(doc);
-    const tag = nodes.find((n) => n.type === 'hashTag') as { type: string; attrs?: { tag: string } };
-    expect(tag?.attrs?.tag).toBe('my_tag');
+    const tagged = nodes.find(
+      (n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'hashTag'),
+    ) as PMText | undefined;
+    const mark = tagged?.marks?.find((m) => m.type === 'hashTag');
+    expect(mark?.attrs?.tag).toBe('my_tag');
   });
 
   it('parses multiple hashtags in one paragraph', () => {
     const result = parseMarkdown('#first and #second');
     const doc = result.doc as { type: string; content: PMNode[] };
     const nodes = paragraphContent(doc);
-    const tags = nodes.filter((n) => n.type === 'hashTag') as { attrs?: { tag: string } }[];
-    expect(tags.map((t) => t.attrs?.tag)).toEqual(['first', 'second']);
+    const tags = nodes
+      .filter((n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'hashTag'))
+      .map((n) => (n as PMText).marks?.find((m) => m.type === 'hashTag')?.attrs?.tag);
+    expect(tags).toEqual(['first', 'second']);
   });
 
   it('does not split hashtags inside inline code', () => {
     const result = parseMarkdown('Use `#not-a-tag` here.');
     const doc = result.doc as { type: string; content: PMNode[] };
     const nodes = paragraphContent(doc);
-    expect(nodes.some((n) => n.type === 'hashTag')).toBe(false);
+    const tagged = nodes.find(
+      (n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'hashTag'),
+    );
+    expect(tagged).toBeUndefined();
     const codeText = nodes.find(
       (n) => n.type === 'text' && (n as PMText).marks?.some((m) => m.type === 'code'),
     ) as PMText | undefined;
     expect(codeText?.text).toBe('#not-a-tag');
   });
 
-  it('does not emit hashTag nodes inside fenced code blocks', () => {
+  it('does not emit hashTag marks inside fenced code blocks', () => {
     const md = '```\n#comment-not-tag\n```';
     const result = parseMarkdown(md);
     const doc = result.doc as { type: string; content: PMNode[] };

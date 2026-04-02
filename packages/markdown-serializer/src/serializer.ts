@@ -1,6 +1,8 @@
 import { unified } from 'unified';
 import remarkStringify from 'remark-stringify';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkFrontmatter from 'remark-frontmatter';
 import type { Root } from 'mdast';
 import type { KiviDocument, StyleHints } from '@kivi/shared-types';
 import type { SerializeOptions } from './types.js';
@@ -36,7 +38,13 @@ export function serializeDocument(kiviDoc: KiviDocument, options?: SerializeOpti
 
   const parts: string[] = [];
 
+  // Build gap index for O(1) lookup instead of O(n) per block
+  let gapIndex: Map<number, string> | null = null;
   if (!blockCountChanged) {
+    gapIndex = new Map();
+    for (const g of sourceMap.gaps) {
+      gapIndex.set(g.afterBlockIndex, g.text);
+    }
     parts.push(sourceMap.preamble);
   }
 
@@ -51,10 +59,10 @@ export function serializeDocument(kiviDoc: KiviDocument, options?: SerializeOpti
       parts.push(serializeNode(node, blockMeta?.styleHints));
     }
 
-    if (!blockCountChanged) {
-      const gap = sourceMap.gaps.find((g) => g.afterBlockIndex === i);
-      if (gap) {
-        parts.push(gap.text);
+    if (!blockCountChanged && gapIndex) {
+      const gapText = gapIndex.get(i);
+      if (gapText !== undefined) {
+        parts.push(gapText);
       } else if (i < topLevelNodes.length - 1) {
         parts.push('\n\n');
       }
@@ -84,29 +92,41 @@ export function serializeNode(node: PMNodeJSON, styleHints?: StyleHints): string
   return stringifyMdast(mdastRoot, styleHints);
 }
 
-function stringifyMdast(root: Root, styleHints?: StyleHints): string {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const wikiLinkHandler = (node: any) => {
-    const target = node.value || '';
-    const alias = node.data?.alias;
-    if (alias && alias !== target) {
-      return `[[${target}|${alias}]]`;
-    }
-    return `[[${target}]]`;
-  };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const wikiLinkHandler = (node: any) => {
+  const target = node.value || '';
+  const alias = node.data?.alias;
+  if (alias && alias !== target) {
+    return `[[${target}|${alias}]]`;
+  }
+  return `[[${target}]]`;
+};
 
-  const processor = unified().use(remarkStringify, {
-    bullet: (styleHints?.listMarker as '-' | '*' | '+') || '-',
-    emphasis: styleHints?.emphasisMarker || '*',
-    strong: styleHints?.strongMarker === '__' ? '_' : '*',
-    fence: styleHints?.codeFenceChar || '`',
-    rule: '-',
-    listItemIndent: 'one',
-    // Custom handler for wiki-link nodes; remark-stringify passes through
-    // to mdast-util-to-markdown which supports `handlers`
-    handlers: { wikiLink: wikiLinkHandler },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any).use(remarkGfm);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const stringifyProcessorCache = new Map<string, any>();
+
+function stringifyCacheKey(hints?: StyleHints): string {
+  if (!hints) return 'default';
+  return `${hints.listMarker || '-'}|${hints.emphasisMarker || '*'}|${hints.strongMarker || '*'}|${hints.codeFenceChar || '\`'}`;
+}
+
+function stringifyMdast(root: Root, styleHints?: StyleHints): string {
+  const key = stringifyCacheKey(styleHints);
+  let processor = stringifyProcessorCache.get(key);
+
+  if (!processor) {
+    processor = unified().use(remarkStringify, {
+      bullet: (styleHints?.listMarker as '-' | '*' | '+') || '-',
+      emphasis: styleHints?.emphasisMarker || '*',
+      strong: styleHints?.strongMarker === '__' ? '_' : '*',
+      fence: styleHints?.codeFenceChar || '`',
+      rule: '-',
+      listItemIndent: 'one',
+      handlers: { wikiLink: wikiLinkHandler },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any).use(remarkGfm).use(remarkMath).use(remarkFrontmatter, ['yaml', 'toml']);
+    stringifyProcessorCache.set(key, processor);
+  }
 
   const result = processor.stringify(root);
   return result.trimEnd();

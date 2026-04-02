@@ -21,6 +21,17 @@ describe('serializeDocument', () => {
     expect(result).toBe(md);
   });
 
+  it('heading with trailing space does not produce &#x20; entity', () => {
+    const node = {
+      type: 'heading',
+      attrs: { level: 1 },
+      content: [{ type: 'text', text: 'Child A ' }],
+    };
+    const result = serializeNode(node);
+    expect(result).not.toContain('&#x20;');
+    expect(result).toBe('# Child A');
+  });
+
   it('round-trips bold and italic', () => {
     const md = 'This is **bold** and *italic* text.';
     const kiviDoc = parseMarkdown(md);
@@ -213,10 +224,10 @@ describe('serializeNode wiki-link, hashtag, TOC, mermaid, excalidraw', () => {
     expect(serializeNode(node)).toBe('```excalidraw\n{}\n```');
   });
 
-  it('serializes a hashTag node (remark-stringify escapes leading # in paragraph)', () => {
+  it('serializes a hashTag mark (remark-stringify escapes leading # in paragraph)', () => {
     const node = {
       type: 'paragraph',
-      content: [{ type: 'hashTag', attrs: { tag: 'mytag' } }],
+      content: [{ type: 'text', text: '#mytag', marks: [{ type: 'hashTag', attrs: { tag: 'mytag' } }] }],
     };
     expect(serializeNode(node)).toBe('\\#mytag');
   });

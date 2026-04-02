@@ -61,7 +61,18 @@ export function parseMarkdown(source: string, options?: ParseOptions): KiviDocum
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+const processorCache = new Map<string, any>();
+
+function optsCacheKey(opts: Required<ParseOptions>): string {
+  return `${+opts.gfm}${+opts.frontmatter}${+opts.math}${+opts.wikiLinks}`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildProcessor(opts: Required<ParseOptions>): any {
+  const key = optsCacheKey(opts);
+  const cached = processorCache.get(key);
+  if (cached) return cached;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let processor: any = unified().use(remarkParse);
 
@@ -82,6 +93,7 @@ function buildProcessor(opts: Required<ParseOptions>): any {
     });
   }
 
+  processorCache.set(key, processor);
   return processor;
 }
 

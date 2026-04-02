@@ -109,11 +109,11 @@ export const LinkPopup = Extension.create({
             editBtn.style.pointerEvents = 'auto';
             editBtn.addEventListener('mousedown', (e) => e.preventDefault());
             editBtn.addEventListener('click', () => {
-              const newUrl = prompt('URL:', href);
-              if (newUrl !== null) {
-                editor.chain().focus().extendMarkRange('link').setLink({ href: newUrl }).run();
-                removePopup();
-              }
+              const { from, to } = editor.state.selection;
+              document.dispatchEvent(new CustomEvent('kivi-link-request', {
+                detail: { from, to, currentUrl: href, editMode: true },
+              }));
+              removePopup();
             });
             popup.appendChild(editBtn);
 

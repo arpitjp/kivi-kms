@@ -46,9 +46,12 @@ import {
   italicMark,
   strikeMark,
   codeMark,
+  subscriptMark,
+  superscriptMark,
+  highlightMark,
   linkMark,
   wikiLinkMark,
-  hashTagNode,
+  hashTagMark,
   tocBlockNode,
 } from './schema.js';
 
@@ -128,13 +131,23 @@ function convertNode(
     case 'inlineMath':
       return convertMathInline(node as RootContent & { value: string }, parentMarks);
     default: {
-      // Wiki-link nodes from remark-wiki-link
-      if ((node as { type: string }).type === 'wikiLink') {
+      const nt = (node as { type: string }).type;
+      if (nt === 'wikiLink') {
         return convertWikiLink(node as unknown as RootContent & { value: string; data?: { alias?: string } }, parentMarks);
       }
-      // Handle frontmatter types that remark-frontmatter adds (e.g. 'toml')
+      // GFM footnote reference: [^label]
+      if (nt === 'footnoteReference') {
+        const label = (node as unknown as { identifier: string }).identifier || '';
+        return { type: 'footnoteRef', attrs: { label } };
+      }
+      // GFM footnote definition: [^label]: content
+      if (nt === 'footnoteDefinition') {
+        const fnNode = node as unknown as { identifier: string; children: RootContent[] };
+        const children = convertChildren(fnNode.children as RootContent[], []);
+        return { type: 'footnoteDef', attrs: { label: fnNode.identifier || '' }, content: children.length ? children : [paragraphNode([])] };
+      }
       const anyNode = node as RootContent & { value?: string };
-      if ('value' in anyNode && typeof anyNode.value === 'string' && node.type === ('toml' as string)) {
+      if ('value' in anyNode && typeof anyNode.value === 'string' && nt === 'toml') {
         return convertFrontmatter(anyNode as RootContent & { value: string });
       }
       return null;
@@ -264,11 +277,32 @@ function convertImage(node: Image): PMNodeJSON {
 }
 
 const HASHTAG_RE = /(?:^|\s)#([a-zA-Z0-9_/][a-zA-Z0-9_/-]*)/g;
+const HIGHLIGHT_RE = /==([^=\n]+?)==/g;
 
 function convertText(node: Text, marks: PMMarkJSON[]): PMNodeJSON | PMNodeJSON[] {
-  // If text has marks (bold, italic, etc.) or no hashtags, return as-is
-  if (marks.length > 0 || !HASHTAG_RE.test(node.value)) {
-    return textNode(node.value, marks.length > 0 ? marks : undefined);
+  const value = node.value;
+
+  // Split ==highlight== before other processing
+  if (marks.length === 0 && HIGHLIGHT_RE.test(value)) {
+    HIGHLIGHT_RE.lastIndex = 0;
+    const parts: PMNodeJSON[] = [];
+    let lastIdx = 0;
+    let m: RegExpExecArray | null;
+    while ((m = HIGHLIGHT_RE.exec(value)) !== null) {
+      if (m.index > lastIdx) {
+        parts.push(...flatArray(convertText({ type: 'text', value: value.slice(lastIdx, m.index) } as Text, marks)));
+      }
+      parts.push(textNode(m[1], [highlightMark()]));
+      lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx < value.length) {
+      parts.push(...flatArray(convertText({ type: 'text', value: value.slice(lastIdx) } as Text, marks)));
+    }
+    return parts.length === 1 ? parts[0] : parts;
+  }
+
+  if (!HASHTAG_RE.test(value)) {
+    return textNode(value, marks.length > 0 ? marks : undefined);
   }
 
   HASHTAG_RE.lastIndex = 0;
@@ -276,29 +310,33 @@ function convertText(node: Text, marks: PMMarkJSON[]): PMNodeJSON | PMNodeJSON[]
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = HASHTAG_RE.exec(node.value)) !== null) {
+  while ((match = HASHTAG_RE.exec(value)) !== null) {
     const fullMatch = match[0];
     const tag = match[1];
-    const prefixLen = fullMatch.length - tag.length - 1; // space or start-of-string before #
+    const prefixLen = fullMatch.length - tag.length - 1;
 
     const beforeEnd = match.index + prefixLen;
     if (beforeEnd > lastIndex) {
-      parts.push(textNode(node.value.slice(lastIndex, beforeEnd)));
+      parts.push(textNode(value.slice(lastIndex, beforeEnd), marks.length > 0 ? marks : undefined));
     }
 
-    parts.push(hashTagNode(tag));
+    parts.push(textNode(`#${tag}`, [...marks, hashTagMark(tag)]));
     lastIndex = match.index + fullMatch.length;
   }
 
   if (parts.length === 0) {
-    return textNode(node.value);
+    return textNode(value, marks.length > 0 ? marks : undefined);
   }
 
-  if (lastIndex < node.value.length) {
-    parts.push(textNode(node.value.slice(lastIndex)));
+  if (lastIndex < value.length) {
+    parts.push(textNode(value.slice(lastIndex), marks.length > 0 ? marks : undefined));
   }
 
   return parts;
+}
+
+function flatArray(v: PMNodeJSON | PMNodeJSON[]): PMNodeJSON[] {
+  return Array.isArray(v) ? v : [v];
 }
 
 function convertEmphasis(node: Emphasis, parentMarks: PMMarkJSON[]): PMNodeJSON[] {
@@ -322,7 +360,32 @@ function convertLink(node: Link, parentMarks: PMMarkJSON[]): PMNodeJSON[] {
   return convertPhrasingContent(node.children, [...parentMarks, mark]);
 }
 
-function convertHtml(node: Html): PMNodeJSON {
+const INLINE_HTML_MARKS: [RegExp, () => PMMarkJSON][] = [
+  [/^<sub>(.*?)<\/sub>$/s, subscriptMark],
+  [/^<sup>(.*?)<\/sup>$/s, superscriptMark],
+  [/^<mark>(.*?)<\/mark>$/s, () => ({ type: 'highlight' })],
+  [/^<u>(.*?)<\/u>$/s, () => ({ type: 'underline' })],
+  [/^<ins>(.*?)<\/ins>$/s, () => ({ type: 'underline' })],
+  [/^<kbd>(.*?)<\/kbd>$/s, () => ({ type: 'code' })],
+  [/^<del>(.*?)<\/del>$/s, () => ({ type: 'strike' })],
+  [/^<em>(.*?)<\/em>$/s, () => ({ type: 'italic' })],
+  [/^<strong>(.*?)<\/strong>$/s, () => ({ type: 'bold' })],
+  [/^<b>(.*?)<\/b>$/s, () => ({ type: 'bold' })],
+  [/^<i>(.*?)<\/i>$/s, () => ({ type: 'italic' })],
+  [/^<s>(.*?)<\/s>$/s, () => ({ type: 'strike' })],
+  [/^<code>(.*?)<\/code>$/s, () => ({ type: 'code' })],
+];
+
+function convertHtml(node: Html): PMNodeJSON | PMNodeJSON[] {
+  for (const [regex, markFn] of INLINE_HTML_MARKS) {
+    const m = node.value.match(regex);
+    if (m) return textNode(m[1], [markFn()]);
+  }
+  // Standalone link HTML
+  const linkMatch = node.value.match(/^<a\s+href="([^"]*)"[^>]*>(.*?)<\/a>$/s);
+  if (linkMatch) {
+    return textNode(linkMatch[2], [{ type: 'link', attrs: { href: linkMatch[1], title: null, target: '_blank' } }]);
+  }
   return paragraphNode([textNode(node.value)]);
 }
 

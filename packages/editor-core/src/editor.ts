@@ -1,6 +1,7 @@
 import { Editor, Extension } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
+import Code from '@tiptap/extension-code';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
 import TaskList from '@tiptap/extension-task-list';
@@ -10,10 +11,14 @@ import TableRow from '@tiptap/extension-table-row';
 import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
 import Underline from '@tiptap/extension-underline';
+import Subscript from '@tiptap/extension-subscript';
+import Superscript from '@tiptap/extension-superscript';
+import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
 import type { EditorConfig, EditorUpdateCallback, KiviDocument, SourceMap, SearchOptions } from '@kivi/shared-types';
 import { parseMarkdown, resetBlockIdCounter } from '@kivi/markdown-parser';
 import { serializeDocument } from '@kivi/markdown-serializer';
+import { parseMarkdownAsync } from './worker/index.js';
 import { Frontmatter } from './extensions/frontmatter.js';
 import { MathBlock, MathInline } from './extensions/math.js';
 import { FootnoteRef, FootnoteDef } from './extensions/footnote.js';
@@ -55,6 +60,11 @@ export class KiviEditor {
         StarterKit.configure({
           heading: { levels: [1, 2, 3, 4, 5, 6] },
           codeBlock: { HTMLAttributes: { class: 'kivi-code-block' } },
+          code: false,
+        }),
+        Code.extend({
+          inclusive: false,
+          addInputRules() { return []; },
         }),
         Link.configure({
           openOnClick: false,
@@ -98,6 +108,9 @@ export class KiviEditor {
           },
         }),
         Underline,
+        Subscript,
+        Superscript,
+        Highlight.configure({ multicolor: false }),
         Placeholder.configure({
           placeholder: options.placeholder || 'Start writing...',
         }),
@@ -112,7 +125,9 @@ export class KiviEditor {
         }),
         DirtyTracker,
         WikiLink,
-        HashTag,
+        HashTag.configure({
+          suggestion: options.tagSuggestion ? { items: options.tagSuggestion.items } : undefined,
+        }),
         TocBlock,
         SlashCommands.configure({
           onCreatePage: options.onCreatePage,
@@ -160,17 +175,19 @@ export class KiviEditor {
         },
       },
       onUpdate: () => {
-        this.scheduleUpdate();
+        if (!this.suppressUpdates) {
+          this.scheduleUpdate();
+        }
       },
     });
 
-    if (options.content) {
+    if (options.content && !options.deferContent) {
       this.loadMarkdown(options.content);
     }
   }
 
   /**
-   * Load Markdown content into the editor.
+   * Load Markdown content into the editor (synchronous).
    */
   loadMarkdown(source: string): void {
     this.suppressUpdates = true;
@@ -178,11 +195,41 @@ export class KiviEditor {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
     resetBlockIdCounter();
     this.kiviDoc = parseMarkdown(source);
+    const t1 = typeof performance !== 'undefined' ? performance.now() : 0;
     this.editor.commands.setContent(this.kiviDoc.doc);
+    const t2 = typeof performance !== 'undefined' ? performance.now() : 0;
     resetDirtyTracking(this.editor);
     this.suppressUpdates = false;
+    if (t0) {
+      console.log(`[kivi-perf] parseMarkdown: ${(t1 - t0).toFixed(1)}ms, setContent: ${(t2 - t1).toFixed(1)}ms`);
+    }
+  }
+
+  /**
+   * Load Markdown content asynchronously.
+   * Uses a Web Worker for larger files; yields to allow paint before setContent.
+   */
+  async loadMarkdownAsync(source: string): Promise<void> {
+    this.suppressUpdates = true;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+    this.kiviDoc = await parseMarkdownAsync(source);
+    const t1 = typeof performance !== 'undefined' ? performance.now() : 0;
+    // Yield to let the browser paint the empty editor before the heavy setContent
+    await new Promise(r => requestAnimationFrame(r));
+    this.editor.commands.setContent(this.kiviDoc.doc);
+    const t2 = typeof performance !== 'undefined' ? performance.now() : 0;
+    resetDirtyTracking(this.editor);
+    this.suppressUpdates = false;
+    if (t0) {
+      console.log(`[kivi-perf] async parseMarkdown: ${(t1 - t0).toFixed(1)}ms, setContent: ${(t2 - t1).toFixed(1)}ms`);
+    }
   }
 
   /**

@@ -3,6 +3,7 @@ import { KiviEditorProvider } from './editor-provider.js';
 import { BacklinksProvider } from './backlinks-provider.js';
 import { FileExplorerProvider } from './file-explorer-provider.js';
 import { OutlineProvider } from './outline-provider.js';
+import { TagTreeProvider } from './tag-tree-provider.js';
 import { GraphPanel } from './graph-panel.js';
 import { getActiveMarkdownUri } from './utils.js';
 
@@ -115,9 +116,10 @@ export function activate(context: vscode.ExtensionContext) {
   // ── Outline view ──
 
   const outlineProvider = new OutlineProvider();
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('kivi.outline', outlineProvider),
-  );
+  const outlineView = vscode.window.createTreeView('kivi.outline', {
+    treeDataProvider: outlineProvider,
+  });
+  context.subscriptions.push(outlineView);
 
   // ── Backlinks ──
 
@@ -126,31 +128,78 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider('kivi.backlinks', backlinksProvider),
   );
 
+  // ── Tags tree ──
+
+  const tagTreeProvider = new TagTreeProvider();
+  const tagsView = vscode.window.createTreeView('kivi.tags', {
+    treeDataProvider: tagTreeProvider,
+  });
+  context.subscriptions.push(
+    tagsView,
+    vscode.commands.registerCommand('kivi.refreshTags', () => tagTreeProvider.refresh()),
+    vscode.commands.registerCommand('kivi.searchTag', (tag: string) => {
+      if (tag) {
+        vscode.commands.executeCommand('workbench.action.findInFiles', {
+          query: `#${tag}`,
+          triggerSearch: true,
+          isRegex: false,
+          filesToInclude: '**/*.md',
+        });
+      }
+    }),
+  );
+
   // ── Index workspace (concurrency-limited, silent during batch) ──
 
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 16;
+  const TAG_RE = /(?:^|\s)#([a-zA-Z0-9_/][a-zA-Z0-9_/-]*)/g;
+
+  function extractTags(content: string): string[] {
+    const tags: string[] = [];
+    let inFence = false;
+    for (const line of content.split('\n')) {
+      if (/^```/.test(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      TAG_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = TAG_RE.exec(line)) !== null) {
+        tags.push(m[1]);
+      }
+    }
+    return tags;
+  }
 
   const indexWorkspace = async () => {
     const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 2000);
     const decoder = new TextDecoder();
 
-    // Process in batches to avoid saturating the file system
     for (let i = 0; i < files.length; i += CONCURRENCY) {
       const batch = files.slice(i, i + CONCURRENCY);
       await Promise.all(batch.map(async (uri) => {
         try {
           const bytes = await vscode.workspace.fs.readFile(uri);
-          backlinksProvider.updateIndex(uri.fsPath, decoder.decode(bytes), true);
+          const content = decoder.decode(bytes);
+          backlinksProvider.updateIndex(uri.fsPath, content, true);
+          const fileTags = extractTags(content);
+          for (const tag of fileTags) {
+            KiviEditorProvider.workspaceTags.add(tag);
+          }
+          tagTreeProvider.updateIndex(uri.fsPath, fileTags);
         } catch { /* skip unreadable */ }
       }));
+      // Yield between batches to avoid blocking the extension host event loop
+      if (i + CONCURRENCY < files.length) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
 
-    // Single refresh after all files indexed
     backlinksProvider.refresh();
+    tagTreeProvider.refresh();
+    KiviEditorProvider.broadcastTagIndex();
   };
 
-  // Defer indexing to let extension host finish activation first
-  setTimeout(() => indexWorkspace(), 50);
+  // Defer indexing generously on startup — the first file open should be instant.
+  setTimeout(() => indexWorkspace(), 3000);
 
   // ── Auto-fix wiki-links on rename (concurrency-limited) ──
 
@@ -185,28 +234,68 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // ── File watcher ──
+  // ── File watcher (debounced to batch rapid changes) ──
 
   const decoder = new TextDecoder();
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.md');
+
+  // Global debounce for tree/sidebar refreshes triggered by watcher events.
+  // Index updates happen immediately; only the UI refreshes are batched.
+  let watcherRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let watcherNeedsFileExplorer = false;
+  let watcherNeedsBacklinks = false;
+  const scheduleWatcherRefresh = (opts: { fileExplorer?: boolean; backlinks?: boolean } = {}) => {
+    if (opts.fileExplorer) watcherNeedsFileExplorer = true;
+    if (opts.backlinks) watcherNeedsBacklinks = true;
+    if (watcherRefreshTimer) clearTimeout(watcherRefreshTimer);
+    watcherRefreshTimer = setTimeout(() => {
+      tagTreeProvider.refresh();
+      KiviEditorProvider.broadcastTagIndex();
+      if (watcherNeedsBacklinks) { backlinksProvider.refresh(); watcherNeedsBacklinks = false; }
+      if (watcherNeedsFileExplorer) { fileExplorerProvider.refresh(); watcherNeedsFileExplorer = false; }
+    }, 400);
+  };
+
+  // Per-file debounce for onDidChange — only the last change matters
+  const changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   context.subscriptions.push(
     watcher.onDidCreate(async (uri) => {
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
-        backlinksProvider.updateIndex(uri.fsPath, decoder.decode(bytes));
+        const content = decoder.decode(bytes);
+        backlinksProvider.updateIndex(uri.fsPath, content);
+        const fileTags = extractTags(content);
+        for (const tag of fileTags) KiviEditorProvider.workspaceTags.add(tag);
+        tagTreeProvider.updateIndex(uri.fsPath, fileTags);
       } catch { /* skip */ }
-      fileExplorerProvider.refresh();
+      scheduleWatcherRefresh({ fileExplorer: true });
     }),
-    watcher.onDidChange(async (uri) => {
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        backlinksProvider.updateIndex(uri.fsPath, decoder.decode(bytes));
-      } catch { /* skip */ }
+    watcher.onDidChange((uri) => {
+      const key = uri.toString();
+      const existing = changeTimers.get(key);
+      if (existing) clearTimeout(existing);
+      changeTimers.set(key, setTimeout(async () => {
+        changeTimers.delete(key);
+        try {
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          const content = decoder.decode(bytes);
+          backlinksProvider.updateIndex(uri.fsPath, content);
+          const fileTags = extractTags(content);
+          for (const tag of fileTags) KiviEditorProvider.workspaceTags.add(tag);
+          tagTreeProvider.updateIndex(uri.fsPath, fileTags);
+        } catch { /* skip */ }
+        scheduleWatcherRefresh();
+      }, 300));
     }),
     watcher.onDidDelete((uri) => {
+      // Cancel any pending change timer for this file
+      const key = uri.toString();
+      const pending = changeTimers.get(key);
+      if (pending) { clearTimeout(pending); changeTimers.delete(key); }
       backlinksProvider.removeFromIndex(uri.fsPath);
-      backlinksProvider.refresh();
-      fileExplorerProvider.refresh();
+      tagTreeProvider.removeFile(uri.fsPath);
+      scheduleWatcherRefresh({ fileExplorer: true, backlinks: true });
     }),
     watcher,
   );
@@ -219,6 +308,10 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('workbench.actions.treeView.kivi.files.collapseAll');
     }),
     vscode.commands.registerCommand('kivi.refreshOutline', () => outlineProvider.refresh()),
+    vscode.commands.registerCommand('kivi.collapseOutline', () => outlineProvider.collapseAll()),
+    vscode.commands.registerCommand('kivi.collapseTags', () => {
+      vscode.commands.executeCommand('workbench.actions.treeView.kivi.tags.collapseAll');
+    }),
     vscode.commands.registerCommand('kivi.refreshBacklinks', () => backlinksProvider.refresh()),
   );
 

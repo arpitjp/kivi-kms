@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { scanMarkdown } from '@kivi/vault';
 import { getNonce } from './utils.js';
 
@@ -17,6 +18,7 @@ export interface KiviSettings {
   // VS Code native editor settings (forwarded so webview can match)
   vscodeEditorFontSize: number;
   vscodeEditorFontFamily: string;
+  vscodeEditorLineHeight: number;
   vscodeEditorWordWrap: string;
 }
 
@@ -37,6 +39,7 @@ function readKiviSettings(): KiviSettings {
     zoom: cfg.get<number>('appearance.zoom', 100),
     vscodeEditorFontSize: editorCfg.get<number>('fontSize', 14),
     vscodeEditorFontFamily: editorCfg.get<string>('fontFamily', ''),
+    vscodeEditorLineHeight: editorCfg.get<number>('lineHeight', 0),
     vscodeEditorWordWrap: editorCfg.get<string>('wordWrap', 'on'),
   };
 }
@@ -46,6 +49,19 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
   /** Tracks all active webview panels keyed by document URI, for commands/focus. */
   private static activePanels = new Map<string, vscode.WebviewPanel>();
+
+  /** Workspace-wide tag set, populated by indexWorkspace in extension.ts */
+  static workspaceTags = new Set<string>();
+
+  /** Send updated tag list to all active webview panels */
+  static broadcastTagIndex() {
+    const tags = Array.from(KiviEditorProvider.workspaceTags).sort();
+    for (const panel of KiviEditorProvider.activePanels.values()) {
+      if (panel.visible) {
+        panel.webview.postMessage({ type: 'tagIndex', tags });
+      }
+    }
+  }
 
   static register(context: vscode.ExtensionContext): vscode.Disposable {
     return vscode.window.registerCustomEditorProvider(
@@ -88,13 +104,17 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       localResourceRoots: roots,
     };
 
-    webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
+    const initialText = document.getText();
+    webviewPanel.webview.html = this.getHtml(webviewPanel.webview, initialText);
 
     // ── State tracking ──
+    // Content is embedded in the webview HTML via <script id="kivi-initial-md">,
+    // so the webview can parse it immediately without waiting for a 'load' message.
+    // pendingContent starts null; external changes before 'ready' will populate it.
 
     let isWebviewReady = false;
-    let pendingContent: string | null = document.getText();
-    let lastKnownContent = document.getText();
+    let pendingContent: string | null = null;
+    let lastKnownContent = initialText;
     // Counter-based own-edit tracking (handles rapid edits better than a boolean)
     let pendingOwnEdits = 0;
 
@@ -230,10 +250,40 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
           sendSettings();
 
+          // Send persisted global preferences (view mode, toolbar visibility, etc.)
+          const globalPrefs = this.context.globalState.get<Record<string, unknown>>('kiviPrefs', {});
+          postMessage({ type: 'globalPrefs', prefs: globalPrefs });
+
           if (pendingContent !== null) {
             postMessage({ type: 'load', content: pendingContent });
             lastKnownContent = pendingContent;
             pendingContent = null;
+          }
+
+          // Defer non-critical post-ready work to avoid blocking the first paint
+          setTimeout(() => {
+            this.sendGitBase(document, postMessage);
+            if (KiviEditorProvider.workspaceTags.size > 0) {
+              postMessage({ type: 'tagIndex', tags: Array.from(KiviEditorProvider.workspaceTags).sort() });
+            }
+          }, 100);
+          break;
+        }
+
+        case 'persistSetting': {
+          const key = msg.key as string | undefined;
+          const value = msg.value;
+          if (!key) break;
+
+          const prefs = this.context.globalState.get<Record<string, unknown>>('kiviPrefs', {});
+          prefs[key] = value;
+          await this.context.globalState.update('kiviPrefs', prefs);
+
+          // Broadcast to all other active panels
+          for (const [uri, panel] of KiviEditorProvider.activePanels) {
+            if (uri !== docUriStr && panel.visible) {
+              panel.webview.postMessage({ type: 'globalPrefChanged', key, value });
+            }
           }
           break;
         }
@@ -322,6 +372,22 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             }
           }
           postMessage({ type: 'outline', headings });
+          break;
+        }
+
+        case 'listWorkspaceFiles': {
+          if (!wsFolder) break;
+          const mdUris = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 500);
+          const docDir = path.dirname(document.uri.fsPath);
+          const wsRoot = wsFolder.uri.fsPath;
+          const files = mdUris.map(u => {
+            const rel = path.relative(wsRoot, u.fsPath).replace(/\\/g, '/');
+            const name = path.basename(u.fsPath, '.md');
+            const relToDoc = path.relative(docDir, u.fsPath).replace(/\\/g, '/');
+            return { rel, name, relToDoc };
+          }).filter(f => f.rel !== path.relative(wsRoot, document.uri.fsPath).replace(/\\/g, '/'));
+          files.sort((a, b) => a.name.localeCompare(b.name));
+          postMessage({ type: 'workspaceFiles', files });
           break;
         }
 
@@ -442,7 +508,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       }
 
       if (kind === 'heading-ref') {
-        const headingId = target.replace(/^#/, '');
+        const headingId = target.replace(/^#/, '').toLowerCase();
         const docContent = currentDoc.getText();
         const lines = docContent.split('\n');
         let headingText = '';
@@ -451,9 +517,11 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const line = lines[i];
           const match = /^#{1,6}\s+(.+)/.exec(line);
           if (match) {
-            const slug = match[1].trim().toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
-            if (slug === headingId.toLowerCase() || match[1].trim().toLowerCase() === headingId.toLowerCase()) {
-              headingText = match[1].trim();
+            const rawText = match[1].trim();
+            const slug = rawText.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+            const plainSlug = rawText.replace(/`([^`]*)`/g, '$1').toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+            if (slug === headingId || plainSlug === headingId || rawText.toLowerCase() === headingId) {
+              headingText = rawText;
               snippetLines = lines.slice(i + 1, i + 5).filter(l => l.trim());
               break;
             }
@@ -569,17 +637,18 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     if (link.kind === 'heading-ref') {
-      const headingId = link.target.replace(/^#/, '');
+      const headingId = link.target.replace(/^#/, '').toLowerCase();
       const docContent = currentDoc.getText();
       const lines = docContent.split('\n');
       for (let i = 0; i < lines.length; i++) {
         const match = /^#{1,6}\s+(.+)/.exec(lines[i]);
         if (match) {
-          const slug = match[1].trim().toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
-          if (slug === headingId.toLowerCase() || match[1].trim().toLowerCase() === headingId.toLowerCase()) {
-            // Tell webview to scroll to this heading
+          const rawText = match[1].trim();
+          const slug = rawText.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+          const plainSlug = rawText.replace(/`([^`]*)`/g, '$1').toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+          if (slug === headingId || plainSlug === headingId || rawText.toLowerCase() === headingId) {
             const panel = KiviEditorProvider.activePanels.get(currentDoc.uri.toString());
-            panel?.webview.postMessage({ type: 'scrollToHeading', heading: match[1].trim(), line: i });
+            panel?.webview.postMessage({ type: 'scrollToHeading', heading: rawText, line: i });
             return;
           }
         }
@@ -659,9 +728,24 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     return vscode.Uri.joinPath(currentDir, target);
   }
 
+  // ── Git base content for gutter indicators ──
+
+  private async sendGitBase(
+    document: vscode.TextDocument,
+    postMessage: (msg: Record<string, unknown>) => void,
+  ): Promise<void> {
+    try {
+      const gitUri = document.uri.with({ scheme: 'git', query: JSON.stringify({ path: document.uri.fsPath, ref: 'HEAD' }) });
+      const gitDoc = await vscode.workspace.openTextDocument(gitUri);
+      postMessage({ type: 'gitBase', content: gitDoc.getText() });
+    } catch {
+      // No git info available (new file, not in repo, etc.)
+    }
+  }
+
   // ── HTML ──
 
-  private getHtml(webview: vscode.Webview): string {
+  private getHtml(webview: vscode.Webview, embeddedContent?: string): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'webview.js'),
     );
@@ -670,18 +754,45 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     );
     const nonce = getNonce();
 
+    const dataTag = embeddedContent != null
+      ? `<script nonce="${nonce}" type="application/json" id="kivi-initial-md">${JSON.stringify(embeddedContent).replace(/<\//g, '<\\/')}</script>`
+      : '';
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; img-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+    content="default-src 'none'; img-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource};" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Kivi</title>
+  <style nonce="${nonce}">
+    .kivi-skeleton { padding: 40px 60px; opacity: 0.35; animation: kivi-pulse 1.2s ease-in-out infinite; position: absolute; inset: 0; z-index: 50; background: var(--vscode-editor-background, #1e1e1e); }
+    .kivi-skeleton-line { height: 14px; margin-bottom: 12px; border-radius: 4px; background: var(--vscode-editor-foreground, #888); }
+    .kivi-skeleton-line.h1 { height: 26px; width: 45%; margin-bottom: 20px; }
+    .kivi-skeleton-line.h2 { height: 20px; width: 35%; margin-top: 24px; margin-bottom: 16px; }
+    .kivi-skeleton-line.short { width: 60%; }
+    .kivi-skeleton-line.med { width: 85%; }
+    .kivi-skeleton-line.full { width: 95%; }
+    @keyframes kivi-pulse { 0%,100% { opacity: 0.15; } 50% { opacity: 0.35; } }
+  </style>
 </head>
 <body>
-  <div id="editor"></div>
+  <div id="editor">
+    <div class="kivi-skeleton" id="kivi-skeleton">
+      <div class="kivi-skeleton-line h1"></div>
+      <div class="kivi-skeleton-line full"></div>
+      <div class="kivi-skeleton-line med"></div>
+      <div class="kivi-skeleton-line short"></div>
+      <div class="kivi-skeleton-line full"></div>
+      <div class="kivi-skeleton-line h2"></div>
+      <div class="kivi-skeleton-line med"></div>
+      <div class="kivi-skeleton-line full"></div>
+      <div class="kivi-skeleton-line short"></div>
+    </div>
+  </div>
+  ${dataTag}
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

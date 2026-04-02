@@ -1,7 +1,7 @@
 import type { KiviDocument, SourceMap, BlockMeta, BlockGap } from '@kivi/shared-types';
 import { parseMarkdown, resetBlockIdCounter } from '@kivi/markdown-parser';
 
-const LARGE_FILE_THRESHOLD = 100 * 1024; // 100KB
+const LARGE_FILE_THRESHOLD = 10 * 1024; // 10KB — offload parsing to keep main thread free
 let workerInstance: Worker | null = null;
 let requestId = 0;
 

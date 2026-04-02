@@ -21,18 +21,27 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private roots: OutlineItem[] = [];
+  private collapsed = false;
 
   refresh(): void {
+    this.collapsed = false;
     this.parseActiveDocument().then(() => {
       this._onDidChangeTreeData.fire();
     });
+  }
+
+  collapseAll(): void {
+    this.collapsed = true;
+    this._onDidChangeTreeData.fire();
   }
 
   getTreeItem(element: OutlineItem): vscode.TreeItem {
     const hasChildren = element.children.length > 0;
     const item = new vscode.TreeItem(
       element.label,
-      hasChildren ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None,
+      hasChildren
+        ? (this.collapsed ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded)
+        : vscode.TreeItemCollapsibleState.None,
     );
 
     item.description = `H${element.level}`;

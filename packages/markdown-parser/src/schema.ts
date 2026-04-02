@@ -108,6 +108,22 @@ export function codeMark(): PMMarkJSON {
   return { type: 'code' };
 }
 
+export function subscriptMark(): PMMarkJSON {
+  return { type: 'subscript' };
+}
+
+export function superscriptMark(): PMMarkJSON {
+  return { type: 'superscript' };
+}
+
+export function highlightMark(): PMMarkJSON {
+  return { type: 'highlight' };
+}
+
+export function underlineMark(): PMMarkJSON {
+  return { type: 'underline' };
+}
+
 export function linkMark(href: string, title?: string): PMMarkJSON {
   return { type: 'link', attrs: { href, title: title || null, target: '_blank' } };
 }
@@ -117,6 +133,10 @@ export function wikiLinkMark(target: string, alias?: string): PMMarkJSON {
 }
 
 export function hashTagNode(tag: string): PMNodeJSON {
+  return { type: 'hashTag', attrs: { tag } };
+}
+
+export function hashTagMark(tag: string): PMMarkJSON {
   return { type: 'hashTag', attrs: { tag } };
 }
 

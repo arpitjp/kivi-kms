@@ -1,15 +1,31 @@
 import { Node, mergeAttributes } from '@tiptap/core';
 
-export interface MathBlockOptions {
-  HTMLAttributes: Record<string, string>;
-  renderMath: ((latex: string) => string) | null;
+let katexModule: typeof import('katex') | null = null;
+let katexLoading: Promise<void> | null = null;
+const katexReadyCallbacks: (() => void)[] = [];
+
+function ensureKatex(): Promise<void> {
+  if (katexModule) return Promise.resolve();
+  if (!katexLoading) {
+    katexLoading = import('katex').then((mod) => {
+      katexModule = mod;
+      for (const cb of katexReadyCallbacks.splice(0)) cb();
+    });
+  }
+  return katexLoading;
 }
 
-/**
- * Block-level math ($$...$$).
- * If KaTeX is available, renders the math visually.
- * Falls back to displaying raw LaTeX in a code block.
- */
+function onKatexReady(cb: () => void) {
+  if (katexModule) { cb(); return; }
+  katexReadyCallbacks.push(cb);
+  ensureKatex();
+}
+
+export interface MathBlockOptions {
+  HTMLAttributes: Record<string, string>;
+  renderMath: ((latex: string, displayMode: boolean) => string) | null;
+}
+
 export const MathBlock = Node.create<MathBlockOptions>({
   name: 'mathBlock',
   group: 'block',
@@ -43,7 +59,7 @@ export const MathBlock = Node.create<MathBlockOptions>({
 
   addNodeView() {
     const renderMath = this.options.renderMath;
-    return ({ node }) => {
+    return ({ node, editor, getPos }) => {
       const container = document.createElement('div');
       container.classList.add('kivi-math-block');
       container.dataset.type = 'math-block';
@@ -60,11 +76,13 @@ export const MathBlock = Node.create<MathBlockOptions>({
       container.appendChild(preview);
       container.appendChild(source);
 
+      let editing = false;
+
       const render = () => {
         const latex = node.textContent;
-        if (renderMath && latex) {
+        if (!editing && renderMath && latex) {
           try {
-            preview.innerHTML = renderMath(latex);
+            preview.innerHTML = renderMath(latex, true);
             preview.style.display = '';
             source.style.display = 'none';
           } catch {
@@ -77,7 +95,27 @@ export const MathBlock = Node.create<MathBlockOptions>({
         }
       };
 
+      preview.addEventListener('click', () => {
+        editing = true;
+        preview.style.display = 'none';
+        source.style.display = '';
+        const pos = typeof getPos === 'function' ? getPos() : null;
+        if (pos != null) {
+          editor.commands.setTextSelection(pos + 1);
+          editor.commands.focus();
+        }
+      });
+
+      const handleBlur = () => {
+        if (!editing) return;
+        editing = false;
+        render();
+      };
+
+      code.addEventListener('focusout', handleBlur);
+
       render();
+      if (!katexModule) onKatexReady(render);
 
       return {
         dom: container,
@@ -95,12 +133,9 @@ export const MathBlock = Node.create<MathBlockOptions>({
 
 export interface MathInlineOptions {
   HTMLAttributes: Record<string, string>;
-  renderMath: ((latex: string) => string) | null;
+  renderMath: ((latex: string, displayMode: boolean) => string) | null;
 }
 
-/**
- * Inline math ($...$).
- */
 export const MathInline = Node.create<MathInlineOptions>({
   name: 'mathInline',
   group: 'inline',
@@ -134,7 +169,7 @@ export const MathInline = Node.create<MathInlineOptions>({
 
   addNodeView() {
     const renderMath = this.options.renderMath;
-    return ({ node }) => {
+    return ({ node, editor, getPos }) => {
       const container = document.createElement('span');
       container.classList.add('kivi-math-inline');
       container.dataset.type = 'math-inline';
@@ -149,11 +184,13 @@ export const MathInline = Node.create<MathInlineOptions>({
       container.appendChild(preview);
       container.appendChild(source);
 
+      let editing = false;
+
       const render = () => {
         const latex = node.textContent;
-        if (renderMath && latex) {
+        if (!editing && renderMath && latex) {
           try {
-            preview.innerHTML = renderMath(latex);
+            preview.innerHTML = renderMath(latex, false);
             preview.style.display = '';
             source.style.display = 'none';
           } catch {
@@ -166,7 +203,25 @@ export const MathInline = Node.create<MathInlineOptions>({
         }
       };
 
+      preview.addEventListener('click', () => {
+        editing = true;
+        preview.style.display = 'none';
+        source.style.display = '';
+        const pos = typeof getPos === 'function' ? getPos() : null;
+        if (pos != null) {
+          editor.commands.setTextSelection(pos + 1);
+          editor.commands.focus();
+        }
+      });
+
+      source.addEventListener('focusout', () => {
+        if (!editing) return;
+        editing = false;
+        render();
+      });
+
       render();
+      if (!katexModule) onKatexReady(render);
 
       return {
         dom: container,
@@ -182,24 +237,8 @@ export const MathInline = Node.create<MathInlineOptions>({
   },
 });
 
-/**
- * Default math renderer using KaTeX if available on window.
- * In a browser environment where katex is loaded, this renders real math.
- * Otherwise returns null and the node view falls back to source display.
- */
-function defaultRenderMath(latex: string): string {
-  const w = typeof window !== 'undefined' ? (window as unknown as Record<string, unknown>) : null;
-  if (w && typeof w['katex'] === 'object' && w['katex'] !== null) {
-    const katex = w['katex'] as { renderToString: (tex: string, opts?: Record<string, unknown>) => string };
-    return katex.renderToString(latex, { throwOnError: false, displayMode: true });
-  }
-  // Return escaped HTML as fallback
-  return `<code class="kivi-math-fallback">${escapeHtml(latex)}</code>`;
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+function defaultRenderMath(latex: string, displayMode: boolean): string {
+  if (!katexModule) return '';
+  const k = katexModule.default ?? katexModule;
+  return (k as any).renderToString(latex, { throwOnError: false, displayMode });
 }

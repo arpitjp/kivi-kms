@@ -554,6 +554,108 @@ suite('User Actions', () => {
     });
   });
 
+  // ── Mode Switch: Content Preservation ──────────────────────
+  //
+  // Mode switching (Live/Both/Source) round-trips content through
+  // loadMarkdown → getMarkdown → serialize. These tests verify that
+  // edits survive the full pipeline, simulating what happens when
+  // switching between live, split, and source modes.
+
+  suite('Mode Switch Content Preservation', () => {
+    test('link syntax preserved after edit round-trip', async () => {
+      const doc = await openWithCustomEditor('sample.md');
+      const insertPos = doc.positionAt(doc.getText().length);
+
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(doc.uri, insertPos, '\n\n[Visit Google](https://google.com)\n');
+      await vscode.workspace.applyEdit(edit);
+      await sleep(800);
+
+      const text = doc.getText();
+      assert.ok(
+        text.includes('[Visit Google](https://google.com)'),
+        'Link syntax should survive pipeline round-trip',
+      );
+    });
+
+    test('mixed inline formatting preserved after edit round-trip', async () => {
+      const doc = await openWithCustomEditor('sample.md');
+      const insertPos = doc.positionAt(doc.getText().length);
+
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(
+        doc.uri,
+        insertPos,
+        '\n\nThis has **bold**, *italic*, ~~strike~~, and `code`.\n',
+      );
+      await vscode.workspace.applyEdit(edit);
+      await sleep(800);
+
+      const text = doc.getText();
+      assert.ok(text.includes('**bold**'), 'Bold should survive');
+      assert.ok(text.includes('*italic*'), 'Italic should survive');
+      assert.ok(text.includes('~~strike~~'), 'Strikethrough should survive');
+      assert.ok(text.includes('`code`'), 'Inline code should survive');
+    });
+
+    test('content preserved after sequential edits (simulates live→source→live cycle)', async () => {
+      const doc = await openWithCustomEditor('sample.md');
+
+      // First edit (simulates typing in live mode)
+      const edit1 = new vscode.WorkspaceEdit();
+      edit1.insert(doc.uri, doc.positionAt(doc.getText().length), '\n\nLive mode edit.\n');
+      await vscode.workspace.applyEdit(edit1);
+      await sleep(500);
+
+      // Second edit (simulates editing in source mode textarea)
+      const edit2 = new vscode.WorkspaceEdit();
+      edit2.insert(doc.uri, doc.positionAt(doc.getText().length), '\nSource mode edit.\n');
+      await vscode.workspace.applyEdit(edit2);
+      await sleep(500);
+
+      // Third edit (simulates going back to live mode and editing)
+      const edit3 = new vscode.WorkspaceEdit();
+      edit3.insert(doc.uri, doc.positionAt(doc.getText().length), '\nBack to live.\n');
+      await vscode.workspace.applyEdit(edit3);
+      await sleep(500);
+
+      const text = doc.getText();
+      assert.ok(text.includes('Live mode edit'), 'First edit should persist');
+      assert.ok(text.includes('Source mode edit'), 'Second edit should persist');
+      assert.ok(text.includes('Back to live'), 'Third edit should persist');
+      assert.ok(text.includes('Hello Kivi'), 'Original content should persist');
+    });
+
+    test('code block with language preserved through pipeline', async () => {
+      const doc = await openWithCustomEditor('sample.md');
+      const insertPos = doc.positionAt(doc.getText().length);
+
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(doc.uri, insertPos, '\n\n```typescript\nfunction hello(): string {\n  return "world";\n}\n```\n');
+      await vscode.workspace.applyEdit(edit);
+      await sleep(800);
+
+      const text = doc.getText();
+      assert.ok(text.includes('```typescript'), 'Code fence language should survive');
+      assert.ok(text.includes('function hello'), 'Code content should survive');
+    });
+
+    test('table structure preserved through pipeline', async () => {
+      const doc = await openWithCustomEditor('sample.md');
+      const insertPos = doc.positionAt(doc.getText().length);
+
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(doc.uri, insertPos, '\n\n| Feature | Status |\n| --- | --- |\n| Links | Done |\n| Mode | Done |\n');
+      await vscode.workspace.applyEdit(edit);
+      await sleep(800);
+
+      const text = doc.getText();
+      assert.ok(text.includes('Feature'), 'Table header should survive');
+      assert.ok(text.includes('Links'), 'Table content should survive');
+      assert.ok(text.includes('Mode'), 'Table content should survive');
+    });
+  });
+
   // ── Wiki Links & Tags ──────────────────────────────────────
 
   suite('Wiki Links & Tags', () => {

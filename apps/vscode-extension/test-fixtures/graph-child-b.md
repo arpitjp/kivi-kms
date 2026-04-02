@@ -5,7 +5,7 @@ tags:
   - performance
 ---
 
-# Child B
+\`\`Child B
 
 This is a child of [[graph-hub]].
 

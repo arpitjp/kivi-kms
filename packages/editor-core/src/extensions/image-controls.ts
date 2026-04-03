@@ -1,8 +1,9 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { addDelayedTooltip } from '../tooltip.js';
 
-const imageControlsKey = new PluginKey('kiviImageControls');
+const mediaControlsKey = new PluginKey('kiviMediaControls');
 
 const svg = (d: string, w = 16) =>
   `<svg width="${w}" height="${w}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
@@ -11,29 +12,91 @@ const ICONS = {
   alignLeft: svg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="2" y1="7" x2="10" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'),
   alignCenter: svg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'),
   alignRight: svg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="6" y1="7" x2="14" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'),
-  link: svg('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'),
-  alt: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="5.5" cy="6.5" r="1.5" fill="currentColor" stroke="none"/><polyline points="14,10 10,7 6,10 4,8.5 2,10"/>'),
   trash: svg('<polyline points="3,4 13,4"/><path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1"/><path d="M4 4l.7 9.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L12 4"/>'),
+  copy: svg('<rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5H11"/>'),
+  link: svg('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'),
+  alt: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><text x="5" y="10" font-size="7" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">A</text>'),
 };
 
-const SIZE_PRESETS: { label: string; width: number }[] = [
-  { label: 'XS', width: 120 },
-  { label: 'S', width: 240 },
-  { label: 'M', width: 400 },
-  { label: 'L', width: 600 },
-  { label: 'XL', width: 900 },
+type HandlePosition = 'nw' | 'ne' | 'se' | 'sw';
+
+interface HandleInfo {
+  pos: HandlePosition;
+  cursor: string;
+  xSign: number;
+  ySign: number;
+}
+
+const HANDLE_DEFS: HandleInfo[] = [
+  { pos: 'nw', cursor: 'nwse-resize', xSign: -1, ySign: -1 },
+  { pos: 'ne', cursor: 'nesw-resize', xSign:  1, ySign: -1 },
+  { pos: 'se', cursor: 'nwse-resize', xSign:  1, ySign:  1 },
+  { pos: 'sw', cursor: 'nesw-resize', xSign: -1, ySign:  1 },
 ];
+
+const SIZE_PRESETS = [
+  { label: 'S',  pct: 25  },
+  { label: 'M',  pct: 50  },
+  { label: 'L',  pct: 75  },
+  { label: 'XL', pct: 100 },
+];
+
+type MediaKind = 'image' | 'video' | 'audio' | 'excalidrawBlock';
 
 function isElementVisibleInEditor(el: HTMLElement, view: EditorView): boolean {
   const ir = el.getBoundingClientRect();
   const container = view.dom.parentElement;
   if (!container) {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    return ir.bottom > 0 && ir.top < vh && ir.right > 0 && ir.left < vw;
+    return ir.bottom > 0 && ir.top < window.innerHeight && ir.right > 0 && ir.left < window.innerWidth;
   }
   const cr = container.getBoundingClientRect();
   return ir.bottom > cr.top && ir.top < cr.bottom && ir.right > cr.left && ir.left < cr.right;
+}
+
+function getEditorContentWidth(view: EditorView): number {
+  const editorEl = view.dom;
+  const style = getComputedStyle(editorEl);
+  return editorEl.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+}
+
+const MEDIA_NODE_NAMES = new Set(['image', 'video', 'audio', 'excalidrawBlock']);
+
+function detectMediaAtSelection(view: EditorView): { kind: MediaKind; pos: number; el: HTMLElement } | null {
+  const { $from, from } = view.state.selection;
+
+  const nodeAtFrom = view.state.doc.nodeAt(from);
+  if (nodeAtFrom && MEDIA_NODE_NAMES.has(nodeAtFrom.type.name)) {
+    const name = nodeAtFrom.type.name;
+    const dom = view.nodeDOM(from);
+    const el = resolveMediaElement(dom, name);
+    if (el) return { kind: name as MediaKind, pos: from, el };
+  }
+
+  const parentName = $from.parent.type.name;
+  if (MEDIA_NODE_NAMES.has(parentName)) {
+    const parentPos = $from.before($from.depth);
+    const dom = view.nodeDOM(parentPos);
+    const el = resolveMediaElement(dom, parentName);
+    if (el) return { kind: parentName as MediaKind, pos: parentPos, el };
+  }
+
+  return null;
+}
+
+function resolveMediaElement(dom: Node | null, typeName: string): HTMLElement | null {
+  if (!dom) return null;
+  const tagMap: Record<string, string> = {
+    image: 'img', video: 'video', audio: 'audio',
+    excalidrawBlock: '.kivi-excalidraw-block',
+  };
+  const selector = tagMap[typeName];
+  if (!selector) return null;
+  if (selector.startsWith('.')) {
+    if (dom instanceof HTMLElement && dom.matches(selector)) return dom;
+    return (dom as HTMLElement)?.querySelector?.(selector) as HTMLElement | null;
+  }
+  if (dom instanceof HTMLElement && dom.tagName.toLowerCase() === selector) return dom;
+  return (dom as HTMLElement)?.querySelector?.(selector) as HTMLElement | null;
 }
 
 export const ImageControls = Extension.create({
@@ -42,17 +105,19 @@ export const ImageControls = Extension.create({
   addProseMirrorPlugins() {
     return [
       new Plugin({
-        key: imageControlsKey,
+        key: mediaControlsKey,
         view(_initialView: EditorView) {
-          let overlay: HTMLElement | null = null;
-          let detailPanel: HTMLElement | null = null;
-          let activeImg: HTMLImageElement | null = null;
+          let panel: HTMLElement | null = null;
+          let activeEl: HTMLElement | null = null;
+          let activeKind: MediaKind = 'image';
           let resizing = false;
           let activePos = -1;
           let activeView: EditorView | null = null;
           const resizeHandles: HTMLElement[] = [];
           let scrollParentEl: HTMLElement | null = null;
           let onScroll: (() => void) | null = null;
+          let editRow: HTMLElement | null = null;
+          let selectionOutline: HTMLElement | null = null;
 
           function detachScroll() {
             if (scrollParentEl && onScroll) {
@@ -68,7 +133,7 @@ export const ImageControls = Extension.create({
             if (!parent) return;
             scrollParentEl = parent;
             onScroll = () => {
-              if (!activeImg || !overlay) return;
+              if (!activeEl || !panel) return;
               repositionFloating();
             };
             parent.addEventListener('scroll', onScroll, { passive: true });
@@ -76,44 +141,85 @@ export const ImageControls = Extension.create({
 
           function setFloatingVisibility(visible: boolean) {
             const v = visible ? 'visible' : 'hidden';
-            if (overlay) overlay.style.visibility = v;
+            if (panel) panel.style.visibility = v;
+            if (selectionOutline) selectionOutline.style.visibility = v;
             for (const h of resizeHandles) h.style.visibility = v;
-            if (detailPanel) detailPanel.style.visibility = v;
           }
 
-          function positionHandles(img: HTMLImageElement) {
-            const rect = img.getBoundingClientRect();
-            for (const h of resizeHandles) {
-              const isSE = h.classList.contains('kivi-resize-se');
-              h.style.position = 'fixed';
-              h.style.left = isSE ? `${rect.right - 10}px` : `${rect.left - 2}px`;
-              h.style.top = `${rect.bottom - 10}px`;
+          function positionHandles(el: HTMLElement) {
+            const rect = el.getBoundingClientRect();
+            const hs = 10; // handle size (square corners)
+            const half = hs / 2;
+
+            for (const handle of resizeHandles) {
+              const pos = handle.dataset.handlePos as HandlePosition;
+              let left: number, top: number;
+
+              switch (pos) {
+                case 'nw': left = rect.left - half; top = rect.top - half; break;
+                case 'ne': left = rect.right - half; top = rect.top - half; break;
+                case 'se': left = rect.right - half; top = rect.bottom - half; break;
+                case 'sw': left = rect.left - half; top = rect.bottom - half; break;
+                default: left = 0; top = 0;
+              }
+
+              handle.style.left = `${left}px`;
+              handle.style.top = `${top}px`;
             }
           }
 
+          function positionOutline(el: HTMLElement) {
+            if (!selectionOutline) return;
+            const rect = el.getBoundingClientRect();
+            selectionOutline.style.left = `${rect.left - 2}px`;
+            selectionOutline.style.top = `${rect.top - 2}px`;
+            selectionOutline.style.width = `${rect.width + 4}px`;
+            selectionOutline.style.height = `${rect.height + 4}px`;
+          }
+
           function repositionFloating() {
-            if (!activeImg || !overlay || !activeView) return;
-            if (!isElementVisibleInEditor(activeImg, activeView)) {
+            if (!activeEl || !panel || !activeView) return;
+            if (!isElementVisibleInEditor(activeEl, activeView)) {
               setFloatingVisibility(false);
               return;
             }
             setFloatingVisibility(true);
-            const rect = activeImg.getBoundingClientRect();
-            overlay.style.left = `${rect.left + rect.width / 2}px`;
-            overlay.style.top = `${rect.top - 8}px`;
-            positionHandles(activeImg);
-            if (detailPanel) positionDetailPanel(activeImg);
+            const elRect = activeEl.getBoundingClientRect();
+            const editorRect = activeView.dom.getBoundingClientRect();
+            const panelWidth = panel.offsetWidth || 200;
+            const panelHeight = panel.offsetHeight || 48;
+
+            let left = elRect.left + elRect.width / 2 - panelWidth / 2;
+            const insidePadding = 12;
+            let top = elRect.top + insidePadding;
+
+            if (elRect.height < panelHeight + insidePadding * 2 + 8) {
+              top = elRect.bottom + 6;
+            }
+
+            const visibleTop = Math.max(editorRect.top, 0);
+            if (top < visibleTop + 4) top = visibleTop + 4;
+            if (top + panelHeight > window.innerHeight - 8) top = window.innerHeight - panelHeight - 8;
+
+            if (left + panelWidth > window.innerWidth - 8) left = window.innerWidth - panelWidth - 8;
+            if (left < 8) left = 8;
+
+            panel.style.left = `${left}px`;
+            panel.style.top = `${top}px`;
+            positionHandles(activeEl);
+            positionOutline(activeEl);
           }
 
           function removeOverlay() {
             detachScroll();
             for (const h of resizeHandles) h.remove();
             resizeHandles.length = 0;
-            overlay?.remove();
-            detailPanel?.remove();
-            overlay = null;
-            detailPanel = null;
-            activeImg = null;
+            panel?.remove();
+            panel = null;
+            selectionOutline?.remove();
+            selectionOutline = null;
+            editRow = null;
+            activeEl = null;
             activePos = -1;
           }
 
@@ -121,22 +227,38 @@ export const ImageControls = Extension.create({
             if (!activeView || activePos < 0) return;
             const node = activeView.state.doc.nodeAt(activePos);
             if (!node) return;
-            const tr = activeView.state.tr.setNodeMarkup(activePos, undefined, {
-              ...node.attrs,
-              [key]: value,
-            });
-            activeView.dispatch(tr);
+            activeView.dispatch(
+              activeView.state.tr.setNodeMarkup(activePos, undefined, { ...node.attrs, [key]: value }),
+            );
           }
 
-          function makeBtn(svgHtml: string, title: string, onClick: () => void, danger = false): HTMLButtonElement {
-            const btn = document.createElement('button');
-            btn.className = 'kivi-img-ctrl-btn' + (danger ? ' kivi-img-ctrl-danger' : '');
-            btn.innerHTML = svgHtml;
-            btn.title = title;
-            btn.style.pointerEvents = 'auto';
-            btn.addEventListener('mousedown', (e) => e.preventDefault());
-            btn.addEventListener('click', onClick);
-            return btn;
+          function reattachAfterTransaction(view: EditorView) {
+            requestAnimationFrame(() => {
+              if (activePos < 0) return;
+              const dom = view.nodeDOM(activePos);
+              const newEl = resolveMediaElement(dom, activeKind);
+              if (newEl) {
+                activeEl = newEl;
+                repositionFloating();
+              }
+            });
+          }
+
+          function getNodeAttr(key: string): unknown {
+            if (!activeView || activePos < 0) return undefined;
+            return activeView.state.doc.nodeAt(activePos)?.attrs[key];
+          }
+
+          function makeBtn(svgHtml: string, title: string, action: () => void, danger = false): HTMLButtonElement {
+            const b = document.createElement('button');
+            b.className = 'kivi-img-ctrl-btn' + (danger ? ' kivi-img-ctrl-danger' : '');
+            b.innerHTML = svgHtml;
+            b.title = title;
+            b.style.pointerEvents = 'auto';
+            b.addEventListener('mousedown', (e) => e.preventDefault());
+            b.addEventListener('click', () => { action(); });
+            addDelayedTooltip(b);
+            return b;
           }
 
           function makeSep(): HTMLElement {
@@ -145,251 +267,209 @@ export const ImageControls = Extension.create({
             return s;
           }
 
-          function showDetailPanel(img: HTMLImageElement, panelType: 'alt' | 'url' | 'size') {
-            detailPanel?.remove();
-            detailPanel = document.createElement('div');
-            detailPanel.className = 'kivi-img-detail-panel';
-            detailPanel.style.pointerEvents = 'none';
-            detailPanel.addEventListener('mousedown', (e) => e.preventDefault());
-
-            if (panelType === 'alt' || panelType === 'url') {
-              const isAlt = panelType === 'alt';
-              const node = activeView?.state.doc.nodeAt(activePos);
-              const currentVal = isAlt ? (node?.attrs.alt || '') : (node?.attrs.src || '');
-
-              const label = document.createElement('label');
-              label.className = 'kivi-img-detail-label';
-              label.textContent = isAlt ? 'Alt text' : 'Image URL';
-              label.style.pointerEvents = 'auto';
-
-              const input = document.createElement('input');
-              input.className = 'kivi-img-detail-input';
-              input.type = 'text';
-              input.value = currentVal;
-              input.placeholder = isAlt ? 'Describe this image...' : 'https://...';
-              input.style.pointerEvents = 'auto';
-
-              const applyBtn = document.createElement('button');
-              applyBtn.className = 'kivi-img-detail-apply';
-              applyBtn.textContent = 'Apply';
-              applyBtn.style.pointerEvents = 'auto';
-              applyBtn.addEventListener('click', () => {
-                updateNodeAttr(isAlt ? 'alt' : 'src', input.value);
-                if (!isAlt && img) img.src = input.value;
-                detailPanel?.remove();
-                detailPanel = null;
-              });
-
-              input.addEventListener('keydown', (e) => {
-                e.stopPropagation();
-                if (e.key === 'Enter') { applyBtn.click(); }
-                if (e.key === 'Escape') { detailPanel?.remove(); detailPanel = null; }
-              });
-
-              detailPanel.appendChild(label);
-              detailPanel.appendChild(input);
-              detailPanel.appendChild(applyBtn);
-
-              positionDetailPanel(img);
-              document.body.appendChild(detailPanel);
-              setTimeout(() => { input.focus(); input.select(); }, 0);
-            } else if (panelType === 'size') {
-              const label = document.createElement('span');
-              label.className = 'kivi-img-detail-label';
-              label.textContent = 'Size';
-              label.style.pointerEvents = 'auto';
-
-              detailPanel.appendChild(label);
-
-              const row = document.createElement('div');
-              row.className = 'kivi-img-size-row';
-
-              for (const preset of SIZE_PRESETS) {
-                const btn = document.createElement('button');
-                btn.className = 'kivi-img-size-btn';
-                btn.textContent = preset.label;
-                btn.title = `${preset.width}px`;
-                btn.style.pointerEvents = 'auto';
-                if (Math.abs(img.offsetWidth - preset.width) < 20) {
-                  btn.classList.add('active');
-                }
-                btn.addEventListener('mousedown', (e) => e.preventDefault());
-                btn.addEventListener('click', () => {
-                  img.style.width = `${preset.width}px`;
-                  img.style.maxWidth = '100%';
-                  updateNodeAttr('width', preset.width);
-                  row.querySelectorAll('.active').forEach((b) => b.classList.remove('active'));
-                  btn.classList.add('active');
-                  repositionFloating();
-                });
-                row.appendChild(btn);
-              }
-
-              detailPanel.appendChild(row);
-
-              // Custom width input
-              const customRow = document.createElement('div');
-              customRow.className = 'kivi-img-size-custom';
-              const wInput = document.createElement('input');
-              wInput.type = 'number';
-              wInput.className = 'kivi-img-detail-input';
-              wInput.placeholder = 'W';
-              wInput.value = String(img.offsetWidth);
-              wInput.style.width = '70px';
-              wInput.style.pointerEvents = 'auto';
-              const hInput = document.createElement('input');
-              hInput.type = 'number';
-              hInput.className = 'kivi-img-detail-input';
-              hInput.placeholder = 'H';
-              hInput.value = String(img.offsetHeight);
-              hInput.style.width = '70px';
-              hInput.style.pointerEvents = 'auto';
-              const xLabel = document.createElement('span');
-              xLabel.textContent = '×';
-              xLabel.className = 'kivi-img-size-x';
-              xLabel.style.pointerEvents = 'auto';
-              customRow.appendChild(wInput);
-              customRow.appendChild(xLabel);
-              customRow.appendChild(hInput);
-
-              const applyCustom = () => {
-                const w = parseInt(wInput.value, 10);
-                if (w > 0) {
-                  img.style.width = `${w}px`;
-                  img.style.maxWidth = '100%';
-                  updateNodeAttr('width', w);
-                }
-                const h = parseInt(hInput.value, 10);
-                if (h > 0) {
-                  img.style.height = `${h}px`;
-                }
-                repositionFloating();
-              };
-
-              wInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') applyCustom(); });
-              hInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') applyCustom(); });
-
-              detailPanel.appendChild(customRow);
-
-              positionDetailPanel(img);
-              document.body.appendChild(detailPanel);
+          function toggleEditRow(mode: 'src' | 'alt') {
+            if (!panel) return;
+            const currentMode = editRow?.dataset.mode;
+            if (editRow) {
+              editRow.remove();
+              editRow = null;
+              if (currentMode === mode) { repositionFloating(); return; }
             }
+
+            editRow = document.createElement('div');
+            editRow.className = 'kivi-img-ctrl-edit-row';
+            editRow.dataset.mode = mode;
+            editRow.style.pointerEvents = 'auto';
+
+            const labels: Record<string, string> = { src: 'URL', alt: 'Alt' };
+            const attrKeys: Record<string, string> = { src: 'src', alt: 'alt' };
+            const placeholders: Record<string, string> = { src: 'Source URL or path...', alt: 'Alt text...' };
+
+            const label = document.createElement('span');
+            label.className = 'kivi-img-ctrl-edit-label';
+            label.textContent = labels[mode];
+            editRow.appendChild(label);
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'kivi-img-ctrl-edit-input';
+            const currentVal = getNodeAttr(attrKeys[mode]);
+            input.value = currentVal != null ? String(currentVal) : '';
+            input.placeholder = placeholders[mode];
+            input.addEventListener('mousedown', (e) => e.stopPropagation());
+            input.addEventListener('keydown', (e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                updateNodeAttr(attrKeys[mode], input.value);
+                if (mode === 'src' && activeEl) (activeEl as HTMLMediaElement).src = input.value;
+              }
+              if (e.key === 'Escape') { editRow?.remove(); editRow = null; repositionFloating(); }
+            });
+            input.addEventListener('change', () => {
+              updateNodeAttr(attrKeys[mode], input.value);
+              if (mode === 'src' && activeEl) (activeEl as HTMLMediaElement).src = input.value;
+            });
+            editRow.appendChild(input);
+
+            panel.appendChild(editRow);
+            repositionFloating();
+            requestAnimationFrame(() => input.focus());
           }
 
-          function positionDetailPanel(_img: HTMLImageElement) {
-            if (!detailPanel || !overlay) return;
-            const oRect = overlay.getBoundingClientRect();
-            detailPanel.style.left = `${oRect.left}px`;
-            detailPanel.style.top = `${oRect.bottom + 4}px`;
+          function buildSizePresetRow(view: EditorView): HTMLElement {
+            const row = document.createElement('div');
+            row.className = 'kivi-img-size-presets';
+            const currentWidth = (getNodeAttr('width') as number | null) ?? 0;
+            const editorWidth = getEditorContentWidth(view);
+
+            for (const preset of SIZE_PRESETS) {
+              const btn = document.createElement('button');
+              btn.className = 'kivi-img-size-preset-btn';
+              btn.textContent = preset.label;
+              btn.title = `${preset.pct}% width`;
+              const targetWidth = Math.round(editorWidth * preset.pct / 100);
+              if (currentWidth > 0 && Math.abs(currentWidth - targetWidth) < 10) btn.classList.add('active');
+              btn.addEventListener('mousedown', (e) => e.preventDefault());
+              btn.addEventListener('click', () => {
+                updateNodeAttr('width', targetWidth);
+                reattachAfterTransaction(view);
+                row.querySelectorAll('.kivi-img-size-preset-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+              });
+              row.appendChild(btn);
+            }
+            return row;
           }
 
-          function showOverlay(view: EditorView, img: HTMLImageElement, pos: number) {
-            if (overlay && activeImg === img) {
+          function showOverlay(view: EditorView, el: HTMLElement, pos: number, kind: MediaKind) {
+            if (kind === 'image') {
+              const img = el as HTMLImageElement;
+              if (!img.dataset.kiviBrokenWatched) {
+                img.dataset.kiviBrokenWatched = '1';
+                img.addEventListener('error', () => img.classList.add('kivi-img-broken'));
+                img.addEventListener('load', () => img.classList.remove('kivi-img-broken'));
+                if (img.complete && img.naturalWidth === 0 && img.src) img.classList.add('kivi-img-broken');
+              }
+            }
+
+            if (panel && activeEl === el) {
               activePos = pos;
               activeView = view;
+              activeKind = kind;
               attachScroll(view);
               repositionFloating();
               return;
             }
             removeOverlay();
-            activeImg = img;
+            activeEl = el;
             activePos = pos;
             activeView = view;
+            activeKind = kind;
 
-            overlay = document.createElement('div');
-            overlay.className = 'kivi-image-controls';
-            overlay.setAttribute('role', 'toolbar');
-            overlay.setAttribute('aria-label', 'Image controls');
-            overlay.style.pointerEvents = 'none';
+            // Selection outline (replaces scattered blue squares with a clean border)
+            selectionOutline = document.createElement('div');
+            selectionOutline.className = 'kivi-media-outline';
+            document.body.appendChild(selectionOutline);
 
-            // Alignment buttons
-            const alignments: { svg: string; title: string; value: string }[] = [
-              { svg: ICONS.alignLeft, title: 'Align left', value: 'left' },
-              { svg: ICONS.alignCenter, title: 'Align center', value: 'center' },
-              { svg: ICONS.alignRight, title: 'Align right', value: 'right' },
-            ];
-            for (const align of alignments) {
-              overlay.appendChild(makeBtn(align.svg, align.title, () => {
-                updateNodeAttr('data-align', align.value);
-                img.setAttribute('data-align', align.value);
-                img.style.display = 'block';
-                img.style.marginLeft = align.value === 'center' || align.value === 'right' ? 'auto' : '';
-                img.style.marginRight = align.value === 'center' || align.value === 'left' ? 'auto' : '';
-              }));
+            panel = document.createElement('div');
+            panel.className = 'kivi-image-controls';
+            panel.setAttribute('role', 'toolbar');
+            panel.setAttribute('aria-label', `${kind} controls`);
+            panel.style.pointerEvents = 'none';
+            panel.addEventListener('mousedown', (e) => e.preventDefault());
+
+            const buttonRow = document.createElement('div');
+            buttonRow.className = 'kivi-img-ctrl-row';
+
+            // Alignment buttons (for images and videos, not audio or excalidraw)
+            if (kind !== 'audio' && kind !== 'excalidrawBlock') {
+              const currentAlign = (getNodeAttr('data-align') as string) || 'left';
+              const alignOptions = [
+                { value: 'left', icon: ICONS.alignLeft, title: 'Align left' },
+                { value: 'center', icon: ICONS.alignCenter, title: 'Align center' },
+                { value: 'right', icon: ICONS.alignRight, title: 'Align right' },
+              ];
+              const alignBtns: HTMLButtonElement[] = [];
+              for (const opt of alignOptions) {
+                const b = makeBtn(opt.icon, opt.title, () => {
+                  updateNodeAttr('data-align', opt.value);
+                  reattachAfterTransaction(view);
+                  for (const ab of alignBtns) ab.classList.remove('active');
+                  b.classList.add('active');
+                });
+                if (currentAlign === opt.value) b.classList.add('active');
+                alignBtns.push(b);
+                buttonRow.appendChild(b);
+              }
+              buttonRow.appendChild(makeSep());
             }
 
-            overlay.appendChild(makeSep());
-
-            // Size presets as compact buttons
-            const sizeGroup = document.createElement('div');
-            sizeGroup.className = 'kivi-img-size-group';
-            for (const preset of SIZE_PRESETS) {
-              const btn = document.createElement('button');
-              btn.className = 'kivi-img-size-inline';
-              btn.textContent = preset.label;
-              btn.title = `${preset.width}px wide`;
-              btn.style.pointerEvents = 'auto';
-              if (Math.abs(img.offsetWidth - preset.width) < 20) btn.classList.add('active');
-              btn.addEventListener('mousedown', (e) => e.preventDefault());
-              btn.addEventListener('click', () => {
-                img.style.width = `${preset.width}px`;
-                img.style.maxWidth = '100%';
-                updateNodeAttr('width', preset.width);
-                sizeGroup.querySelectorAll('.active').forEach((b) => b.classList.remove('active'));
-                btn.classList.add('active');
-                repositionFloating();
-              });
-              sizeGroup.appendChild(btn);
+            // Source URL button (not for excalidraw with src — show file path instead)
+            if (kind === 'excalidrawBlock') {
+              const excSrc = getNodeAttr('src') as string | null;
+              if (excSrc) {
+                const label = document.createElement('span');
+                label.className = 'kivi-img-ctrl-label';
+                label.textContent = excSrc.split('/').pop() || 'excalidraw';
+                label.title = excSrc;
+                buttonRow.appendChild(label);
+              }
+            } else {
+              buttonRow.appendChild(makeBtn(ICONS.link, 'Edit source URL', () => toggleEditRow('src')));
+              if (kind === 'image') {
+                buttonRow.appendChild(makeBtn(ICONS.alt, 'Edit alt text', () => toggleEditRow('alt')));
+              }
             }
-            overlay.appendChild(sizeGroup);
 
-            overlay.appendChild(makeSep());
+            buttonRow.appendChild(makeSep());
 
-            // URL button
-            overlay.appendChild(makeBtn(ICONS.link, 'Edit URL', () => {
-              showDetailPanel(img, 'url');
+            // Copy source
+            buttonRow.appendChild(makeBtn(ICONS.copy, 'Copy source URL', () => {
+              const src = (getNodeAttr('src') as string) || '';
+              navigator.clipboard.writeText(src).catch(() => {});
             }));
-
-            // Alt text button
-            overlay.appendChild(makeBtn(ICONS.alt, 'Edit alt text', () => {
-              showDetailPanel(img, 'alt');
-            }));
-
-            overlay.appendChild(makeSep());
 
             // Delete
-            overlay.appendChild(makeBtn(ICONS.trash, 'Delete image', () => {
+            buttonRow.appendChild(makeBtn(ICONS.trash, `Delete ${kind}`, () => {
               const node = view.state.doc.nodeAt(pos);
               if (node) {
-                const tr = view.state.tr.delete(pos, pos + node.nodeSize);
-                view.dispatch(tr);
+                const src = node.attrs.src as string | undefined;
+                view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
+                if (src) document.dispatchEvent(new CustomEvent('kivi-asset-deleted', { detail: { src } }));
               }
               removeOverlay();
             }, true));
 
-            // Corner resize handles
-            const corners: ('se' | 'sw')[] = ['se', 'sw'];
-            for (const corner of corners) {
-              const handle = document.createElement('div');
-              handle.className = `kivi-image-resize-handle kivi-resize-${corner}`;
-              handle.title = 'Drag to resize';
-              handle.style.pointerEvents = 'auto';
+            panel.appendChild(buttonRow);
+            panel.appendChild(buildSizePresetRow(view));
 
-              let startX = 0;
-              let startWidth = 0;
-              const sign = corner === 'se' ? 1 : -1;
+            // 4 corner resize handles
+            for (const def of HANDLE_DEFS) {
+              const handle = document.createElement('div');
+              handle.className = 'kivi-media-resize-handle';
+              handle.dataset.handlePos = def.pos;
+              handle.style.cursor = def.cursor;
+
+              let startX = 0, startY = 0, startWidth = 0, startHeight = 0, aspectRatio = 1;
 
               handle.addEventListener('mousedown', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 resizing = true;
                 startX = e.clientX;
-                startWidth = img.offsetWidth;
+                startY = e.clientY;
+                startWidth = el.offsetWidth;
+                startHeight = el.offsetHeight;
+                aspectRatio = startWidth / (startHeight || 1);
 
                 const onMove = (ev: MouseEvent) => {
-                  const newWidth = Math.max(60, startWidth + sign * (ev.clientX - startX));
-                  img.style.width = `${newWidth}px`;
-                  img.style.maxWidth = '100%';
+                  const dx = ev.clientX - startX;
+                  const dy = ev.clientY - startY;
+                  const primaryDelta = def.xSign * dx;
+                  const secondaryDelta = def.ySign * dy * aspectRatio;
+                  const newWidth = Math.max(60, startWidth + (primaryDelta + secondaryDelta) / 2);
+                  el.style.width = `${Math.round(newWidth)}px`;
+                  el.style.maxWidth = '100%';
                   repositionFloating();
                 };
 
@@ -398,12 +478,11 @@ export const ImageControls = Extension.create({
                   document.removeEventListener('mousemove', onMove);
                   document.removeEventListener('mouseup', onUp);
                   document.body.style.cursor = '';
-
-                  updateNodeAttr('width', img.offsetWidth);
-                  repositionFloating();
+                  updateNodeAttr('width', Math.round(el.offsetWidth));
+                  reattachAfterTransaction(view);
                 };
 
-                document.body.style.cursor = corner === 'se' ? 'se-resize' : 'sw-resize';
+                document.body.style.cursor = def.cursor;
                 document.addEventListener('mousemove', onMove);
                 document.addEventListener('mouseup', onUp);
               });
@@ -412,38 +491,34 @@ export const ImageControls = Extension.create({
               resizeHandles.push(handle);
             }
 
-            document.body.appendChild(overlay);
+            document.body.appendChild(panel);
             attachScroll(view);
             repositionFloating();
           }
 
+          let brokenSweepDone = false;
+
           return {
             update(view) {
+              if (!brokenSweepDone) {
+                brokenSweepDone = true;
+                view.dom.querySelectorAll<HTMLImageElement>('img').forEach((img) => {
+                  if (img.dataset.kiviBrokenWatched) return;
+                  img.dataset.kiviBrokenWatched = '1';
+                  img.addEventListener('error', () => img.classList.add('kivi-img-broken'));
+                  img.addEventListener('load', () => img.classList.remove('kivi-img-broken'));
+                  if (img.complete && img.naturalWidth === 0 && img.src) img.classList.add('kivi-img-broken');
+                });
+              }
+
               if (resizing) return;
 
-              const { $from, from } = view.state.selection;
-              const node = view.state.doc.nodeAt(from);
-
-              if (node?.type.name === 'image') {
-                const dom = view.nodeDOM(from);
-                const img = dom instanceof HTMLImageElement ? dom : (dom as HTMLElement)?.querySelector?.('img');
-                if (img instanceof HTMLImageElement) {
-                  showOverlay(view, img, from);
-                  return;
-                }
+              const media = detectMediaAtSelection(view);
+              if (media) {
+                showOverlay(view, media.el, media.pos, media.kind);
+              } else {
+                removeOverlay();
               }
-
-              if ($from.parent.type.name === 'image') {
-                const parentPos = $from.before($from.depth);
-                const dom = view.nodeDOM(parentPos);
-                const img = dom instanceof HTMLImageElement ? dom : (dom as HTMLElement)?.querySelector?.('img');
-                if (img instanceof HTMLImageElement) {
-                  showOverlay(view, img, parentPos);
-                  return;
-                }
-              }
-
-              removeOverlay();
             },
             destroy() {
               removeOverlay();

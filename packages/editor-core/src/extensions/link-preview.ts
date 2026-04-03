@@ -280,21 +280,19 @@ function renderPreviewContent(data: LinkPreviewData): string {
     html += '</div>';
   }
 
-  // Headings outline
+  // Headings outline (scrollable, all headings, clickable)
   if (data.headings && data.headings.length > 0) {
     html += '<div class="klp-outline">';
-    for (const h of data.headings.slice(0, 8)) {
+    for (const h of data.headings) {
       const indent = Math.max(0, h.level - 1) * 10;
-      html += `<div class="klp-heading" style="padding-left:${indent}px"><span class="klp-h-marker">${'#'.repeat(h.level)}</span> ${esc(h.text)}</div>`;
-    }
-    if (data.headings.length > 8) {
-      html += `<div class="klp-heading klp-more">+${data.headings.length - 8} more</div>`;
+      const headingSlug = h.text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+      html += `<div class="klp-heading klp-heading-link" data-heading="${esc(headingSlug)}" data-target="${esc(data.target)}" style="padding-left:${indent}px"><span class="klp-h-marker">${'#'.repeat(h.level)}</span> ${esc(h.text)}</div>`;
     }
     html += '</div>';
   }
 
   // Navigation hint
-  html += '<div class="klp-hint">⌘+click to open</div>';
+  html += '<div class="klp-hint">⌘+Hover to preview · Click to open</div>';
 
   return html;
 }
@@ -302,36 +300,39 @@ function renderPreviewContent(data: LinkPreviewData): string {
 function positionTooltip(tooltip: HTMLDivElement, anchor: HTMLElement, view: EditorView): void {
   const anchorRect = anchor.getBoundingClientRect();
   const container = view.dom.parentElement;
-  const containerRect = container?.getBoundingClientRect() ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+  const cr = container?.getBoundingClientRect() ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
 
   tooltip.style.visibility = 'hidden';
   tooltip.style.display = 'block';
-  void tooltip.offsetHeight; // reflow
+  void tooltip.offsetHeight;
 
   const ttW = tooltip.offsetWidth;
   const ttH = tooltip.offsetHeight;
+  const gap = 6;
+  const pad = 8;
 
-  // Prefer below the link, align left
+  const spaceAbove = anchorRect.top - Math.max(cr.top, 0);
+  const spaceBelow = Math.min(cr.bottom, window.innerHeight) - anchorRect.bottom;
+
+  let top: number;
+  if (spaceAbove >= ttH + gap) {
+    top = anchorRect.top - ttH - gap;
+  } else if (spaceBelow >= ttH + gap) {
+    top = anchorRect.bottom + gap;
+  } else if (spaceBelow >= spaceAbove) {
+    top = anchorRect.bottom + gap;
+  } else {
+    top = anchorRect.top - ttH - gap;
+  }
+
+  const maxTop = Math.min(cr.bottom, window.innerHeight) - ttH - pad;
+  const minTop = Math.max(cr.top, 0) + pad;
+  top = Math.max(minTop, Math.min(top, maxTop));
+
   let left = anchorRect.left;
-  let top = anchorRect.bottom + 6;
-
-  // Flip above if not enough space below
-  if (top + ttH > containerRect.bottom - 8) {
-    top = anchorRect.top - ttH - 6;
-  }
-
-  // Clamp horizontal
-  if (left + ttW > containerRect.right - 8) {
-    left = containerRect.right - ttW - 8;
-  }
-  if (left < containerRect.left + 4) {
-    left = containerRect.left + 4;
-  }
-
-  // Clamp vertical
-  if (top < containerRect.top + 4) {
-    top = containerRect.top + 4;
-  }
+  const maxLeft = Math.min(cr.right, window.innerWidth) - ttW - pad;
+  const minLeft = Math.max(cr.left, 0) + pad;
+  left = Math.max(minLeft, Math.min(left, maxLeft));
 
   tooltip.style.left = `${left}px`;
   tooltip.style.top = `${top}px`;
@@ -472,10 +473,10 @@ const LINK_PREVIEW_CSS = `
 }
 
 .klp-outline {
-  padding: 4px 12px 6px;
+  padding: 4px 8px 6px;
   border-top: 1px solid rgba(255,255,255,0.05);
   margin-top: 4px;
-  max-height: 100px;
+  max-height: 200px;
   overflow-y: auto;
 }
 .klp-outline::-webkit-scrollbar { width: 3px; }
@@ -488,9 +489,15 @@ const LINK_PREVIEW_CSS = `
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.klp-heading.klp-more {
-  color: var(--vscode-descriptionForeground, #666);
-  opacity: 0.6;
+.klp-heading-link {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 4px;
+  transition: background 0.1s, color 0.1s;
+}
+.klp-heading-link:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+  color: var(--vscode-foreground, #ccc);
 }
 .klp-h-marker {
   color: var(--vscode-descriptionForeground, #555);
@@ -526,7 +533,18 @@ const LINK_PREVIEW_CSS = `
   to { transform: rotate(360deg); }
 }
 
-/* Cmd/Ctrl held: underline links */
+/* Links are always clickable */
+.kivi-wiki-link,
+.kivi-link {
+  cursor: pointer;
+}
+.kivi-wiki-link:hover,
+.kivi-link:hover,
+.kivi-hashtag:hover {
+  text-decoration: underline;
+  cursor: pointer;
+}
+/* Cmd/Ctrl held: underline all link types */
 .kivi-cmd-hover .kivi-wiki-link,
 .kivi-cmd-hover .kivi-link,
 .kivi-cmd-hover .kivi-hashtag {
@@ -656,6 +674,27 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
       positionTooltip(tt, link.element, view);
       void tt.offsetHeight;
       tt.classList.add('klp-visible');
+
+      // Attach click handlers to outline headings
+      tt.querySelectorAll<HTMLElement>('.klp-heading-link').forEach((el) => {
+        el.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const heading = el.getAttribute('data-heading') || '';
+          const target = el.getAttribute('data-target') || '';
+          hideTooltip();
+          if (opts.onNavigate && target) {
+            const headingTarget = heading ? `${target}#${heading}` : target;
+            opts.onNavigate({
+              kind: link.kind,
+              target: headingTarget,
+              from: link.from,
+              to: link.to,
+              element: link.element,
+            });
+          }
+        });
+      });
     }
 
     return [
@@ -663,6 +702,15 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
         key: linkPreviewKey,
         view(view) {
           editorView = view;
+          const scrollParent = view.dom.parentElement;
+          const onScroll = () => {
+            if (tooltip?.classList.contains('klp-visible') && currentLink) {
+              positionTooltip(tooltip, currentLink.element, view);
+            }
+          };
+          if (scrollParent) {
+            scrollParent.addEventListener('scroll', onScroll, { passive: true });
+          }
 
           return {
             update(v) { editorView = v; },
@@ -671,6 +719,7 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
               tooltip?.remove();
               tooltip = null;
               editorView?.dom.classList.remove('kivi-cmd-hover');
+              if (scrollParent) scrollParent.removeEventListener('scroll', onScroll);
             },
           };
         },
@@ -679,7 +728,8 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
             mouseover(view, event) {
               if (!opts.onResolveLink) return false;
 
-              const link = detectLinkAtPos(view, event as MouseEvent);
+              const me = event as MouseEvent;
+              const link = detectLinkAtPos(view, me);
 
               if (!link) {
                 if (!isInsideTooltip) scheduleHide();
@@ -692,20 +742,25 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
                 return false;
               }
 
-              // New link
+              // Only show preview when Cmd/Ctrl is held
+              const isModifierHeld = me.metaKey || me.ctrlKey;
+              if (!isModifierHeld) {
+                // Plain hover — just track the link for potential later Cmd press
+                clearTimers();
+                currentLink = link;
+                return false;
+              }
+
+              // Cmd/Ctrl + hover — show preview
               clearTimers();
               if (resolveAbort) { resolveAbort.abort(); resolveAbort = null; }
               currentLink = link;
-
-              const me = event as MouseEvent;
-              const isModifierHeld = me.metaKey || me.ctrlKey;
-              const delay = isModifierHeld ? (opts.modifierHoverDelay ?? 80) : (opts.hoverDelay ?? 350);
 
               hoverTimer = setTimeout(() => {
                 if (currentLink === link) {
                   showPreview(link, view);
                 }
-              }, delay);
+              }, opts.modifierHoverDelay ?? 80);
 
               return false;
             },
@@ -720,7 +775,7 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
               return false;
             },
 
-            keydown(_view, event) {
+            keydown(view, event) {
               const ke = event as KeyboardEvent;
               if (ke.key === 'Escape') {
                 hideTooltip();
@@ -728,6 +783,17 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
               }
               if (ke.key === 'Meta' || ke.key === 'Control') {
                 editorView?.dom.classList.add('kivi-cmd-hover');
+                // If already hovering a link, start showing the preview
+                if (currentLink && !tooltip?.classList.contains('klp-visible')) {
+                  clearTimers();
+                  if (resolveAbort) { resolveAbort.abort(); resolveAbort = null; }
+                  const link = currentLink;
+                  hoverTimer = setTimeout(() => {
+                    if (currentLink === link) {
+                      showPreview(link, view);
+                    }
+                  }, opts.modifierHoverDelay ?? 80);
+                }
               }
               return false;
             },
@@ -736,15 +802,17 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
               const ke = event as KeyboardEvent;
               if (ke.key === 'Meta' || ke.key === 'Control') {
                 editorView?.dom.classList.remove('kivi-cmd-hover');
+                // Hide preview when Cmd/Ctrl is released (unless mouse is inside tooltip)
+                if (!isInsideTooltip) {
+                  scheduleHide();
+                }
               }
               return false;
             },
 
             click(view, event) {
-              const me = event as MouseEvent;
-              if (!(me.metaKey || me.ctrlKey)) return false;
               if (!opts.onNavigate) return false;
-
+              const me = event as MouseEvent;
               const link = detectLinkAtPos(view, me);
               if (!link) return false;
 

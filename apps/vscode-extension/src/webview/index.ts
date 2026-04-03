@@ -1,4 +1,5 @@
-import { createKiviEditor, KiviEditor, searchPluginKey } from '@kivi/editor-core';
+import { createKiviEditor, KiviEditor, searchPluginKey, setExcalidrawCallbacks } from '@kivi/editor-core';
+import { computeKiviFontSize, detectToolbarContext } from '../shared/font.js';
 import './styles.css';
 
 let katexCssLoaded = false;
@@ -25,11 +26,13 @@ interface KiviSettings {
   lineHeight: number;
   customCSS: string;
   showToolbar: boolean;
-  zoom: number;
+  editorZoom: number;
+  wordWrap: boolean;
   vscodeEditorFontSize: number;
   vscodeEditorFontFamily: string;
   vscodeEditorLineHeight: number;
   vscodeEditorWordWrap: string;
+  vscodeZoomLevel: number;
 }
 
 interface VsCodeMessage {
@@ -47,6 +50,7 @@ interface VsCodeMessage {
   headings?: { level: number; text: string; line: number }[];
   path?: string;
   name?: string;
+  docBaseUrl?: string;
 }
 
 const vscode = acquireVsCodeApi();
@@ -55,11 +59,15 @@ let editor: KiviEditor | null = null;
 let isUpdatingFromExtension = false;
 let lastSentContent = '';
 let savedBaseLines: string[] = [];
+let pendingBlameCallback: ((entries: Array<{ line: number; author: string; date: string; summary: string; hash: string }>) => void) | null = null;
 let overrideStyleEl: HTMLStyleElement | null = null;
 let customCSSStyleEl: HTMLStyleElement | null = null;
 let viewMode: 'live' | 'source' | 'split' = 'live';
 let filePath = '';
 let fileName = '';
+let docBaseUrl = '';
+let currentEditorZoom = 100;
+let currentWordWrap = true;
 let linkResolveId = 0;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const pendingLinkResolves = new Map<number, { resolve: (v: any) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -215,7 +223,6 @@ function closeLinkInput() {
   linkInputEl?.remove();
   linkInputEl = null;
 }
-let splitScrollSyncLock = false;
 
 // ── Persisted state ──
 
@@ -252,38 +259,43 @@ function applySettings(s: KiviSettings) {
     document.head.appendChild(customCSSStyleEl);
   }
 
-  const hasKiviFontSize = s.fontSize && s.fontSize > 0;
-  const zoomFactor = (s.zoom && s.zoom > 0) ? s.zoom / 100 : 1;
-
-  // Live editor font: Kivi override > VS Code editor font > VS Code UI font
-  const liveFont = s.fontFamily || '';
-  // Mono font for raw/source from VS Code editor.fontFamily (forwarded from host)
-  const monoFont = s.vscodeEditorFontFamily || '';
-
-  const wordWrapEnabled = s.vscodeEditorWordWrap !== 'off';
-
-  // Always resolve the effective font size so it matches the VS Code editor.
-  // Uses kivi override if set, otherwise the VS Code editor.fontSize (forwarded
-  // from the host, already the user's configured value). The kivi zoom setting
-  // is applied on top. VS Code's window.zoomLevel is handled by the webview
-  // container itself (CSS transform on the iframe).
-  const baseFontSize = hasKiviFontSize ? s.fontSize : (s.vscodeEditorFontSize || 14);
-  const effectiveFontSize = Math.round(baseFontSize * zoomFactor);
+  const wordWrapEnabled = s.wordWrap;
+  currentWordWrap = wordWrapEnabled;
 
   const props: string[] = [];
-  props.push(`--kivi-font-size: ${effectiveFontSize}px;`);
+
+  const computedSize = computeKiviFontSize(s.fontSize || 0);
+  if (computedSize !== null) {
+    props.push(`--kivi-font-size: ${computedSize}px;`);
+  }
+
+  // CSS zoom for editor containers (does not affect toolbar)
+  const editorZoomPercent = (s.editorZoom > 0) ? s.editorZoom : 100;
+  currentEditorZoom = editorZoomPercent;
+  const cssZoom = editorZoomPercent / 100;
+  for (const id of ['editor', 'kivi-raw-wrapper', 'kivi-split-container']) {
+    const el = document.getElementById(id);
+    if (el) (el.style as any).zoom = String(cssZoom);
+  }
+
+  // Update toolbar zoom display
+  const zoomLabel = document.getElementById('kivi-zoom-label');
+  if (zoomLabel) zoomLabel.textContent = `${editorZoomPercent}%`;
+
   if (s.editorBackground) props.push(`--kivi-editor-bg: ${s.editorBackground};`);
   if (s.codeBlockBackground) props.push(`--kivi-codeblock-bg: ${s.codeBlockBackground};`);
   if (s.accentColor) props.push(`--kivi-accent: ${s.accentColor};`);
   if (s.textColor) props.push(`--kivi-text: ${s.textColor};`);
   if (s.headingColor) props.push(`--kivi-heading-color: ${s.headingColor};`);
-  if (monoFont) props.push(`--kivi-mono-font: ${monoFont};`);
+  if (s.vscodeEditorFontFamily) props.push(`--kivi-mono-font: ${s.vscodeEditorFontFamily};`);
   if (s.lineHeight && s.lineHeight > 0) props.push(`--kivi-line-height: ${s.lineHeight};`);
 
   let css = `:root { ${props.join(' ')} }\n`;
 
-  if (liveFont) {
-    css += `#editor { font-family: ${liveFont} !important; }\n`;
+  // Font family: kivi override > VS Code editor font (--vscode-editor-font-family).
+  // Both live and raw editors default to the editor font via CSS.
+  if (s.fontFamily) {
+    css += `.kivi-vscode-editor { font-family: ${s.fontFamily} !important; }\n`;
   }
 
   if (s.editorBackground) {
@@ -307,18 +319,10 @@ function applySettings(s: KiviSettings) {
     css += `#editor { line-height: var(--kivi-line-height) !important; }\n`;
   }
 
-  // Raw editors + backdrops: word-wrap setting only (font handled by CSS variables)
-  for (const id of ['kivi-raw-editor', 'kivi-split-raw']) {
-    const el = document.getElementById(id) as HTMLTextAreaElement | null;
-    if (el) {
-      el.style.whiteSpace = wordWrapEnabled ? 'pre-wrap' : 'pre';
-      el.style.overflowX = wordWrapEnabled ? 'hidden' : 'auto';
-    }
-  }
-
-  for (const bd of document.querySelectorAll<HTMLPreElement>('.kivi-raw-backdrop')) {
-    bd.style.whiteSpace = wordWrapEnabled ? 'pre-wrap' : 'pre';
-  }
+  // Word wrap — delegated to applyWordWrap for consistency
+  applyWordWrap(wordWrapEnabled);
+  const wrapBtn = document.getElementById('kivi-wrap-label');
+  if (wrapBtn) wrapBtn.classList.toggle('active', wordWrapEnabled);
 
   overrideStyleEl.textContent = css;
   customCSSStyleEl.textContent = s.customCSS || '';
@@ -415,20 +419,22 @@ function highlightMarkdown(text: string): string {
 }
 
 function highlightInline(text: string): string {
-  // Process inline tokens left-to-right with a regex
-  return text.replace(
+  // Escape first so no raw HTML tags are ever interpreted by the browser,
+  // then colorize markdown tokens inside the already-safe string.
+  const safe = esc(text);
+  return safe.replace(
     /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(~~[^~]+~~)|(\[\[[^\]]+\]\])|(\[[^\]]*\]\([^)]*\))|(!\[[^\]]*\]\([^)]*\))|(#[a-zA-Z][\w/-]*)|(https?:\/\/\S+)/g,
     (match, code, bold1, bold2, italic1, italic2, strike, wikiLink, mdLink, image, tag, url) => {
-      if (code) return `<span class="md-inline-code">${esc(match)}</span>`;
-      if (bold1 || bold2) return `<span class="md-bold">${esc(match)}</span>`;
-      if (italic1 || italic2) return `<span class="md-italic">${esc(match)}</span>`;
-      if (strike) return `<span class="md-strike">${esc(match)}</span>`;
-      if (wikiLink) return `<span class="md-wiki-link">${esc(match)}</span>`;
-      if (mdLink) return `<span class="md-link">${esc(match)}</span>`;
-      if (image) return `<span class="md-image">${esc(match)}</span>`;
-      if (tag) return `<span class="md-tag">${esc(match)}</span>`;
-      if (url) return `<span class="md-url">${esc(match)}</span>`;
-      return esc(match);
+      if (code) return `<span class="md-inline-code">${match}</span>`;
+      if (bold1 || bold2) return `<span class="md-bold">${match}</span>`;
+      if (italic1 || italic2) return `<span class="md-italic">${match}</span>`;
+      if (strike) return `<span class="md-strike">${match}</span>`;
+      if (wikiLink) return `<span class="md-wiki-link">${match}</span>`;
+      if (mdLink) return `<span class="md-link">${match}</span>`;
+      if (image) return `<span class="md-image">${match}</span>`;
+      if (tag) return `<span class="md-tag">${match}</span>`;
+      if (url) return `<span class="md-url">${match}</span>`;
+      return match;
     },
   );
 }
@@ -437,10 +443,28 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+let _highlightFrame: ReturnType<typeof requestAnimationFrame> | null = null;
+let _pendingHighlights: Set<HTMLTextAreaElement> = new Set();
+
+const HIGHLIGHT_SIZE_LIMIT = 100 * 1024; // skip syntax highlighting above 100KB
+
 function syncHighlight(textarea: HTMLTextAreaElement) {
-  const backdrop = textarea.parentElement?.querySelector('.kivi-raw-backdrop') as HTMLPreElement | null;
-  if (backdrop) {
-    backdrop.innerHTML = highlightMarkdown(textarea.value) + '\n';
+  _pendingHighlights.add(textarea);
+  if (!_highlightFrame) {
+    _highlightFrame = requestAnimationFrame(() => {
+      _highlightFrame = null;
+      const pending = _pendingHighlights;
+      _pendingHighlights = new Set();
+      for (const ta of pending) {
+        const backdrop = ta.parentElement?.querySelector('.kivi-raw-backdrop') as HTMLPreElement | null;
+        if (!backdrop) continue;
+        if (ta.value.length > HIGHLIGHT_SIZE_LIMIT) {
+          backdrop.textContent = ta.value + '\n';
+        } else {
+          backdrop.innerHTML = highlightMarkdown(ta.value) + '\n';
+        }
+      }
+    });
   }
 }
 
@@ -479,7 +503,67 @@ function init() {
   toolbarEl.id = 'kivi-toolbar';
   const brand = document.createElement('span');
   brand.className = 'kivi-toolbar-brand';
-  brand.innerHTML = `<svg class="kivi-brand-icon" width="16" height="16" viewBox="63 46 913 901" fill="currentColor"><path d="M618.3,816.5C580.5,830.7,541.8,838.3,501.7,837C452.2,835.5,405.7,822.5,362.1,799.5C304.6,769.2,257.9,726.9,222.7,672.1C205.8,645.7,196.4,616.3,192.6,585.1C186.3,533.4,196,484.1,214.5,436.1C237,377.4,272.1,326.9,317.3,283.5C368,234.9,426.6,199.4,494.7,180.3C527.2,171.1,560.2,166.7,593.9,168.9C651.6,172.8,700.1,195.5,738,240.1C770,277.7,796.4,318.6,813.8,365C825.5,396.2,833,428.2,836.4,461.4C841.7,511.7,836.1,560.7,819.5,608.4C804.3,652,781.1,691.1,750.3,725.5C718.1,761.4,680,789.2,636.2,809.1C630.5,811.7,624.5,813.9,618.3,816.5M716.8,281.7C700.4,249.3,674.2,228,640.6,215.5C604.6,202.1,567.6,201.4,530.3,207.7C486.8,215.1,447.2,232.4,410.1,255.9C366.5,283.5,329.1,318.1,298.2,359.6C261.6,408.8,237.1,463.1,230,524.6C226.7,553.2,228.4,581.4,236.4,609.1C249,651.9,274.4,683.8,315.7,702.1C347.9,716.3,381.7,718.2,416.1,714.3C445.9,710.9,474.4,702.1,501.5,689.5C585.2,650.7,649.5,590.7,695.1,510.8C722.2,463.2,737.5,412.2,735.6,356.8C734.8,330.7,729,305.8,716.8,281.7z"/><path d="M443.2,539.3C417.9,537.2,403.2,521.4,402.6,496.4C402.1,477.3,408.2,460.1,418,444.1C435.6,415.2,459.5,393.5,491.8,382.1C503.4,378.1,515.3,376.5,527.6,378.5C556.3,383.2,565.3,407.9,562.9,428.3C559.1,460.2,542.2,485,519,506.1C503.5,520.3,486,531.4,465.4,536.7C458.2,538.5,451.1,539.7,443.2,539.3z"/><path d="M348.4,612.9C344.4,609.5,344.9,605.2,345.9,601.5C352.1,579.5,365,563.3,387.6,556.5C398.2,553.3,403.8,558.8,401.4,569.6C398.1,584.8,388.5,595.6,376.1,604.1C369.9,608.4,363.5,612.2,356,613.7C353.4,614.2,351.1,614.3,348.4,612.9z"/><path d="M365,473.7C376.2,479.6,377,486.4,368,494.8C354.9,507.1,325.8,510.8,310.2,502.2C302.5,497.9,301.5,492,307.7,485.7C318.5,474.6,345.6,464.7,365,473.7z"/><path d="M641.1,408.6C645.7,409.3,649.7,410.3,653.5,412.1C662,416.2,663.3,423,656.5,429.5C646.1,439.5,633.2,444.1,619.1,445.3C611.8,445.9,604.5,445.3,597.8,441.6C589.6,437,588.2,429.9,594.9,423.3C607.7,410.9,623.3,406.8,641.1,408.6z"/><path d="M465.5,576.8C467.3,572.5,469.1,568.9,472.2,565.9C478,560.1,484.2,560.3,489.1,567C496.6,577.4,498.3,589.3,497,601.6C496,610.1,493.6,618.2,488.7,625.4C482.3,634.8,474.8,634.7,469.2,624.7C460.6,609.4,459.4,593.6,465.5,576.8z"/><path d="M483.1,285.8C488.8,284,492.1,286.9,494.7,290.9C503.3,303.9,505.3,318.2,501.6,333.3C500.2,339,498.1,344.4,494.4,349.1C488.4,356.6,480.3,356.5,475.1,348.4C466.6,335.1,466.1,320.6,470.4,305.7C472.6,298,475.2,290.5,483.1,285.8z"/><path d="M569.2,332.3C579,317.9,591.5,307.6,608.3,303.5C615.8,301.7,620.3,306,618.6,313.5C613.7,335.7,600,350.5,579.3,359.2C577.1,360.1,574.8,360.4,572.4,360.4C565.7,360.3,562.1,356.3,562.8,349.4C563.5,343.3,566,337.8,569.2,332.3z"/><path d="M361.6,374C359.4,364,363.1,359.1,372.5,359.8C387.9,360.9,411,372.3,415.7,394.1C417.9,404.4,413.3,410.8,402.8,410.2C387.2,409.4,375.8,401.2,367.7,388.1C365,383.9,363,379.3,361.6,374z"/><path d="M550.9,525.8C550.4,524.3,550,523.2,549.7,522.1C547,511.9,551.7,505.5,562.2,505C581.7,504,604.6,526.1,604.3,545.5C604.2,551.7,601.7,554.2,595.5,554.4C576.8,555.1,559.2,543.9,550.9,525.8z"/></svg><span class="kivi-brand-text">kivi</span>`;
+  brand.innerHTML = `<svg class="kivi-brand-icon" width="16" height="16" viewBox="63 46 913 901" fill="currentColor"><path d="M618.3,816.5C580.5,830.7,541.8,838.3,501.7,837C452.2,835.5,405.7,822.5,362.1,799.5C304.6,769.2,257.9,726.9,222.7,672.1C205.8,645.7,196.4,616.3,192.6,585.1C186.3,533.4,196,484.1,214.5,436.1C237,377.4,272.1,326.9,317.3,283.5C368,234.9,426.6,199.4,494.7,180.3C527.2,171.1,560.2,166.7,593.9,168.9C651.6,172.8,700.1,195.5,738,240.1C770,277.7,796.4,318.6,813.8,365C825.5,396.2,833,428.2,836.4,461.4C841.7,511.7,836.1,560.7,819.5,608.4C804.3,652,781.1,691.1,750.3,725.5C718.1,761.4,680,789.2,636.2,809.1C630.5,811.7,624.5,813.9,618.3,816.5M716.8,281.7C700.4,249.3,674.2,228,640.6,215.5C604.6,202.1,567.6,201.4,530.3,207.7C486.8,215.1,447.2,232.4,410.1,255.9C366.5,283.5,329.1,318.1,298.2,359.6C261.6,408.8,237.1,463.1,230,524.6C226.7,553.2,228.4,581.4,236.4,609.1C249,651.9,274.4,683.8,315.7,702.1C347.9,716.3,381.7,718.2,416.1,714.3C445.9,710.9,474.4,702.1,501.5,689.5C585.2,650.7,649.5,590.7,695.1,510.8C722.2,463.2,737.5,412.2,735.6,356.8C734.8,330.7,729,305.8,716.8,281.7z"/><path d="M443.2,539.3C417.9,537.2,403.2,521.4,402.6,496.4C402.1,477.3,408.2,460.1,418,444.1C435.6,415.2,459.5,393.5,491.8,382.1C503.4,378.1,515.3,376.5,527.6,378.5C556.3,383.2,565.3,407.9,562.9,428.3C559.1,460.2,542.2,485,519,506.1C503.5,520.3,486,531.4,465.4,536.7C458.2,538.5,451.1,539.7,443.2,539.3z"/><path d="M348.4,612.9C344.4,609.5,344.9,605.2,345.9,601.5C352.1,579.5,365,563.3,387.6,556.5C398.2,553.3,403.8,558.8,401.4,569.6C398.1,584.8,388.5,595.6,376.1,604.1C369.9,608.4,363.5,612.2,356,613.7C353.4,614.2,351.1,614.3,348.4,612.9z"/><path d="M365,473.7C376.2,479.6,377,486.4,368,494.8C354.9,507.1,325.8,510.8,310.2,502.2C302.5,497.9,301.5,492,307.7,485.7C318.5,474.6,345.6,464.7,365,473.7z"/><path d="M641.1,408.6C645.7,409.3,649.7,410.3,653.5,412.1C662,416.2,663.3,423,656.5,429.5C646.1,439.5,633.2,444.1,619.1,445.3C611.8,445.9,604.5,445.3,597.8,441.6C589.6,437,588.2,429.9,594.9,423.3C607.7,410.9,623.3,406.8,641.1,408.6z"/><path d="M465.5,576.8C467.3,572.5,469.1,568.9,472.2,565.9C478,560.1,484.2,560.3,489.1,567C496.6,577.4,498.3,589.3,497,601.6C496,610.1,493.6,618.2,488.7,625.4C482.3,634.8,474.8,634.7,469.2,624.7C460.6,609.4,459.4,593.6,465.5,576.8z"/><path d="M483.1,285.8C488.8,284,492.1,286.9,494.7,290.9C503.3,303.9,505.3,318.2,501.6,333.3C500.2,339,498.1,344.4,494.4,349.1C488.4,356.6,480.3,356.5,475.1,348.4C466.6,335.1,466.1,320.6,470.4,305.7C472.6,298,475.2,290.5,483.1,285.8z"/><path d="M569.2,332.3C579,317.9,591.5,307.6,608.3,303.5C615.8,301.7,620.3,306,618.6,313.5C613.7,335.7,600,350.5,579.3,359.2C577.1,360.1,574.8,360.4,572.4,360.4C565.7,360.3,562.1,356.3,562.8,349.4C563.5,343.3,566,337.8,569.2,332.3z"/><path d="M361.6,374C359.4,364,363.1,359.1,372.5,359.8C387.9,360.9,411,372.3,415.7,394.1C417.9,404.4,413.3,410.8,402.8,410.2C387.2,409.4,375.8,401.2,367.7,388.1C365,383.9,363,379.3,361.6,374z"/><path d="M550.9,525.8C550.4,524.3,550,523.2,549.7,522.1C547,511.9,551.7,505.5,562.2,505C581.7,504,604.6,526.1,604.3,545.5C604.2,551.7,601.7,554.2,595.5,554.4C576.8,555.1,559.2,543.9,550.9,525.8z"/></svg><span class="kivi-brand-text">Kivi</span>`;
+  brand.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const existing = document.querySelector('.kivi-brand-menu');
+    if (existing) { existing.remove(); return; }
+    const menu = document.createElement('div');
+    menu.className = 'kivi-brand-menu';
+
+    const svgI = (d: string) =>
+      `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
+    const items: { icon: string; label: string; action: () => void }[] = [
+      {
+        icon: svgI('<circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="8"/><circle cx="8" cy="11" r="0.5" fill="currentColor"/>'),
+        label: 'About Kivi',
+        action: () => vscode.postMessage({ type: 'openExternal', url: 'https://github.com/nicholasgriffintn/kivi' }),
+      },
+      {
+        icon: svgI('<path d="M9 2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6L9 2z"/><polyline points="9,2 9,6 13,6"/>'),
+        label: 'Documentation',
+        action: () => vscode.postMessage({ type: 'openExternal', url: 'https://github.com/nicholasgriffintn/kivi#readme' }),
+      },
+      {
+        icon: svgI('<circle cx="8" cy="8" r="6"/><path d="M6 6.5a2 2 0 1 1 2 2v1"/><circle cx="8" cy="12" r="0.5" fill="currentColor"/>'),
+        label: 'Report Issue',
+        action: () => vscode.postMessage({ type: 'openExternal', url: 'https://github.com/nicholasgriffintn/kivi/issues/new' }),
+      },
+      {
+        icon: svgI('<path d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7z"/><path d="M5.5 6.5a2.5 2.5 0 0 1 5 0c0 1.5-2.5 1.5-2.5 3"/><circle cx="8" cy="12.5" r="0.5" fill="currentColor"/>'),
+        label: 'Keyboard Shortcuts',
+        action: () => vscode.postMessage({ type: 'command', command: 'workbench.action.openGlobalKeybindings', args: ['kivi'] }),
+      },
+    ];
+
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'kivi-brand-menu-item';
+      row.innerHTML = `${it.icon}<span>${it.label}</span>`;
+      row.addEventListener('click', (ev) => { ev.stopPropagation(); it.action(); menu.remove(); });
+      menu.appendChild(row);
+    }
+
+    const sep = document.createElement('div');
+    sep.className = 'kivi-brand-menu-sep';
+    menu.appendChild(sep);
+
+    const hint = document.createElement('div');
+    hint.className = 'kivi-brand-menu-hint';
+    hint.textContent = 'Kivi — Markdown knowledge base';
+    menu.appendChild(hint);
+
+    brand.appendChild(menu);
+
+    const dismiss = (ev: MouseEvent) => {
+      if (!menu.contains(ev.target as Node) && ev.target !== brand) {
+        menu.remove();
+        document.removeEventListener('click', dismiss, true);
+      }
+    };
+    requestAnimationFrame(() => document.addEventListener('click', dismiss, true));
+  });
   toolbarEl.appendChild(brand);
   const brandSep = document.createElement('span');
   brandSep.className = 'kivi-toolbar-sep';
@@ -518,11 +602,17 @@ function init() {
 
   editorEl.parentElement!.insertBefore(rawWrapper, splitContainer.nextSibling);
 
+  let rawScrollFrame: ReturnType<typeof requestAnimationFrame> | null = null;
   rawEl.addEventListener('scroll', () => {
-    rawBackdrop.scrollTop = rawEl.scrollTop;
-    rawBackdrop.scrollLeft = rawEl.scrollLeft;
-    rawGutter.scrollTop = rawEl.scrollTop;
-  });
+    if (!rawScrollFrame) {
+      rawScrollFrame = requestAnimationFrame(() => {
+        rawScrollFrame = null;
+        rawBackdrop.scrollTop = rawEl.scrollTop;
+        rawBackdrop.scrollLeft = rawEl.scrollLeft;
+        rawGutter.scrollTop = rawEl.scrollTop;
+      });
+    }
+  }, { passive: true });
 
   createSearchBar();
 
@@ -535,6 +625,21 @@ function init() {
       }, 3000);
       pendingLinkResolves.set(id, { resolve, timer });
       vscode.postMessage({ type: 'resolveLink', id, link });
+    });
+  }
+
+  let inputPromptId = 0;
+  const pendingInputPrompts = new Map<number, { resolve: (v: string | null) => void; timer: ReturnType<typeof setTimeout> }>();
+
+  function requestInput(message: string, placeholder?: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const id = ++inputPromptId;
+      const timer = setTimeout(() => {
+        pendingInputPrompts.delete(id);
+        resolve(null);
+      }, 60000);
+      pendingInputPrompts.set(id, { resolve, timer });
+      vscode.postMessage({ type: 'promptInput', id, message, placeholder });
     });
   }
 
@@ -564,9 +669,9 @@ function init() {
       vscode.postMessage({ type: 'navigateLink', link });
     },
     onCreatePage: () => {
-      const name = prompt('New page name:');
-      if (name) vscode.postMessage({ type: 'createChildPage', name });
+      vscode.postMessage({ type: 'promptCreateChildPage' });
     },
+    promptInput: (message, placeholder) => requestInput(message, placeholder),
     tagSuggestion: {
       items: (query: string) => {
         const q = query.toLowerCase();
@@ -598,9 +703,65 @@ function init() {
         });
       },
     },
+    fileStorageAdapter: {
+      async store(blob: Blob, filename: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result as string;
+            const storeId = `${filename}-${Date.now()}`;
+            vscode.postMessage({ type: 'storeFile', data: dataUrl, name: filename, storeId });
+
+            const handler = (event: MessageEvent) => {
+              if (event.data?.type === 'fileStored' && event.data?.storeId === storeId) {
+                window.removeEventListener('message', handler);
+                resolve(event.data.path);
+              }
+            };
+            window.addEventListener('message', handler);
+            setTimeout(() => {
+              window.removeEventListener('message', handler);
+              reject(new Error('File store timeout'));
+            }, 15000);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      },
+    },
   });
 
   perfLog('editor-created', 'editor-create-start');
+
+  // Wire up Excalidraw file reading / editing callbacks
+  let _hasExcalidrawExtension: boolean | null = null;
+  setExcalidrawCallbacks({
+    readFile: (src: string) => {
+      return new Promise<string>((resolve, reject) => {
+        const reqId = `excalidraw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        vscode.postMessage({ type: 'readExcalidrawFile', src, reqId });
+        const handler = (event: MessageEvent) => {
+          if (event.data?.type === 'excalidrawFileContent' && event.data?.reqId === reqId) {
+            window.removeEventListener('message', handler);
+            if (event.data.error) reject(new Error(event.data.error));
+            else resolve(event.data.content);
+          }
+        };
+        window.addEventListener('message', handler);
+        setTimeout(() => { window.removeEventListener('message', handler); reject(new Error('timeout')); }, 5000);
+      });
+    },
+    openInEditor: (src: string) => {
+      vscode.postMessage({ type: 'openExcalidraw', src });
+    },
+    hasExcalidrawExtension: () => {
+      if (_hasExcalidrawExtension === null) {
+        vscode.postMessage({ type: 'checkExcalidrawExtension' });
+        return false; // Assume not available until we hear back
+      }
+      return _hasExcalidrawExtension;
+    },
+  });
 
   // Load content asynchronously to avoid blocking first paint
   if (initialMarkdown) {
@@ -616,6 +777,7 @@ function init() {
       perfLog('async-load-done', 'async-load-start');
       const skeleton = document.getElementById('kivi-skeleton');
       if (skeleton) skeleton.remove();
+      rewriteRelativeImages();
       editor!.focus('start');
       // Restore view mode after content is loaded so split/source has content
       if (viewMode !== 'live') doSetViewMode(viewMode, false);
@@ -668,25 +830,41 @@ function init() {
     }
   });
 
+  document.addEventListener('kivi-link-navigate', (e) => {
+    const detail = (e as CustomEvent).detail as { href: string } | undefined;
+    if (!detail?.href) return;
+    const href = detail.href;
+    const isExternal = href.startsWith('http://') || href.startsWith('https://');
+    vscode.postMessage({ type: 'navigateLink', link: { kind: isExternal ? 'external-url' : 'markdown-link', target: href } });
+  });
+
+  document.addEventListener('kivi-asset-deleted', (e) => {
+    const detail = (e as CustomEvent).detail as { src: string } | undefined;
+    if (detail?.src) vscode.postMessage({ type: 'checkOrphanAsset', src: detail.src });
+  });
+
   // Sync raw -> extension host
   let rawDebounce: ReturnType<typeof setTimeout> | null = null;
   const hookRawInput = (el: HTMLTextAreaElement) => {
     el.addEventListener('input', () => {
+      // Highlight + gutter update immediately (already rAF-throttled internally)
+      syncHighlight(el);
+      const sourceGutter = document.getElementById('kivi-source-gutter');
+      if (sourceGutter) updateLineNumbers(el, sourceGutter);
+
+      // Debounce the expensive extension-host sync and split-mode live reload
       if (rawDebounce) clearTimeout(rawDebounce);
       rawDebounce = setTimeout(() => {
         const content = el.value;
         if (content === lastSentContent) return;
         lastSentContent = content;
         vscode.postMessage({ type: 'edit', content });
-        syncHighlight(el);
-        const sourceGutter = document.getElementById('kivi-source-gutter');
-        if (sourceGutter) updateLineNumbers(el, sourceGutter);
         if (viewMode === 'split' && editor) {
           isUpdatingFromExtension = true;
           editor.loadMarkdown(content);
           isUpdatingFromExtension = false;
         }
-      }, 300);
+      }, 150);
     });
   };
   hookRawInput(rawEl);
@@ -721,7 +899,14 @@ function init() {
       case 'init': {
         if (msg.filePath) filePath = msg.filePath;
         if (msg.fileName) fileName = msg.fileName;
+        if (msg.docBaseUrl) {
+          docBaseUrl = msg.docBaseUrl;
+          rewriteRelativeImages();
+          requestAnimationFrame(() => rewriteRelativeImages());
+        }
         updateBreadcrumb();
+        // Check if excalidraw extension is installed
+        vscode.postMessage({ type: 'checkExcalidrawExtension' });
         break;
       }
 
@@ -781,6 +966,7 @@ function init() {
             if (rel) syncHighlight(rel);
           }
           isUpdatingFromExtension = false;
+          rewriteRelativeImages();
         }
         break;
       }
@@ -796,6 +982,20 @@ function init() {
         }
         break;
 
+      case 'blameResult': {
+        const entries = msg.entries as Array<{ line: number; author: string; date: string; summary: string; hash: string }> | undefined;
+        if (entries && pendingBlameCallback) {
+          pendingBlameCallback(entries);
+          pendingBlameCallback = null;
+        }
+        break;
+      }
+
+      case 'excalidrawExtensionStatus': {
+        _hasExcalidrawExtension = !!msg.installed;
+        break;
+      }
+
       case 'linkResolved': {
         if (msg.id !== undefined) {
           const pending = pendingLinkResolves.get(msg.id);
@@ -803,6 +1003,18 @@ function init() {
             clearTimeout(pending.timer);
             pendingLinkResolves.delete(msg.id);
             pending.resolve(msg.data ?? null);
+          }
+        }
+        break;
+      }
+
+      case 'inputPromptResult': {
+        if (msg.id !== undefined) {
+          const pending = pendingInputPrompts.get(msg.id);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingInputPrompts.delete(msg.id);
+            pending.resolve(msg.value ?? null);
           }
         }
         break;
@@ -910,6 +1122,11 @@ function init() {
         break;
       }
 
+      case 'fileStored': {
+        // Handled by the pending promise in fileStorageAdapter
+        break;
+      }
+
       case 'globalPrefs': {
         const prefs = msg.prefs as Record<string, unknown> | undefined;
         if (!prefs) break;
@@ -969,14 +1186,91 @@ function init() {
   });
 }
 
+// ── Relative image rewriting ──
+
+function isRelativeUrl(url: string): boolean {
+  if (!url) return false;
+  if (/^(https?|data|vscode-webview|vscode-resource):/.test(url)) return false;
+  if (url.startsWith('//')) return false;
+  return true;
+}
+
+function rewriteRelativeImages() {
+  if (!docBaseUrl) return;
+  const editorEl = document.getElementById('editor');
+  if (!editorEl) return;
+  for (const img of editorEl.querySelectorAll<HTMLImageElement>('img')) {
+    const src = img.getAttribute('src') || '';
+    if (isRelativeUrl(src)) {
+      const resolved = docBaseUrl + src.replace(/^\.\//, '');
+      if (img.src !== resolved) {
+        img.src = resolved;
+      }
+    }
+  }
+}
+
+// Watch for dynamically added/updated images (ProseMirror re-renders nodes)
+let _imgRewriteFrame: ReturnType<typeof requestAnimationFrame> | null = null;
+const _imgObserver = new MutationObserver((mutations) => {
+  if (!docBaseUrl) return;
+
+  let needsRewrite = false;
+  for (const m of mutations) {
+    // Attribute change on an img element
+    if (m.type === 'attributes' && m.target instanceof HTMLImageElement) {
+      const src = m.target.getAttribute('src') || '';
+      if (isRelativeUrl(src)) {
+        const resolved = docBaseUrl + src.replace(/^\.\//, '');
+        if (m.target.src !== resolved) {
+          m.target.src = resolved;
+        }
+      }
+      continue;
+    }
+    // New nodes added
+    for (const node of m.addedNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const imgs = node.tagName === 'IMG' ? [node as HTMLImageElement] : node.querySelectorAll<HTMLImageElement>('img');
+      for (const img of imgs) {
+        const src = img.getAttribute('src') || '';
+        if (isRelativeUrl(src)) {
+          img.src = docBaseUrl + src.replace(/^\.\//, '');
+        }
+      }
+      if (imgs.length > 0) needsRewrite = true;
+    }
+  }
+
+  // ProseMirror may batch DOM updates; schedule a full sweep after paint
+  if (needsRewrite && !_imgRewriteFrame) {
+    _imgRewriteFrame = requestAnimationFrame(() => {
+      _imgRewriteFrame = null;
+      rewriteRelativeImages();
+    });
+  }
+});
+
+requestAnimationFrame(() => {
+  const editorEl = document.getElementById('editor');
+  if (editorEl) {
+    _imgObserver.observe(editorEl, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src'],
+    });
+  }
+});
+
 // ── Breadcrumb ──
 
 function updateBreadcrumb() {
   const brand = document.querySelector('.kivi-toolbar-brand');
   if (brand) {
     const textEl = brand.querySelector('.kivi-brand-text');
-    if (textEl) textEl.textContent = 'kivi';
-    (brand as HTMLElement).title = filePath || 'kivi';
+    if (textEl) textEl.textContent = 'Kivi';
+    (brand as HTMLElement).title = filePath || 'Kivi';
   }
 }
 
@@ -1048,31 +1342,36 @@ function setupScrollSync(splitRaw: HTMLTextAreaElement) {
   const editorEl = document.getElementById('editor');
   if (!editorEl) return;
 
-  // The scroll container is #editor itself (overflow-y: auto).
-  // Also listen on its ProseMirror child in case a future CSS change shifts
-  // the scrollable to the inner element, and on the split-left wrapper.
   const scrollEl = editorEl;
+  let syncSource: 'live' | 'raw' | null = null;
+  let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
+  function clearSyncLock() {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncSource = null; }, 50);
+  }
+
+  // Vertical-only ratio sync: maps percentage of scroll range.
+  // Horizontal scroll is independent since the two panes render
+  // completely different content widths (monospace raw vs rich HTML).
   const syncLiveToRaw = () => {
-    if (splitScrollSyncLock) return;
-    splitScrollSyncLock = true;
-    const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
-    const ratio = maxScroll > 0 ? scrollEl.scrollTop / maxScroll : 0;
-    splitRaw.scrollTop = ratio * (splitRaw.scrollHeight - splitRaw.clientHeight);
-    requestAnimationFrame(() => { splitScrollSyncLock = false; });
+    if (syncSource === 'raw') return;
+    syncSource = 'live';
+    const maxY = scrollEl.scrollHeight - scrollEl.clientHeight;
+    const ratioY = maxY > 0 ? scrollEl.scrollTop / maxY : 0;
+    splitRaw.scrollTop = ratioY * (splitRaw.scrollHeight - splitRaw.clientHeight);
+    clearSyncLock();
   };
 
   const syncRawToLive = () => {
-    if (splitScrollSyncLock) return;
-    splitScrollSyncLock = true;
-    const maxRaw = splitRaw.scrollHeight - splitRaw.clientHeight;
-    const ratio = maxRaw > 0 ? splitRaw.scrollTop / maxRaw : 0;
-    scrollEl.scrollTop = ratio * (scrollEl.scrollHeight - scrollEl.clientHeight);
-    requestAnimationFrame(() => { splitScrollSyncLock = false; });
+    if (syncSource === 'live') return;
+    syncSource = 'raw';
+    const maxRawY = splitRaw.scrollHeight - splitRaw.clientHeight;
+    const ratioY = maxRawY > 0 ? splitRaw.scrollTop / maxRawY : 0;
+    scrollEl.scrollTop = ratioY * (scrollEl.scrollHeight - scrollEl.clientHeight);
+    clearSyncLock();
   };
 
-  // Listen on #editor and its parent wrapper (scroll event doesn't bubble,
-  // so we cover both possible scroll containers)
   editorEl.addEventListener('scroll', syncLiveToRaw, { passive: true });
 
   const splitLeft = editorEl.closest('.kivi-split-left');
@@ -1080,7 +1379,6 @@ function setupScrollSync(splitRaw: HTMLTextAreaElement) {
     splitLeft.addEventListener('scroll', syncLiveToRaw, { passive: true });
   }
 
-  // Also listen on the ProseMirror element itself
   const pmEl = editorEl.querySelector('.ProseMirror');
   if (pmEl) {
     pmEl.addEventListener('scroll', syncLiveToRaw, { passive: true });
@@ -1093,6 +1391,7 @@ function setupScrollSync(splitRaw: HTMLTextAreaElement) {
     if (splitLeft) splitLeft.removeEventListener('scroll', syncLiveToRaw);
     if (pmEl) pmEl.removeEventListener('scroll', syncLiveToRaw);
     splitRaw.removeEventListener('scroll', syncRawToLive);
+    if (syncTimer) clearTimeout(syncTimer);
   };
 }
 
@@ -1207,6 +1506,11 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
 
     let splitDebounce: ReturnType<typeof setTimeout> | null = null;
     splitRaw.addEventListener('input', () => {
+      // Highlight + gutter immediately (visual responsiveness)
+      updateLineNumbers(splitRaw, lineNumberGutter);
+      syncHighlight(splitRaw);
+
+      // Debounce expensive sync
       if (splitDebounce) clearTimeout(splitDebounce);
       splitDebounce = setTimeout(() => {
         const content = splitRaw.value;
@@ -1216,16 +1520,20 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
         editor?.loadMarkdown(content);
         isUpdatingFromExtension = false;
         vscode.postMessage({ type: 'edit', content });
-        updateLineNumbers(splitRaw, lineNumberGutter);
-        splitBackdrop.innerHTML = highlightMarkdown(content) + '\n';
-      }, 300);
+      }, 150);
     });
 
+    let splitRawScrollFrame: ReturnType<typeof requestAnimationFrame> | null = null;
     splitRaw.addEventListener('scroll', () => {
-      lineNumberGutter.scrollTop = splitRaw.scrollTop;
-      splitBackdrop.scrollTop = splitRaw.scrollTop;
-      splitBackdrop.scrollLeft = splitRaw.scrollLeft;
-    });
+      if (!splitRawScrollFrame) {
+        splitRawScrollFrame = requestAnimationFrame(() => {
+          splitRawScrollFrame = null;
+          lineNumberGutter.scrollTop = splitRaw.scrollTop;
+          splitBackdrop.scrollTop = splitRaw.scrollTop;
+          splitBackdrop.scrollLeft = splitRaw.scrollLeft;
+        });
+      }
+    }, { passive: true });
 
     splitRaw.addEventListener('keydown', (e) => {
       if (e.key === 'Tab') {
@@ -1259,55 +1567,154 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
   saveState();
 }
 
-function computeLineDiff(baseLines: string[], currentLines: string[]): ('u' | 'a' | 'm')[] {
+// ── Line diff via LCS (DP approach, correct and simple) ──
+
+interface DiffHunk {
+  newStart: number;
+  newEnd: number;   // exclusive
+  oldStart: number;
+  oldEnd: number;   // exclusive
+}
+
+function computeDiffHunks(baseLines: string[], currentLines: string[]): DiffHunk[] {
+  const a = baseLines;
+  const b = currentLines;
+  const n = a.length;
+  const m = b.length;
+
+  if (n === 0 && m === 0) return [];
+  if (n === 0) return [{ oldStart: 0, oldEnd: 0, newStart: 0, newEnd: m }];
+  if (m === 0) return [{ oldStart: 0, oldEnd: n, newStart: 0, newEnd: 0 }];
+
+  // Strip common prefix and suffix to reduce work
+  let prefix = 0;
+  while (prefix < n && prefix < m && a[prefix] === b[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < n - prefix && suffix < m - prefix && a[n - 1 - suffix] === b[m - 1 - suffix]) suffix++;
+
+  const aStart = prefix, aEnd = n - suffix;
+  const bStart = prefix, bEnd = m - suffix;
+  const tn = aEnd - aStart;
+  const tm = bEnd - bStart;
+
+  if (tn === 0 && tm === 0) return [];
+  if (tn === 0) return [{ oldStart: aStart, oldEnd: aStart, newStart: bStart, newEnd: bEnd }];
+  if (tm === 0) return [{ oldStart: aStart, oldEnd: aEnd, newStart: bStart, newEnd: bStart }];
+
+  // Compute LCS on the trimmed region via DP or fallback for huge files
+  // lcsA and lcsB hold ABSOLUTE indices into a[] and b[]
+  let lcsA: number[];
+  let lcsB: number[];
+
+  const MAX_DP_CELLS = 1000000;
+  if (tn * tm <= MAX_DP_CELLS) {
+    // Standard DP LCS
+    const dp: number[][] = new Array(tn + 1);
+    for (let i = 0; i <= tn; i++) dp[i] = new Array(tm + 1).fill(0);
+    for (let i = tn - 1; i >= 0; i--) {
+      for (let j = tm - 1; j >= 0; j--) {
+        if (a[aStart + i] === b[bStart + j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+        else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    lcsA = [];
+    lcsB = [];
+    let i = 0, j = 0;
+    while (i < tn && j < tm) {
+      if (a[aStart + i] === b[bStart + j]) {
+        lcsA.push(aStart + i);
+        lcsB.push(bStart + j);
+        i++; j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        i++;
+      } else {
+        j++;
+      }
+    }
+  } else {
+    // For very large diffs, greedy forward match (not optimal but fast and usually good)
+    lcsA = [];
+    lcsB = [];
+    const bMap = new Map<string, number[]>();
+    for (let j = bStart; j < bEnd; j++) {
+      const arr = bMap.get(b[j]);
+      if (arr) arr.push(j); else bMap.set(b[j], [j]);
+    }
+    let lastBj = bStart - 1;
+    for (let i = aStart; i < aEnd; i++) {
+      const positions = bMap.get(a[i]);
+      if (!positions) continue;
+      // Find the smallest position > lastBj
+      let lo = 0, hi = positions.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (positions[mid] <= lastBj) lo = mid + 1; else hi = mid; }
+      if (lo < positions.length) {
+        lcsA.push(i);
+        lcsB.push(positions[lo]);
+        lastBj = positions[lo];
+      }
+    }
+  }
+
+  // Build full LCS: prefix matches + trimmed LCS + suffix matches
+  const fullLcsA: number[] = [];
+  const fullLcsB: number[] = [];
+  for (let i = 0; i < prefix; i++) { fullLcsA.push(i); fullLcsB.push(i); }
+  for (let i = 0; i < lcsA.length; i++) { fullLcsA.push(lcsA[i]); fullLcsB.push(lcsB[i]); }
+  for (let i = 0; i < suffix; i++) { fullLcsA.push(n - suffix + i); fullLcsB.push(m - suffix + i); }
+
+  // Walk full LCS to find hunks
+  const hunks: DiffHunk[] = [];
+  let ai = 0, bi = 0;
+
+  for (let li = 0; li < fullLcsA.length; li++) {
+    const la = fullLcsA[li];
+    const lb = fullLcsB[li];
+    if (ai < la || bi < lb) {
+      hunks.push({ oldStart: ai, oldEnd: la, newStart: bi, newEnd: lb });
+    }
+    ai = la + 1;
+    bi = lb + 1;
+  }
+  if (ai < n || bi < m) {
+    hunks.push({ oldStart: ai, oldEnd: n, newStart: bi, newEnd: m });
+  }
+
+  return hunks;
+}
+
+type GutterMark = 'u' | 'a' | 'm' | 'd';
+
+interface GutterInfo {
+  marks: GutterMark[];
+  hunks: DiffHunk[];
+}
+
+function computeGutterInfo(baseLines: string[], currentLines: string[]): GutterInfo {
+  const hunks = computeDiffHunks(baseLines, currentLines);
   const n = currentLines.length;
-  const m = baseLines.length;
-  if (m === 0) return new Array(n).fill('a');
-  if (n === 0) return [];
+  const marks: GutterMark[] = new Array(n).fill('u');
 
-  const baseSet = new Set<string>();
-  for (const l of baseLines) baseSet.add(l);
+  for (const h of hunks) {
+    const deletedCount = h.oldEnd - h.oldStart;
+    const insertedCount = h.newEnd - h.newStart;
 
-  const lcsMatch = new Set<number>();
-  let bi = 0;
-  for (let ci = 0; ci < n && bi < m; ci++) {
-    if (currentLines[ci] === baseLines[bi]) {
-      lcsMatch.add(ci);
-      bi++;
-    } else {
-      let found = false;
-      for (let look = 1; look <= 10 && bi + look < m; look++) {
-        if (currentLines[ci] === baseLines[bi + look]) {
-          lcsMatch.add(ci);
-          bi = bi + look + 1;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        for (let look = 1; look <= 3 && ci + look < n; look++) {
-          if (currentLines[ci + look] === baseLines[bi]) {
-            break;
-          }
-        }
-      }
+    if (insertedCount > 0 && deletedCount > 0) {
+      // Lines that replace existing base lines are 'modified' (blue),
+      // extra lines beyond the replacement count are 'added' (green)
+      const modCount = Math.min(deletedCount, insertedCount);
+      for (let i = 0; i < modCount; i++) marks[h.newStart + i] = 'm';
+      for (let i = modCount; i < insertedCount; i++) marks[h.newStart + i] = 'a';
+    } else if (insertedCount > 0) {
+      for (let i = h.newStart; i < h.newEnd; i++) marks[i] = 'a';
+    }
+    // Pure deletions: show red triangle indicator on the line before
+    if (deletedCount > 0 && insertedCount === 0) {
+      const markerLine = h.newStart > 0 ? h.newStart - 1 : 0;
+      if (marks[markerLine] === 'u') marks[markerLine] = 'd';
     }
   }
 
-  const result: ('u' | 'a' | 'm')[] = new Array(n).fill('a');
-  bi = 0;
-  for (let ci = 0; ci < n; ci++) {
-    if (lcsMatch.has(ci)) {
-      result[ci] = 'u';
-    } else if (baseSet.has(currentLines[ci])) {
-      result[ci] = 'm';
-    } else {
-      result[ci] = bi < m ? 'm' : 'a';
-    }
-    if (bi < m && (currentLines[ci] === baseLines[bi])) bi++;
-  }
-
-  return result;
+  return { marks, hunks };
 }
 
 function refreshAllGutters() {
@@ -1319,83 +1726,78 @@ function refreshAllGutters() {
   if (splitGutter && splitRaw) updateLineNumbers(splitRaw, splitGutter);
 }
 
+let _gutterUpdateFrame: ReturnType<typeof requestAnimationFrame> | null = null;
+let _pendingGutterUpdates: Array<{ textarea: HTMLTextAreaElement; gutter: HTMLElement }> = [];
+
 function updateLineNumbers(textarea: HTMLTextAreaElement, gutter: HTMLElement) {
+  _pendingGutterUpdates = _pendingGutterUpdates.filter(u => u.gutter !== gutter);
+  _pendingGutterUpdates.push({ textarea, gutter });
+  if (!_gutterUpdateFrame) {
+    _gutterUpdateFrame = requestAnimationFrame(() => {
+      _gutterUpdateFrame = null;
+      const pending = _pendingGutterUpdates;
+      _pendingGutterUpdates = [];
+      for (const { textarea: ta, gutter: g } of pending) {
+        _updateLineNumbersImmediate(ta, g);
+      }
+    });
+  }
+}
+
+function _updateLineNumbersImmediate(textarea: HTMLTextAreaElement, gutter: HTMLElement) {
   const currentLines = textarea.value.split('\n');
   const lineCount = currentLines.length;
-  const diff = computeLineDiff(savedBaseLines, currentLines);
+  const info = computeGutterInfo(savedBaseLines, currentLines);
+  const existingChildren = gutter.children;
+  const existingCount = existingChildren.length;
 
-  gutter.innerHTML = '';
   for (let i = 0; i < lineCount; i++) {
-    const div = document.createElement('div');
+    let div: HTMLElement;
+    if (i < existingCount) {
+      div = existingChildren[i] as HTMLElement;
+    } else {
+      div = document.createElement('div');
+      gutter.appendChild(div);
+    }
     div.className = 'gutter-line';
     div.textContent = `${i + 1}`;
-    if (diff[i] === 'a') {
-      div.classList.add('gutter-added');
-    } else if (diff[i] === 'm') {
-      div.classList.add('gutter-modified');
-    }
-    if (diff[i] !== 'u') {
-      div.addEventListener('click', () => showDiffPopup(textarea, gutter, i, diff));
-    }
-    gutter.appendChild(div);
+    const mark = info.marks[i];
+    if (mark === 'a') div.classList.add('gutter-added');
+    else if (mark === 'm') div.classList.add('gutter-modified');
+    else if (mark === 'd') div.classList.add('gutter-deleted');
+
+    const isChanged = mark !== 'u';
+    div.onclick = isChanged ? () => showDiffPopup(textarea, gutter, i, info) : null;
+  }
+
+  while (gutter.children.length > lineCount) {
+    gutter.removeChild(gutter.lastChild!);
   }
 }
 
 // ── Diff popup (inline change preview) ──
 
-interface Hunk {
-  start: number;
-  end: number; // exclusive
-}
-
-function getHunks(diff: ('u' | 'a' | 'm')[]): Hunk[] {
-  const hunks: Hunk[] = [];
-  let i = 0;
-  while (i < diff.length) {
-    if (diff[i] !== 'u') {
-      const start = i;
-      while (i < diff.length && diff[i] !== 'u') i++;
-      hunks.push({ start, end: i });
+function findHunkForLine(hunks: DiffHunk[], line: number): number {
+  for (let i = 0; i < hunks.length; i++) {
+    const h = hunks[i];
+    if (h.newEnd > h.newStart) {
+      if (line >= h.newStart && line < h.newEnd) return i;
     } else {
-      i++;
+      // Pure deletion: marker is on newStart-1 or 0
+      const marker = h.newStart > 0 ? h.newStart - 1 : 0;
+      if (line === marker) return i;
     }
   }
-  return hunks;
-}
-
-function findHunkForLine(hunks: Hunk[], line: number): number {
-  return hunks.findIndex(h => line >= h.start && line < h.end);
-}
-
-function findCorrespondingBaseRange(hunk: Hunk, currentLines: string[], baseLines: string[]): { baseStart: number; baseEnd: number } {
-  // Find the base line range by matching context before/after the hunk
-  let baseStart = 0;
-  let matchesBefore = 0;
-  for (let ci = 0; ci < hunk.start; ci++) {
-    if (baseStart < baseLines.length && currentLines[ci] === baseLines[baseStart]) {
-      baseStart++;
-      matchesBefore++;
-    }
+  // Fallback: find closest hunk
+  let best = -1, bestDist = Infinity;
+  for (let i = 0; i < hunks.length; i++) {
+    const mid = hunks[i].newEnd > hunks[i].newStart
+      ? (hunks[i].newStart + hunks[i].newEnd) / 2
+      : hunks[i].newStart;
+    const dist = Math.abs(mid - line);
+    if (dist < bestDist) { bestDist = dist; best = i; }
   }
-  const contextBefore = matchesBefore;
-
-  // Find base end by matching after the hunk
-  let afterCurrent = hunk.end;
-  let baseEnd = baseStart;
-  let afterBase = baseStart;
-  while (afterCurrent < currentLines.length && afterBase < baseLines.length) {
-    if (currentLines[afterCurrent] === baseLines[afterBase]) {
-      break;
-    }
-    afterBase++;
-  }
-  baseEnd = afterBase;
-
-  // If we couldn't find a good range, estimate based on context line count
-  if (baseEnd < baseStart) baseEnd = baseStart;
-  if (baseEnd > baseLines.length) baseEnd = baseLines.length;
-
-  return { baseStart: Math.max(0, baseStart - (contextBefore > 0 ? 0 : 0)), baseEnd };
+  return best;
 }
 
 let activeDiffPopup: HTMLElement | null = null;
@@ -1407,125 +1809,206 @@ function closeDiffPopup() {
   }
 }
 
-function showDiffPopup(textarea: HTMLTextAreaElement, gutter: HTMLElement, lineIndex: number, diff: ('u' | 'a' | 'm')[]) {
+function showDiffPopup(textarea: HTMLTextAreaElement, gutterEl: HTMLElement, lineIndex: number, info: GutterInfo) {
   closeDiffPopup();
 
   const currentLines = textarea.value.split('\n');
-  const hunks = getHunks(diff);
-  const hunkIdx = findHunkForLine(hunks, lineIndex);
+  const { hunks } = info;
+  if (hunks.length === 0) return;
+
+  let hunkIdx = findHunkForLine(hunks, lineIndex);
   if (hunkIdx < 0) return;
 
   const hunk = hunks[hunkIdx];
-  const { baseStart, baseEnd } = findCorrespondingBaseRange(hunk, currentLines, savedBaseLines);
+  const baseStart = hunk.oldStart;
+  const baseEnd = hunk.oldEnd;
 
   const popup = document.createElement('div');
   popup.className = 'kivi-diff-popup';
   activeDiffPopup = popup;
 
-  // Toolbar
   const toolbar = document.createElement('div');
   toolbar.className = 'kivi-diff-toolbar';
 
+  const svgIcon = (d: string, w = 16) =>
+    `<svg width="${w}" height="${w}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
+  const codiconSvg = (d: string) =>
+    `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">${d}</svg>`;
+
+  const removedCount = baseEnd - baseStart;
+  const addedCount = hunk.newEnd - hunk.newStart;
+  const changeSummary = removedCount > 0 && addedCount > 0
+    ? `−${removedCount} +${addedCount}`
+    : removedCount > 0 ? `−${removedCount}` : `+${addedCount}`;
+
+  const label = document.createElement('span');
+  label.className = 'kivi-diff-label';
+  label.textContent = `Change ${hunkIdx + 1}/${hunks.length}`;
+
+  const changeCount = document.createElement('span');
+  changeCount.className = 'kivi-diff-change-count';
+  changeCount.textContent = changeSummary;
+
+  const spacer = document.createElement('span');
+  spacer.className = 'kivi-diff-spacer';
+
   const revertBtn = document.createElement('button');
   revertBtn.title = 'Revert Change';
-  revertBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,4 1,10 7,10"/><path d="M3.51 6.03a7 7 0 1 1 .54 7.18"/></svg> Revert`;
+  revertBtn.className = 'kivi-diff-action-btn';
+  revertBtn.innerHTML = codiconSvg('<path d="M12.75 8a4.5 4.5 0 0 1-8.61 1.834l-1.391.565A6.001 6.001 0 0 0 14.25 8 6 6 0 0 0 3.5 4.334V2.5H2v4h4v-1.5H3.92A4.5 4.5 0 0 1 12.75 8z"/>');
   revertBtn.addEventListener('click', () => {
     const lines = textarea.value.split('\n');
     const baseChunk = savedBaseLines.slice(baseStart, baseEnd);
-    lines.splice(hunk.start, hunk.end - hunk.start, ...baseChunk);
+    lines.splice(hunk.newStart, hunk.newEnd - hunk.newStart, ...baseChunk);
     textarea.value = lines.join('\n');
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     closeDiffPopup();
   });
 
-  const label = document.createElement('span');
-  label.className = 'kivi-diff-label';
-  label.textContent = `Change ${hunkIdx + 1} of ${hunks.length}`;
-
-  const spacer = document.createElement('span');
-  spacer.className = 'kivi-diff-spacer';
-
   const prevBtn = document.createElement('button');
   prevBtn.title = 'Previous Change';
-  prevBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="12,10 8,6 4,10"/></svg>`;
+  prevBtn.innerHTML = svgIcon('<polyline points="12,10 8,6 4,10"/>');
   prevBtn.disabled = hunkIdx === 0;
   prevBtn.addEventListener('click', () => {
     if (hunkIdx > 0) {
-      const newDiff = computeLineDiff(savedBaseLines, textarea.value.split('\n'));
-      const newHunks = getHunks(newDiff);
-      if (hunkIdx - 1 < newHunks.length) {
-        showDiffPopup(textarea, gutter, newHunks[hunkIdx - 1].start, newDiff);
+      const newInfo = computeGutterInfo(savedBaseLines, textarea.value.split('\n'));
+      if (hunkIdx - 1 < newInfo.hunks.length) {
+        const target = newInfo.hunks[hunkIdx - 1];
+        const targetLine = target.newEnd > target.newStart ? target.newStart : Math.max(0, target.newStart - 1);
+        showDiffPopup(textarea, gutterEl, targetLine, newInfo);
       }
     }
   });
 
   const nextBtn = document.createElement('button');
   nextBtn.title = 'Next Change';
-  nextBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,6 8,10 12,6"/></svg>`;
+  nextBtn.innerHTML = svgIcon('<polyline points="4,6 8,10 12,6"/>');
   nextBtn.disabled = hunkIdx >= hunks.length - 1;
   nextBtn.addEventListener('click', () => {
     if (hunkIdx < hunks.length - 1) {
-      const newDiff = computeLineDiff(savedBaseLines, textarea.value.split('\n'));
-      const newHunks = getHunks(newDiff);
-      if (hunkIdx + 1 < newHunks.length) {
-        showDiffPopup(textarea, gutter, newHunks[hunkIdx + 1].start, newDiff);
+      const newInfo = computeGutterInfo(savedBaseLines, textarea.value.split('\n'));
+      if (hunkIdx + 1 < newInfo.hunks.length) {
+        const target = newInfo.hunks[hunkIdx + 1];
+        const targetLine = target.newEnd > target.newStart ? target.newStart : Math.max(0, target.newStart - 1);
+        showDiffPopup(textarea, gutterEl, targetLine, newInfo);
       }
     }
   });
 
   const closeBtn = document.createElement('button');
-  closeBtn.title = 'Close';
-  closeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>`;
+  closeBtn.title = 'Close (Escape)';
+  closeBtn.innerHTML = svgIcon('<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>');
   closeBtn.addEventListener('click', closeDiffPopup);
 
-  toolbar.append(revertBtn, label, spacer, prevBtn, nextBtn, closeBtn);
+  addDelayedTooltip(revertBtn);
+  addDelayedTooltip(prevBtn);
+  addDelayedTooltip(nextBtn);
+  addDelayedTooltip(closeBtn);
+  toolbar.append(label, changeCount, spacer, revertBtn, prevBtn, nextBtn, closeBtn);
   popup.appendChild(toolbar);
 
-  // Diff content
   const content = document.createElement('div');
   content.className = 'kivi-diff-content';
 
   const removedLines = savedBaseLines.slice(baseStart, baseEnd);
-  const addedLines = currentLines.slice(hunk.start, hunk.end);
+  const addedLines = currentLines.slice(hunk.newStart, hunk.newEnd);
 
-  // Context before (up to 2 lines)
-  const ctxBeforeStart = Math.max(0, baseStart - 2);
+  function makeDiffLine(text: string, type: 'context' | 'removed' | 'added', oldNum?: number, newNum?: number): HTMLElement {
+    const row = document.createElement('div');
+    row.className = `kivi-diff-line kivi-diff-line-${type}`;
+    const oldGutter = document.createElement('span');
+    oldGutter.className = 'kivi-diff-line-gutter';
+    oldGutter.textContent = oldNum != null ? String(oldNum + 1) : '';
+    const newGutter = document.createElement('span');
+    newGutter.className = 'kivi-diff-line-gutter';
+    newGutter.textContent = newNum != null ? String(newNum + 1) : '';
+    const sign = document.createElement('span');
+    sign.className = 'kivi-diff-line-sign';
+    sign.textContent = type === 'removed' ? '−' : type === 'added' ? '+' : ' ';
+    const txt = document.createElement('span');
+    txt.className = 'kivi-diff-line-text';
+    txt.textContent = text || ' ';
+    row.append(oldGutter, newGutter, sign, txt);
+    return row;
+  }
+
+  // Context before (up to 3 base lines before the hunk)
+  const ctxBeforeStart = Math.max(0, baseStart - 3);
   for (let i = ctxBeforeStart; i < baseStart; i++) {
-    const line = document.createElement('div');
-    line.className = 'kivi-diff-line kivi-diff-line-context';
-    line.textContent = savedBaseLines[i];
-    content.appendChild(line);
+    const newLineForCtx = hunk.newStart - (baseStart - i);
+    content.appendChild(makeDiffLine(savedBaseLines[i], 'context', i, newLineForCtx >= 0 ? newLineForCtx : undefined));
   }
 
-  for (const l of removedLines) {
-    const line = document.createElement('div');
-    line.className = 'kivi-diff-line kivi-diff-line-removed';
-    line.textContent = l;
-    content.appendChild(line);
+  // Show removed lines first, then added lines (VS Code style)
+  for (let i = 0; i < removedLines.length; i++) {
+    content.appendChild(makeDiffLine(removedLines[i], 'removed', baseStart + i, undefined));
   }
 
-  for (const l of addedLines) {
-    const line = document.createElement('div');
-    line.className = 'kivi-diff-line kivi-diff-line-added';
-    line.textContent = l;
-    content.appendChild(line);
+  for (let i = 0; i < addedLines.length; i++) {
+    content.appendChild(makeDiffLine(addedLines[i], 'added', undefined, hunk.newStart + i));
   }
 
-  // Context after (up to 2 lines)
-  for (let i = baseEnd; i < Math.min(savedBaseLines.length, baseEnd + 2); i++) {
-    const line = document.createElement('div');
-    line.className = 'kivi-diff-line kivi-diff-line-context';
-    line.textContent = savedBaseLines[i];
-    content.appendChild(line);
+  // Context after (up to 3 base lines after the hunk)
+  for (let i = baseEnd; i < Math.min(savedBaseLines.length, baseEnd + 3); i++) {
+    const newLineForCtx = hunk.newEnd + (i - baseEnd);
+    content.appendChild(makeDiffLine(savedBaseLines[i], 'context', i, newLineForCtx < currentLines.length ? newLineForCtx : undefined));
   }
 
   popup.appendChild(content);
+
+  // Blame info footer — request from extension host
+  const blameBar = document.createElement('div');
+  blameBar.className = 'kivi-diff-blame';
+  blameBar.textContent = 'Loading blame info…';
+  popup.appendChild(blameBar);
+
+  // Request blame for the base lines in this hunk
+  pendingBlameCallback = (entries) => {
+    if (!activeDiffPopup || activeDiffPopup !== popup) return;
+    blameBar.textContent = '';
+    if (entries.length === 0) {
+      blameBar.textContent = 'Uncommitted change';
+      return;
+    }
+    // Deduplicate: show most recent blame entry for the hunk
+    const byHash = new Map<string, { author: string; date: string; summary: string; hash: string }>();
+    for (const e of entries) {
+      if (!byHash.has(e.hash)) byHash.set(e.hash, e);
+    }
+    for (const e of byHash.values()) {
+      const row = document.createElement('div');
+      row.className = 'kivi-diff-blame-entry';
+
+      const avatar = document.createElement('span');
+      avatar.className = 'kivi-diff-blame-avatar';
+      avatar.textContent = e.author.charAt(0).toUpperCase();
+
+      const info = document.createElement('span');
+      info.className = 'kivi-diff-blame-info';
+      info.innerHTML = `<strong>${esc(e.author)}</strong> <span class="kivi-diff-blame-date">${esc(e.date)}</span>`;
+
+      const msg = document.createElement('span');
+      msg.className = 'kivi-diff-blame-msg';
+      msg.textContent = `${e.hash} — ${e.summary}`;
+
+      row.append(avatar, info, msg);
+      blameBar.appendChild(row);
+    }
+  };
+
+  // Request blame for the base range (HEAD lines corresponding to this hunk)
+  vscode.postMessage({
+    type: 'requestBlame',
+    lineStart: baseStart,
+    lineEnd: Math.max(baseStart, baseEnd - 1),
+  });
 
   // Position: place inside the raw wrapper, below the clicked line
   const wrapper = textarea.closest('#kivi-raw-wrapper') || textarea.closest('.kivi-split-right');
   if (wrapper) {
     (wrapper as HTMLElement).style.position = 'relative';
-    const lineEl = gutter.children[lineIndex] as HTMLElement | undefined;
+    const lineEl = gutterEl.children[lineIndex] as HTMLElement | undefined;
     if (lineEl) {
       const wrapperRect = (wrapper as HTMLElement).getBoundingClientRect();
       const lineRect = lineEl.getBoundingClientRect();
@@ -1562,7 +2045,14 @@ function initToolbar(el: HTMLElement) {
   const _s = (d: string) =>
     `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
-  const actions = [
+  // Wrapper that holds the context-sensitive format buttons
+  const formatGroup = document.createElement('div');
+  formatGroup.id = 'kivi-toolbar-format';
+  el.appendChild(formatGroup);
+
+  type ToolbarAction = { id: string; svg?: string; title?: string; cmd?: (...args: any[]) => void; active?: () => boolean };
+
+  const textActions: ToolbarAction[] = [
     { id: 'bold', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5h4.5a3 3 0 0 1 2.12 5.12A3.25 3.25 0 0 1 9 13.5H4V2.5zM4 8h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`, title: 'Bold (⌘B)', cmd: () => cmd().toggleBold().run(), active: () => tiptap.isActive('bold') },
     { id: 'italic', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="10" y1="2.5" x2="6" y2="13.5"/><line x1="7.5" y1="2.5" x2="11.5" y2="2.5"/><line x1="4.5" y1="13.5" x2="8.5" y2="13.5"/></svg>`, title: 'Italic (⌘I)', cmd: () => cmd().toggleItalic().run(), active: () => tiptap.isActive('italic') },
     { id: 'strike', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="8" x2="14" y2="8" stroke-width="1.5"/><path d="M10.2 4.8C9.7 3.6 8.6 3 7.5 3 5.8 3 4.5 4 4.5 5.5c0 1 .5 1.7 1.3 2.2" stroke-width="1.6" fill="none"/><path d="M5.8 11.2c.5 1.2 1.6 1.8 2.7 1.8 1.7 0 3-1 3-2.5 0-.7-.3-1.3-.8-1.7" stroke-width="1.6" fill="none"/></svg>`, title: 'Strikethrough (⌘⇧X)', cmd: () => cmd().toggleStrike().run(), active: () => tiptap.isActive('strike') },
@@ -1585,29 +2075,84 @@ function initToolbar(el: HTMLElement) {
     { id: 'link', svg: _s('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'), title: 'Insert Link (⌘K)', cmd: (_e: unknown, btn: HTMLElement) => { insertLinkAtCursor(btn.getBoundingClientRect()); }, active: () => tiptap.isActive('link') },
   ];
 
-  for (const action of actions) {
-    if (action.id === 'sep') {
-      const sep = document.createElement('span');
-      sep.className = 'kivi-toolbar-sep';
-      el.appendChild(sep);
-      continue;
-    }
-    const btn = document.createElement('button');
-    btn.className = 'kivi-toolbar-btn';
-    btn.title = action.title || '';
-    if (action.svg) btn.innerHTML = action.svg;
-    btn.addEventListener('click', (e) => { e.preventDefault(); action.cmd?.(undefined, btn); });
-    addDelayedTooltip(btn);
-    el.appendChild(btn);
+  const imageAlignSvg = (d: string) =>
+    `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
+  const imageActions: ToolbarAction[] = [
+    { id: 'img-align-left', svg: imageAlignSvg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="2" y1="7" x2="10" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'), title: 'Align Left', cmd: () => { setSelectedImageAttr('data-align', 'left'); } },
+    { id: 'img-align-center', svg: imageAlignSvg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'), title: 'Align Center', cmd: () => { setSelectedImageAttr('data-align', 'center'); } },
+    { id: 'img-align-right', svg: imageAlignSvg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="6" y1="7" x2="14" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'), title: 'Align Right', cmd: () => { setSelectedImageAttr('data-align', 'right'); } },
+    { id: 'sep' },
+    { id: 'img-copy-src', svg: _s('<rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5H11"/>'), title: 'Copy Image Source', cmd: () => { const src = getSelectedImageAttr('src') as string || ''; navigator.clipboard.writeText(src).catch(() => {}); } },
+    { id: 'sep' },
+    { id: 'img-delete', svg: _s('<polyline points="3,4 13,4"/><path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1"/><path d="M4 4l.7 9.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L12 4"/>'), title: 'Delete Image', cmd: () => { deleteSelectedImage(); } },
+  ];
+
+  function setSelectedImageAttr(key: string, value: unknown) {
+    const { from } = tiptap.state.selection;
+    const node = tiptap.state.doc.nodeAt(from);
+    if (node?.type.name !== 'image') return;
+    const tr = tiptap.state.tr.setNodeMarkup(from, undefined, { ...node.attrs, [key]: value });
+    tiptap.view.dispatch(tr);
   }
 
-  const update = () => {
-    const buttons = el.querySelectorAll<HTMLButtonElement>('.kivi-toolbar-btn:not(.kivi-view-btn):not(.kivi-wrap-btn):not(.kivi-graph-btn):not(.kivi-hide-toolbar-btn)');
-    let i = 0;
+  function getSelectedImageAttr(key: string): unknown {
+    const { from } = tiptap.state.selection;
+    const node = tiptap.state.doc.nodeAt(from);
+    return node?.attrs[key];
+  }
+
+  function deleteSelectedImage() {
+    const { from } = tiptap.state.selection;
+    const node = tiptap.state.doc.nodeAt(from);
+    if (node?.type.name !== 'image') return;
+    const src = node.attrs.src as string | undefined;
+    tiptap.view.dispatch(tiptap.state.tr.delete(from, from + node.nodeSize));
+    if (src) vscode.postMessage({ type: 'checkOrphanAsset', src });
+  }
+
+  function renderActions(actions: ToolbarAction[]) {
+    formatGroup.innerHTML = '';
     for (const action of actions) {
-      if (action.id === 'sep') continue;
-      const btn = buttons[i++];
-      if (btn && action.active) btn.classList.toggle('active', action.active());
+      if (action.id === 'sep') {
+        const sep = document.createElement('span');
+        sep.className = 'kivi-toolbar-sep';
+        formatGroup.appendChild(sep);
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.className = 'kivi-toolbar-btn';
+      btn.dataset.actionId = action.id;
+      btn.title = action.title || '';
+      if (action.svg) btn.innerHTML = action.svg;
+      btn.addEventListener('click', (e) => { e.preventDefault(); action.cmd?.(undefined, btn); });
+      addDelayedTooltip(btn);
+      formatGroup.appendChild(btn);
+    }
+  }
+
+  let currentContext: 'text' | 'image' = 'text';
+  renderActions(textActions);
+
+  const update = () => {
+    const { from } = tiptap.state.selection;
+    const node = tiptap.state.doc.nodeAt(from);
+    const newContext = detectToolbarContext(node?.type.name);
+
+    if (newContext !== currentContext) {
+      currentContext = newContext;
+      renderActions(currentContext === 'image' ? imageActions : textActions);
+      return;
+    }
+
+    if (currentContext === 'text') {
+      const buttons = formatGroup.querySelectorAll<HTMLButtonElement>('.kivi-toolbar-btn');
+      let i = 0;
+      for (const action of textActions) {
+        if (action.id === 'sep') continue;
+        const btn = buttons[i++];
+        if (btn && action.active) btn.classList.toggle('active', action.active());
+      }
     }
   };
   tiptap.on('selectionUpdate', update);
@@ -1617,6 +2162,14 @@ function initToolbar(el: HTMLElement) {
   const spacer = document.createElement('span');
   spacer.style.flex = '1';
   el.appendChild(spacer);
+
+  // ── Word Wrap toggle ──
+  appendWordWrapToggle(el);
+  appendSep(el);
+
+  // ── Zoom controls ──
+  appendZoomControls(el);
+  appendSep(el);
 
   appendViewModeGroup(el);
   appendSep(el);
@@ -1673,7 +2226,9 @@ function initContextMenu() {
   menu.style.display = 'none';
   document.body.appendChild(menu);
 
-  const items: Array<{ label: string; shortcut?: string; divider?: boolean; action?: () => void }> = [
+  type MenuItem = { label: string; shortcut?: string; divider?: boolean; action?: () => void };
+
+  const textItems: MenuItem[] = [
     { label: 'Cut', shortcut: '⌘X', action: () => document.execCommand('cut') },
     { label: 'Copy', shortcut: '⌘C', action: () => document.execCommand('copy') },
     { label: 'Paste', shortcut: '⌘V', action: () => document.execCommand('paste') },
@@ -1694,47 +2249,197 @@ function initContextMenu() {
     { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
   ];
 
-  for (const item of items) {
-    if (item.divider) {
-      const hr = document.createElement('div');
-      hr.className = 'kivi-ctx-divider';
-      menu.appendChild(hr);
-      continue;
+  function buildImageItems(img: HTMLImageElement): MenuItem[] {
+    const tiptap = editor?.getTiptapEditor();
+    const imgPos = tiptap ? findImagePos(tiptap, img) : -1;
+    return [
+      { label: 'Copy Image Source', action: () => { navigator.clipboard.writeText(img.getAttribute('src') || '').catch(() => {}); } },
+      { label: 'Copy Image', action: () => { document.execCommand('copy'); } },
+      { divider: true, label: '' },
+      { label: 'Align Left', action: () => { if (tiptap && imgPos >= 0) setImageAttr(tiptap, imgPos, 'data-align', 'left'); } },
+      { label: 'Align Center', action: () => { if (tiptap && imgPos >= 0) setImageAttr(tiptap, imgPos, 'data-align', 'center'); } },
+      { label: 'Align Right', action: () => { if (tiptap && imgPos >= 0) setImageAttr(tiptap, imgPos, 'data-align', 'right'); } },
+      { divider: true, label: '' },
+      { label: 'Delete Image', action: () => {
+        if (tiptap && imgPos >= 0) {
+          const node = tiptap.state.doc.nodeAt(imgPos);
+          if (node) {
+            const src = node.attrs.src as string | undefined;
+            tiptap.view.dispatch(tiptap.state.tr.delete(imgPos, imgPos + node.nodeSize));
+            if (src) vscode.postMessage({ type: 'checkOrphanAsset', src });
+          }
+        }
+      }},
+      { divider: true, label: '' },
+      { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+      { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
+    ];
+  }
+
+  function buildVideoItems(video: HTMLVideoElement): MenuItem[] {
+    return buildMediaItems(video, 'video');
+  }
+
+  function buildMediaItems(el: HTMLElement, kind: 'video' | 'audio'): MenuItem[] {
+    const tiptap = editor?.getTiptapEditor();
+    const pos = tiptap ? findNodePos(tiptap, el, kind) : -1;
+    const label = kind.charAt(0).toUpperCase() + kind.slice(1);
+    return [
+      { label: `Copy ${label} Source`, action: () => { navigator.clipboard.writeText(el.getAttribute('src') || '').catch(() => {}); } },
+      { divider: true, label: '' },
+      { label: `Delete ${label}`, action: () => {
+        if (tiptap && pos >= 0) {
+          const node = tiptap.state.doc.nodeAt(pos);
+          if (node) {
+            const src = node.attrs.src as string | undefined;
+            tiptap.view.dispatch(tiptap.state.tr.delete(pos, pos + node.nodeSize));
+            if (src) vscode.postMessage({ type: 'checkOrphanAsset', src });
+          }
+        }
+      }},
+      { divider: true, label: '' },
+      { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+      { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
+    ];
+  }
+
+  function renderMenu(items: MenuItem[]) {
+    menu.innerHTML = '';
+    for (const item of items) {
+      if (item.divider) {
+        const hr = document.createElement('div');
+        hr.className = 'kivi-ctx-divider';
+        menu.appendChild(hr);
+        continue;
+      }
+      const row = document.createElement('div');
+      row.className = 'kivi-ctx-item';
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = item.label;
+      row.appendChild(labelSpan);
+      if (item.shortcut) {
+        const shortcutSpan = document.createElement('span');
+        shortcutSpan.className = 'kivi-ctx-shortcut';
+        shortcutSpan.textContent = item.shortcut;
+        row.appendChild(shortcutSpan);
+      }
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menu.style.display = 'none';
+        item.action?.();
+      });
+      menu.appendChild(row);
     }
-    const row = document.createElement('div');
-    row.className = 'kivi-ctx-item';
-    const labelSpan = document.createElement('span');
-    labelSpan.textContent = item.label;
-    row.appendChild(labelSpan);
-    if (item.shortcut) {
-      const shortcutSpan = document.createElement('span');
-      shortcutSpan.className = 'kivi-ctx-shortcut';
-      shortcutSpan.textContent = item.shortcut;
-      row.appendChild(shortcutSpan);
+  }
+
+  function detectLinkElement(el: HTMLElement): { kind: string; target: string; alias?: string; displayText: string } | null {
+    const wiki = el.closest('a.kivi-wiki-link') as HTMLElement | null;
+    if (wiki) {
+      const t = wiki.getAttribute('data-wiki-target');
+      if (t) return { kind: 'wiki-link', target: t, alias: wiki.textContent || undefined, displayText: wiki.textContent || t };
     }
-    row.addEventListener('click', (e) => {
-      e.stopPropagation();
-      menu.style.display = 'none';
-      item.action?.();
-    });
-    menu.appendChild(row);
+    const tag = el.closest('span.kivi-hashtag') as HTMLElement | null;
+    if (tag) {
+      const t = tag.getAttribute('data-tag');
+      if (t) return { kind: 'tag', target: t, displayText: `#${t}` };
+    }
+    const link = el.closest('a.kivi-link') as HTMLAnchorElement | null;
+    if (link) {
+      const href = link.getAttribute('href');
+      if (href) {
+        const isExternal = href.startsWith('http://') || href.startsWith('https://');
+        return { kind: isExternal ? 'external-url' : 'markdown-link', target: href, displayText: link.textContent || href };
+      }
+    }
+    return null;
+  }
+
+  function buildLinkItems(linkInfo: { kind: string; target: string; alias?: string; displayText: string }): MenuItem[] {
+    const items: MenuItem[] = [
+      { label: 'Open Link', action: () => vscode.postMessage({ type: 'navigateLink', link: linkInfo }) },
+      { label: 'Open Link to the Side', action: () => vscode.postMessage({ type: 'navigateLinkBeside', link: linkInfo }) },
+      { divider: true, label: '' },
+      { label: 'Copy Link Address', action: () => { navigator.clipboard.writeText(linkInfo.target).catch(() => {}); } },
+    ];
+    if (linkInfo.kind === 'external-url') {
+      items.push({ label: 'Copy Link Text', action: () => { navigator.clipboard.writeText(linkInfo.displayText).catch(() => {}); } });
+    }
+    items.push(
+      { divider: true, label: '' },
+      ...textItems.slice(0, 5),
+    );
+    return items;
   }
 
   document.addEventListener('contextmenu', (e) => {
     const target = e.target as HTMLElement;
     if (!target.closest('#editor') && !target.closest('.kivi-split-raw-editor') && !target.closest('#kivi-raw-editor')) return;
     e.preventDefault();
-    const x = Math.min(e.clientX, window.innerWidth - 220);
-    const y = Math.min(e.clientY, window.innerHeight - 350);
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
+
+    const img = target.tagName === 'IMG' ? target as HTMLImageElement : target.closest('img') as HTMLImageElement | null;
+    const video = target.tagName === 'VIDEO' ? target as HTMLVideoElement : target.closest('video') as HTMLVideoElement | null;
+    const audio = target.tagName === 'AUDIO' ? target as HTMLAudioElement : target.closest('audio') as HTMLAudioElement | null;
+    if (img && target.closest('#editor')) {
+      renderMenu(buildImageItems(img));
+    } else if (video && target.closest('#editor')) {
+      renderMenu(buildVideoItems(video));
+    } else if (audio && target.closest('#editor')) {
+      renderMenu(buildMediaItems(audio, 'audio'));
+    } else if (target.closest('#editor')) {
+      const linkInfo = detectLinkElement(target);
+      if (linkInfo) {
+        renderMenu(buildLinkItems(linkInfo));
+      } else {
+        renderMenu(textItems);
+      }
+    } else {
+      renderMenu(textItems);
+    }
+
+    menu.style.left = '0px';
+    menu.style.top = '0px';
     menu.style.display = 'block';
+    menu.style.visibility = 'hidden';
+
+    const rect = menu.getBoundingClientRect();
+    const x = Math.min(e.clientX, window.innerWidth - rect.width - 4);
+    const y = Math.min(e.clientY, window.innerHeight - rect.height - 4);
+    menu.style.left = `${Math.max(0, x)}px`;
+    menu.style.top = `${Math.max(0, y)}px`;
+    menu.style.visibility = '';
   });
 
   document.addEventListener('click', () => { menu.style.display = 'none'; });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') menu.style.display = 'none';
   });
+}
+
+function findImagePos(tiptap: any, img: HTMLImageElement): number {
+  return findNodePos(tiptap, img, 'image');
+}
+
+function findNodePos(tiptap: any, targetDom: HTMLElement, typeName: string): number {
+  const view = tiptap.view;
+  let found = -1;
+  view.state.doc.descendants((node: any, pos: number) => {
+    if (found >= 0) return false;
+    if (node.type.name === typeName) {
+      const dom = view.nodeDOM(pos);
+      if (dom === targetDom) { found = pos; return false; }
+      const nested = (dom as HTMLElement)?.querySelector?.(targetDom.tagName.toLowerCase());
+      if (nested === targetDom) { found = pos; return false; }
+    }
+    return true;
+  });
+  return found;
+}
+
+function setImageAttr(tiptap: any, pos: number, key: string, value: unknown) {
+  const node = tiptap.state.doc.nodeAt(pos);
+  if (!node) return;
+  const tr = tiptap.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, [key]: value });
+  tiptap.view.dispatch(tr);
 }
 
 async function insertLinkAtCursor(anchorRect?: DOMRect) {
@@ -1830,6 +2535,153 @@ function addDelayedTooltip(btn: HTMLElement) {
 
 // ─── Shared control builders ───
 
+function appendWordWrapToggle(parent: HTMLElement) {
+  const wrapIcon = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="4" x2="14" y2="4"/><path d="M2 8h9.5a2.5 2.5 0 0 1 0 5H10"/><polyline points="11,11.5 10,13 9,11.5"/><line x1="2" y1="12" x2="6" y2="12"/></svg>';
+  const btn = document.createElement('button');
+  btn.className = 'kivi-toolbar-btn';
+  btn.id = 'kivi-wrap-label';
+  btn.title = 'Toggle Word Wrap';
+  btn.innerHTML = wrapIcon;
+  if (currentWordWrap) btn.classList.add('active');
+  btn.addEventListener('click', () => {
+    currentWordWrap = !currentWordWrap;
+    btn.classList.toggle('active', currentWordWrap);
+    applyWordWrap(currentWordWrap);
+    vscode.postMessage({ type: 'updateKiviSetting', key: 'appearance.wordWrap', value: currentWordWrap ? 'on' : 'off' });
+  });
+  addDelayedTooltip(btn);
+  parent.appendChild(btn);
+}
+
+function applyWordWrap(enabled: boolean) {
+  const editorEl = document.getElementById('editor');
+  if (editorEl) {
+    editorEl.style.overflowX = enabled ? 'hidden' : 'auto';
+  }
+
+  // Also constrain the split-left pane when in split mode
+  const splitLeft = document.querySelector('.kivi-split-left') as HTMLElement | null;
+  if (splitLeft) {
+    splitLeft.style.overflowX = enabled ? 'hidden' : 'auto';
+  }
+
+  for (const id of ['kivi-raw-editor', 'kivi-split-raw']) {
+    const el = document.getElementById(id) as HTMLTextAreaElement | null;
+    if (el) {
+      el.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
+      el.style.overflowX = enabled ? 'hidden' : 'auto';
+    }
+  }
+
+  for (const bd of document.querySelectorAll<HTMLPreElement>('.kivi-raw-backdrop')) {
+    bd.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
+  }
+
+  const wrapStyleEl = document.getElementById('kivi-wrap-style') || (() => {
+    const el = document.createElement('style');
+    el.id = 'kivi-wrap-style';
+    document.head.appendChild(el);
+    return el;
+  })();
+  if (enabled) {
+    wrapStyleEl.textContent = [
+      `.kivi-vscode-editor { white-space: normal !important; overflow-wrap: break-word !important; word-break: break-word !important; }`,
+      `.kivi-vscode-editor p, .kivi-vscode-editor li, .kivi-vscode-editor h1, .kivi-vscode-editor h2, .kivi-vscode-editor h3, .kivi-vscode-editor h4, .kivi-vscode-editor h5, .kivi-vscode-editor h6, .kivi-vscode-editor blockquote { overflow-wrap: break-word !important; word-break: break-word !important; }`,
+      `.kivi-vscode-editor img { max-width: 100% !important; height: auto !important; }`,
+      `.kivi-vscode-editor table { max-width: 100% !important; table-layout: auto !important; }`,
+    ].join('\n');
+  } else {
+    wrapStyleEl.textContent = `.kivi-vscode-editor { white-space: nowrap !important; overflow-wrap: normal !important; }`;
+  }
+}
+
+function appendZoomControls(parent: HTMLElement) {
+  const group = document.createElement('span');
+  group.className = 'kivi-toolbar-zoom-group';
+
+  const minus = document.createElement('button');
+  minus.className = 'kivi-toolbar-btn kivi-zoom-btn';
+  minus.title = 'Zoom Out (−5%)';
+  minus.textContent = '−';
+  minus.addEventListener('click', () => changeEditorZoom(-5));
+  addDelayedTooltip(minus);
+  group.appendChild(minus);
+
+  const label = document.createElement('span');
+  label.className = 'kivi-toolbar-btn kivi-zoom-label';
+  label.id = 'kivi-zoom-label';
+  label.title = 'Click to set zoom · Double-click to reset';
+  label.textContent = `${currentEditorZoom}%`;
+
+  const input = document.createElement('input');
+  input.className = 'kivi-zoom-input';
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.style.display = 'none';
+
+  function showInput() {
+    label.style.display = 'none';
+    input.style.display = '';
+    input.value = String(currentEditorZoom);
+    input.focus();
+    input.select();
+  }
+
+  function commitInput() {
+    input.style.display = 'none';
+    label.style.display = '';
+    const raw = input.value.replace(/[^0-9]/g, '');
+    const val = parseInt(raw, 10);
+    if (!isNaN(val) && val > 0) {
+      changeEditorZoom(0, Math.max(50, Math.min(300, val)));
+    }
+  }
+
+  label.addEventListener('click', showInput);
+  label.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    changeEditorZoom(0, 100);
+  });
+
+  input.addEventListener('blur', commitInput);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); input.style.display = 'none'; label.style.display = ''; }
+  });
+
+  group.appendChild(label);
+  group.appendChild(input);
+
+  const plus = document.createElement('button');
+  plus.className = 'kivi-toolbar-btn kivi-zoom-btn';
+  plus.title = 'Zoom In (+5%)';
+  plus.textContent = '+';
+  plus.addEventListener('click', () => changeEditorZoom(5));
+  addDelayedTooltip(plus);
+  group.appendChild(plus);
+
+  parent.appendChild(group);
+}
+
+function changeEditorZoom(delta: number, absolute?: number) {
+  const newZoom = absolute !== undefined
+    ? Math.max(50, Math.min(300, absolute))
+    : Math.max(50, Math.min(300, currentEditorZoom + delta));
+  if (newZoom === currentEditorZoom) return;
+  currentEditorZoom = newZoom;
+
+  const cssZoom = newZoom / 100;
+  for (const id of ['editor', 'kivi-raw-wrapper', 'kivi-split-container']) {
+    const el = document.getElementById(id);
+    if (el) (el.style as any).zoom = String(cssZoom);
+  }
+
+  const label = document.getElementById('kivi-zoom-label');
+  if (label) label.textContent = `${newZoom}%`;
+
+  vscode.postMessage({ type: 'updateKiviSetting', key: 'appearance.editorZoom', value: newZoom });
+}
+
 function appendViewModeGroup(parent: HTMLElement) {
   const viewGroup = document.createElement('span');
   viewGroup.className = 'kivi-toolbar-view-group';
@@ -1893,6 +2745,7 @@ function createSearchBar() {
     <button id="kivi-search-close" title="Close (Esc)">✕</button>
   `;
   document.body.insertBefore(bar, document.getElementById('editor'));
+  bar.querySelectorAll<HTMLElement>('button[title]').forEach(addDelayedTooltip);
 
   const searchInput = bar.querySelector<HTMLInputElement>('#kivi-search-input')!;
   const replaceInput = bar.querySelector<HTMLInputElement>('#kivi-replace-input')!;

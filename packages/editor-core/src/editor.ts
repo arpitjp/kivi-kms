@@ -40,6 +40,7 @@ import { DevWatchdog } from './extensions/dev-watchdog.js';
 import { LinkPreviewExtension } from './extensions/link-preview.js';
 import type { DetectedLink, LinkPreviewData } from './extensions/link-preview.js';
 import { SmartTypography } from './extensions/smart-typography.js';
+import { Video, Audio } from './extensions/video.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -70,7 +71,33 @@ export class KiviEditor {
           openOnClick: false,
           HTMLAttributes: { class: 'kivi-link' },
         }),
-        Image.configure({
+        Image.extend({
+          draggable: true,
+          addAttributes() {
+            return {
+              ...this.parent?.(),
+              width: {
+                default: null,
+                parseHTML: (el: HTMLElement) => {
+                  const w = el.getAttribute('width');
+                  return w ? parseInt(w, 10) || null : null;
+                },
+                renderHTML: (attrs: Record<string, unknown>) => {
+                  if (!attrs.width) return {};
+                  return { width: String(attrs.width) };
+                },
+              },
+              'data-align': {
+                default: null,
+                parseHTML: (el: HTMLElement) => el.getAttribute('data-align') || null,
+                renderHTML: (attrs: Record<string, unknown>) => {
+                  if (!attrs['data-align']) return {};
+                  return { 'data-align': attrs['data-align'] as string };
+                },
+              },
+            };
+          },
+        }).configure({
           HTMLAttributes: { class: 'kivi-image' },
         }),
         TaskList,
@@ -122,6 +149,7 @@ export class KiviEditor {
         KiviSearch,
         KiviClipboard.configure({
           imageAdapter: options.imageStorageAdapter,
+          fileAdapter: options.fileStorageAdapter,
         }),
         DirtyTracker,
         WikiLink,
@@ -131,6 +159,7 @@ export class KiviEditor {
         TocBlock,
         SlashCommands.configure({
           onCreatePage: options.onCreatePage,
+          promptInput: options.promptInput,
         }),
         MermaidBlock,
         ExcalidrawBlock,
@@ -139,6 +168,8 @@ export class KiviEditor {
         LinkPopup,
         CodeBlockEnhanced,
         SelectionToolbar,
+        Video,
+        Audio,
         DevWatchdog,
         SmartTypography,
         LinkPreviewExtension.configure({

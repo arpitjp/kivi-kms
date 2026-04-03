@@ -157,7 +157,7 @@ function convertNode(
 
 const TOC_RE = /^\[toc\]$|^\[\[toc\]\]$/i;
 
-function convertParagraph(node: Paragraph): PMNodeJSON {
+function convertParagraph(node: Paragraph): PMNodeJSON | PMNodeJSON[] {
   // Detect [TOC] or [[toc]] marker (plain text form)
   if (node.children.length === 1 && node.children[0].type === 'text') {
     const text = (node.children[0] as Text).value.trim();
@@ -178,6 +178,38 @@ function convertParagraph(node: Paragraph): PMNodeJSON {
       }
     }
   }
+
+  // Tiptap Image is a block node — images cannot live inside paragraphs.
+  // If the paragraph is just a single image, lift it to block level.
+  if (node.children.length === 1 && node.children[0].type === 'image') {
+    return convertImage(node.children[0]);
+  }
+
+  // Mixed content: split into runs of inline content vs images.
+  const hasImage = node.children.some((c) => c.type === 'image');
+  if (hasImage) {
+    const blocks: PMNodeJSON[] = [];
+    let inlineBuf: PhrasingContent[] = [];
+
+    const flushInline = () => {
+      if (inlineBuf.length === 0) return;
+      const content = convertPhrasingContent(inlineBuf, []);
+      if (content.length > 0) blocks.push(paragraphNode(content));
+      inlineBuf = [];
+    };
+
+    for (const child of node.children) {
+      if (child.type === 'image') {
+        flushInline();
+        blocks.push(convertImage(child));
+      } else {
+        inlineBuf.push(child);
+      }
+    }
+    flushInline();
+    return blocks.length === 1 ? blocks[0] : blocks;
+  }
+
   const content = convertPhrasingContent(node.children, []);
   return paragraphNode(content);
 }
@@ -272,7 +304,14 @@ function convertTableCell(
   return cellNode;
 }
 
+function isExcalidrawUrl(url: string): boolean {
+  return /\.excalidraw(?:\?|#|$)/i.test(url);
+}
+
 function convertImage(node: Image): PMNodeJSON {
+  if (isExcalidrawUrl(node.url)) {
+    return { type: 'excalidrawBlock', attrs: { src: node.url, data: '{}' } };
+  }
   return imageNode(node.url, node.alt ?? undefined, node.title ?? undefined);
 }
 
@@ -356,6 +395,9 @@ function convertInlineCode(node: InlineCode, parentMarks: PMMarkJSON[]): PMNodeJ
 }
 
 function convertLink(node: Link, parentMarks: PMMarkJSON[]): PMNodeJSON[] {
+  if (isExcalidrawUrl(node.url)) {
+    return [{ type: 'excalidrawBlock', attrs: { src: node.url, data: '{}' } }];
+  }
   const mark = linkMark(node.url, node.title ?? undefined);
   return convertPhrasingContent(node.children, [...parentMarks, mark]);
 }
@@ -381,12 +423,69 @@ function convertHtml(node: Html): PMNodeJSON | PMNodeJSON[] {
     const m = node.value.match(regex);
     if (m) return textNode(m[1], [markFn()]);
   }
+  // Self-closing <img /> tag with optional width/data-align attributes
+  const imgMatch = node.value.match(/^<img\s+([^>]*?)\/?\s*>$/i);
+  if (imgMatch) {
+    return convertImgHtml(imgMatch[1]);
+  }
+  // <video> tag
+  const videoMatch = node.value.match(/^<video\s+([^>]*?)(?:\/>|>\s*<\/video>)$/is);
+  if (videoMatch) {
+    return convertVideoHtml(videoMatch[1]);
+  }
+  // <audio> tag
+  const audioMatch = node.value.match(/^<audio\s+([^>]*?)(?:\/>|>\s*<\/audio>)$/is);
+  if (audioMatch) {
+    return convertAudioHtml(audioMatch[1]);
+  }
   // Standalone link HTML
   const linkMatch = node.value.match(/^<a\s+href="([^"]*)"[^>]*>(.*?)<\/a>$/s);
   if (linkMatch) {
     return textNode(linkMatch[2], [{ type: 'link', attrs: { href: linkMatch[1], title: null, target: '_blank' } }]);
   }
   return paragraphNode([textNode(node.value)]);
+}
+
+function convertVideoHtml(attrStr: string): PMNodeJSON {
+  const src = extractHtmlAttr(attrStr, 'src') || '';
+  const width = extractHtmlAttr(attrStr, 'width') || null;
+  const style = extractHtmlAttr(attrStr, 'style') || 'max-width:100%';
+  const controls = /\bcontrols\b/.test(attrStr);
+  return {
+    type: 'video',
+    attrs: { src, controls, width, style },
+  };
+}
+
+function convertAudioHtml(attrStr: string): PMNodeJSON {
+  const src = extractHtmlAttr(attrStr, 'src') || '';
+  const width = extractHtmlAttr(attrStr, 'width') || null;
+  const controls = /\bcontrols\b/.test(attrStr);
+  return {
+    type: 'audio',
+    attrs: { src, controls, width },
+  };
+}
+
+function extractHtmlAttr(attrs: string, name: string): string | null {
+  const re = new RegExp(`${name}="([^"]*)"`, 'i');
+  const m = attrs.match(re);
+  return m ? m[1] : null;
+}
+
+function convertImgHtml(attrStr: string): PMNodeJSON {
+  const src = extractHtmlAttr(attrStr, 'src') || '';
+  const alt = extractHtmlAttr(attrStr, 'alt') || undefined;
+  const widthStr = extractHtmlAttr(attrStr, 'width');
+  const align = extractHtmlAttr(attrStr, 'data-align');
+  const width = widthStr ? parseInt(widthStr, 10) || null : null;
+  if (isExcalidrawUrl(src)) {
+    return { type: 'excalidrawBlock', attrs: { src, data: '{}', width } };
+  }
+  return imageNode(src, alt, undefined, {
+    width: width,
+    'data-align': align,
+  });
 }
 
 function convertFrontmatter(node: RootContent & { value: string }): PMNodeJSON {

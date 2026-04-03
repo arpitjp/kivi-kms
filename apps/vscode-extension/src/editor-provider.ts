@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as cp from 'child_process';
 import { scanMarkdown } from '@kivi/vault';
-import { getNonce } from './utils.js';
+import { getNonce, resolveDocRelativeFolder, computeRelativePathFromDoc } from './utils.js';
+import { DevPanel } from './dev-panel.js';
 
 export interface KiviSettings {
   editorBackground: string;
@@ -14,17 +16,26 @@ export interface KiviSettings {
   lineHeight: number;
   customCSS: string;
   showToolbar: boolean;
-  zoom: number;
+  editorZoom: number;
+  wordWrap: boolean;
   // VS Code native editor settings (forwarded so webview can match)
   vscodeEditorFontSize: number;
   vscodeEditorFontFamily: string;
   vscodeEditorLineHeight: number;
   vscodeEditorWordWrap: string;
+  vscodeZoomLevel: number;
+}
+
+function resolveWordWrap(kiviWrap: string, vscodeWrap: string): boolean {
+  if (kiviWrap === 'on') return true;
+  if (kiviWrap === 'off') return false;
+  return vscodeWrap !== 'off';
 }
 
 function readKiviSettings(): KiviSettings {
   const cfg = vscode.workspace.getConfiguration('kivi');
   const editorCfg = vscode.workspace.getConfiguration('editor');
+  const windowCfg = vscode.workspace.getConfiguration('window');
   return {
     editorBackground: cfg.get<string>('appearance.editorBackground', ''),
     codeBlockBackground: cfg.get<string>('appearance.codeBlockBackground', ''),
@@ -36,11 +47,13 @@ function readKiviSettings(): KiviSettings {
     lineHeight: cfg.get<number>('appearance.lineHeight', 0),
     customCSS: cfg.get<string>('appearance.customCSS', ''),
     showToolbar: cfg.get<boolean>('ui.showToolbar', true),
-    zoom: cfg.get<number>('appearance.zoom', 100),
+    editorZoom: cfg.get<number>('appearance.editorZoom', 100),
+    wordWrap: resolveWordWrap(cfg.get<string>('appearance.wordWrap', 'inherit'), editorCfg.get<string>('wordWrap', 'on')),
     vscodeEditorFontSize: editorCfg.get<number>('fontSize', 14),
     vscodeEditorFontFamily: editorCfg.get<string>('fontFamily', ''),
     vscodeEditorLineHeight: editorCfg.get<number>('lineHeight', 0),
     vscodeEditorWordWrap: editorCfg.get<string>('wordWrap', 'on'),
+    vscodeZoomLevel: windowCfg.get<number>('zoomLevel', 0),
   };
 }
 
@@ -87,14 +100,18 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     _token: vscode.CancellationToken,
   ): Promise<void> {
     const docUriStr = document.uri.toString();
+    const docName = document.uri.fsPath.split('/').pop() ?? docUriStr;
+    DevPanel.log('info', 'editor', `Opening: ${docName}`);
+    DevPanel.perf(`editor-open:${docName}`, 'start');
 
     // Track this panel
     KiviEditorProvider.activePanels.set(docUriStr, webviewPanel);
 
-    // Webview options — include workspace folder for image/asset previews
+    // Webview options — include workspace folder and document directory for image/asset previews
     const roots: vscode.Uri[] = [
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview'),
       vscode.Uri.joinPath(this.context.extensionUri, 'images'),
+      vscode.Uri.joinPath(document.uri, '..'),
     ];
     const wsFolder = vscode.workspace.workspaceFolders?.[0];
     if (wsFolder) roots.push(wsFolder.uri);
@@ -158,6 +175,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
         // External change
         if (currentText !== lastKnownContent) {
+          DevPanel.log('debug', 'editor', `External change detected: ${docName}`);
           lastKnownContent = currentText;
           sendContent(lastKnownContent);
         }
@@ -169,7 +187,8 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('kivi') || e.affectsConfiguration('editor.fontSize') ||
-            e.affectsConfiguration('editor.fontFamily') || e.affectsConfiguration('editor.wordWrap')) {
+            e.affectsConfiguration('editor.fontFamily') || e.affectsConfiguration('editor.wordWrap') ||
+            e.affectsConfiguration('window.zoomLevel')) {
           sendSettings();
         }
       }),
@@ -227,6 +246,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     // ── Cleanup ──
 
     webviewPanel.onDidDispose(() => {
+      DevPanel.log('info', 'editor', `Closed: ${docName} (${KiviEditorProvider.activePanels.size - 1} remaining)`);
       KiviEditorProvider.activePanels.delete(docUriStr);
       vscode.commands.executeCommand('setContext', 'kivi.editorFocused', false);
       for (const d of disposables) d.dispose();
@@ -238,14 +258,19 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       switch (msg.type) {
         case 'ready': {
           isWebviewReady = true;
+          DevPanel.perf(`editor-open:${docName}`, 'end');
+          DevPanel.log('debug', 'editor', `Webview ready: ${docName}`);
 
           // Send document metadata
           const relPath = vscode.workspace.asRelativePath(document.uri, false);
+          const docDirUri = vscode.Uri.joinPath(document.uri, '..');
+          const docBaseUrl = webviewPanel.webview.asWebviewUri(docDirUri).toString();
           postMessage({
             type: 'init',
             filePath: relPath,
             fileName: relPath.split('/').pop()?.replace(/\.md$/, '') || '',
             isReadonly: document.isUntitled,
+            docBaseUrl: docBaseUrl.endsWith('/') ? docBaseUrl : docBaseUrl + '/',
           });
 
           sendSettings();
@@ -270,6 +295,17 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           break;
         }
 
+        case 'updateKiviSetting': {
+          const settingKey = msg.key as string | undefined;
+          const settingValue = msg.value;
+          if (settingKey) {
+            await vscode.workspace.getConfiguration('kivi').update(
+              settingKey, settingValue, vscode.ConfigurationTarget.Global,
+            );
+          }
+          break;
+        }
+
         case 'persistSetting': {
           const key = msg.key as string | undefined;
           const value = msg.value;
@@ -290,6 +326,67 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
         case 'openGraph': {
           vscode.commands.executeCommand('kivi.openGraph');
+          break;
+        }
+
+        case 'requestBlame': {
+          const lineStart = msg.lineStart as number | undefined;
+          const lineEnd = msg.lineEnd as number | undefined;
+          if (lineStart != null && lineEnd != null) {
+            this.getBlameInfo(document, lineStart, lineEnd, postMessage);
+          }
+          break;
+        }
+
+        case 'openExternal': {
+          const url = msg.url as string | undefined;
+          if (url) vscode.env.openExternal(vscode.Uri.parse(url));
+          break;
+        }
+
+        case 'readExcalidrawFile': {
+          const excSrc = msg.src as string | undefined;
+          const reqId = msg.reqId as string | undefined;
+          if (excSrc && reqId) {
+            try {
+              const docDir = vscode.Uri.joinPath(document.uri, '..');
+              const fileUri = vscode.Uri.joinPath(docDir, excSrc);
+              const data = await vscode.workspace.fs.readFile(fileUri);
+              const content = new TextDecoder().decode(data);
+              postMessage({ type: 'excalidrawFileContent', reqId, content });
+            } catch (e) {
+              postMessage({ type: 'excalidrawFileContent', reqId, error: String(e) });
+            }
+          }
+          break;
+        }
+
+        case 'openExcalidraw': {
+          const excSrc = msg.src as string | undefined;
+          if (excSrc) {
+            const docDir = vscode.Uri.joinPath(document.uri, '..');
+            const fileUri = vscode.Uri.joinPath(docDir, excSrc);
+            // Try to open with excalidraw extension, fall back to default editor
+            try {
+              await vscode.commands.executeCommand('vscode.openWith', fileUri, 'excalidraw-editor.editor');
+            } catch {
+              await vscode.commands.executeCommand('vscode.open', fileUri);
+            }
+          }
+          break;
+        }
+
+        case 'checkExcalidrawExtension': {
+          const ext = vscode.extensions.getExtension('pomdtr.excalidraw-editor')
+            || vscode.extensions.getExtension('nicolo-ribaudo.excalidraw-editor');
+          postMessage({ type: 'excalidrawExtensionStatus', installed: !!ext });
+          break;
+        }
+
+        case 'command': {
+          const cmd = msg.command as string | undefined;
+          const args = msg.args as unknown[] | undefined;
+          if (cmd) vscode.commands.executeCommand(cmd, ...(args || []));
           break;
         }
 
@@ -324,7 +421,10 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           pendingOwnEdits++;
           lastKnownContent = newContent;
           const applied = await vscode.workspace.applyEdit(edit);
-          if (!applied) pendingOwnEdits--;
+          if (!applied) {
+            pendingOwnEdits--;
+            DevPanel.log('warn', 'editor', `Edit rejected by VS Code: ${docName}`);
+          }
           break;
         }
 
@@ -333,7 +433,9 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const resolveId = msg.id as number | undefined;
           if (!linkData || resolveId === undefined) break;
 
+          DevPanel.perf(`resolveLink:${linkData.target}`, 'start');
           const result = await this.resolveLink(linkData, document, webviewPanel.webview);
+          DevPanel.perf(`resolveLink:${linkData.target}`, 'end');
           postMessage({ type: 'linkResolved', id: resolveId, data: result });
           break;
         }
@@ -341,7 +443,29 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
         case 'navigateLink': {
           const navLink = msg.link as { kind: string; target: string; alias?: string } | undefined;
           if (!navLink) break;
+          DevPanel.log('debug', 'editor', `Navigate: [${navLink.kind}] ${navLink.target}`);
           await this.navigateToLink(navLink, document);
+          break;
+        }
+
+        case 'navigateLinkBeside': {
+          const navLink2 = msg.link as { kind: string; target: string; alias?: string } | undefined;
+          if (!navLink2) break;
+          DevPanel.log('debug', 'editor', `Navigate (beside): [${navLink2.kind}] ${navLink2.target}`);
+          await this.navigateToLink(navLink2, document, true);
+          break;
+        }
+
+        case 'promptInput': {
+          const promptId = msg.id as number | undefined;
+          const promptMsg = msg.message as string | undefined;
+          const promptPlaceholder = msg.placeholder as string | undefined;
+          if (promptId === undefined) break;
+          const value = await vscode.window.showInputBox({
+            prompt: promptMsg || 'Enter a value',
+            placeHolder: promptPlaceholder,
+          });
+          postMessage({ type: 'inputPromptResult', id: promptId, value: value ?? null });
           break;
         }
 
@@ -391,13 +515,24 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           break;
         }
 
+        case 'promptCreateChildPage': {
+          const inputName = await vscode.window.showInputBox({
+            prompt: 'New page name',
+            placeHolder: 'e.g. My New Page',
+            validateInput: (v) => v.trim() ? null : 'Name cannot be empty',
+          });
+          if (!inputName) break;
+          // Fall through to createChildPage logic
+          msg.name = inputName;
+        }
+        // falls through
         case 'createChildPage': {
           const pageName = msg.name as string | undefined;
-          if (!pageName || !wsFolder) break;
+          if (!pageName) break;
 
           const cfg = vscode.workspace.getConfiguration('kivi');
           const pagesFolder = cfg.get<string>('folders.pages', 'pages');
-          const folderUri = vscode.Uri.joinPath(wsFolder.uri, pagesFolder);
+          const folderUri = resolveDocRelativeFolder(document.uri, pagesFolder);
 
           try { await vscode.workspace.fs.stat(folderUri); } catch {
             await vscode.workspace.fs.createDirectory(folderUri);
@@ -414,21 +549,21 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(`# ${safeName.replace(/\.md$/, '')}\n\n`));
           }
 
+          DevPanel.log('info', 'editor', `Child page created: ${safeName}`);
           vscode.commands.executeCommand('vscode.openWith', fileUri, KiviEditorProvider.viewType);
-          const relPath = vscode.workspace.asRelativePath(fileUri, false);
+          const relPath = computeRelativePathFromDoc(document.uri, fileUri);
           postMessage({ type: 'childPageCreated', path: relPath, name: safeName.replace(/\.md$/, '') });
           break;
         }
 
         case 'storeImage': {
-          if (!wsFolder) break;
           const imageData = msg.data as string | undefined;
           const imageName = msg.name as string | undefined;
           if (!imageData || !imageName) break;
 
           const cfg = vscode.workspace.getConfiguration('kivi');
           const assetsFolder = cfg.get<string>('folders.assets', 'assets');
-          const folderUri = vscode.Uri.joinPath(wsFolder.uri, assetsFolder);
+          const folderUri = resolveDocRelativeFolder(document.uri, assetsFolder);
 
           try { await vscode.workspace.fs.stat(folderUri); } catch {
             await vscode.workspace.fs.createDirectory(folderUri);
@@ -441,8 +576,88 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const bytes = Buffer.from(base64, 'base64');
           await vscode.workspace.fs.writeFile(fileUri, bytes);
 
-          const relPath = vscode.workspace.asRelativePath(fileUri, false);
+          DevPanel.log('info', 'editor', `Image stored: ${safeName} (${bytes.length} bytes)`);
+          const relPath = computeRelativePathFromDoc(document.uri, fileUri);
           postMessage({ type: 'imageStored', path: relPath, name: safeName });
+          break;
+        }
+
+        case 'storeFile': {
+          const fileData = msg.data as string | undefined;
+          const fileName = msg.name as string | undefined;
+          const storeId = msg.storeId as string | undefined;
+          if (!fileData || !fileName || !storeId) break;
+
+          const cfg = vscode.workspace.getConfiguration('kivi');
+          const assetsFolder = cfg.get<string>('folders.assets', 'assets');
+          const folderUri = resolveDocRelativeFolder(document.uri, assetsFolder);
+
+          try { await vscode.workspace.fs.stat(folderUri); } catch {
+            await vscode.workspace.fs.createDirectory(folderUri);
+          }
+
+          const safeName = fileName.replace(/[<>:"/\\|?*]/g, '').trim();
+          const fileUri = vscode.Uri.joinPath(folderUri, safeName);
+
+          const base64 = fileData.replace(/^data:[^;]+;base64,/, '');
+          const bytes = Buffer.from(base64, 'base64');
+          await vscode.workspace.fs.writeFile(fileUri, bytes);
+
+          DevPanel.log('info', 'editor', `File stored: ${safeName} (${bytes.length} bytes)`);
+          const relPath = computeRelativePathFromDoc(document.uri, fileUri);
+          postMessage({ type: 'fileStored', path: relPath, name: safeName, storeId });
+          break;
+        }
+
+        case 'checkOrphanAsset': {
+          const assetSrc = msg.src as string | undefined;
+          if (!assetSrc) break;
+
+          // Skip data URLs and external URLs
+          if (assetSrc.startsWith('data:') || assetSrc.startsWith('http://') || assetSrc.startsWith('https://')) break;
+
+          // Resolve the asset to an absolute file URI
+          const docDir = vscode.Uri.joinPath(document.uri, '..');
+          const assetUri = vscode.Uri.joinPath(docDir, assetSrc);
+
+          // Verify the file exists
+          try { await vscode.workspace.fs.stat(assetUri); } catch { break; }
+
+          // Extract just the filename for searching
+          const assetBasename = path.basename(assetUri.fsPath);
+
+          // Search all markdown files for references to this asset
+          const mdFiles = await vscode.workspace.findFiles('**/*.{md,markdown}', '**/node_modules/**', 500);
+          let refCount = 0;
+          for (const file of mdFiles) {
+            // Skip the current document (we just removed the ref from it)
+            if (file.fsPath === document.uri.fsPath) continue;
+            try {
+              const bytes = await vscode.workspace.fs.readFile(file);
+              const content = new TextDecoder().decode(bytes);
+              if (content.includes(assetBasename)) {
+                refCount++;
+                break;
+              }
+            } catch { /* skip unreadable files */ }
+          }
+
+          if (refCount === 0) {
+            const choice = await vscode.window.showInformationMessage(
+              `"${assetBasename}" is no longer referenced in any file. Delete it permanently?`,
+              { modal: false },
+              'Delete',
+              'Keep',
+            );
+            if (choice === 'Delete') {
+              try {
+                await vscode.workspace.fs.delete(assetUri);
+                DevPanel.log('info', 'editor', `Orphan asset deleted: ${assetBasename}`);
+              } catch (err) {
+                vscode.window.showErrorMessage(`Failed to delete "${assetBasename}": ${err}`);
+              }
+            }
+          }
           break;
         }
       }
@@ -620,6 +835,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   private async navigateToLink(
     link: { kind: string; target: string; alias?: string },
     currentDoc: vscode.TextDocument,
+    beside = false,
   ): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) return;
@@ -658,25 +874,25 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
     // Resolve to file
     const resolvedUri = await this.resolveNoteLink(link.target, currentDoc, folder);
+    const openCol = beside ? vscode.ViewColumn.Beside : undefined;
     if (resolvedUri) {
       try {
         await vscode.workspace.fs.stat(resolvedUri);
-        vscode.commands.executeCommand('vscode.openWith', resolvedUri, KiviEditorProvider.viewType);
+        vscode.commands.executeCommand('vscode.openWith', resolvedUri, KiviEditorProvider.viewType, openCol);
       } catch {
-        // File doesn't exist — offer to create
         const answer = await vscode.window.showInformationMessage(
           `"${link.target}" does not exist. Create it?`,
           'Create', 'Cancel',
         );
         if (answer === 'Create') {
           await vscode.workspace.fs.writeFile(resolvedUri, new TextEncoder().encode(`# ${link.target}\n\n`));
-          vscode.commands.executeCommand('vscode.openWith', resolvedUri, KiviEditorProvider.viewType);
+          vscode.commands.executeCommand('vscode.openWith', resolvedUri, KiviEditorProvider.viewType, openCol);
         }
       }
     } else {
       const assetUri = this.resolveRelativePath(link.target, currentDoc);
       if (assetUri) {
-        vscode.commands.executeCommand('vscode.open', assetUri);
+        vscode.commands.executeCommand('vscode.open', assetUri, openCol);
       } else {
         vscode.window.showInformationMessage(`Could not resolve: ${link.target}`);
       }
@@ -741,6 +957,64 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     } catch {
       // No git info available (new file, not in repo, etc.)
     }
+  }
+
+  // ── Git blame for author info ──
+
+  private getBlameInfo(
+    document: vscode.TextDocument,
+    lineStart: number,
+    lineEnd: number,
+    postMessage: (msg: Record<string, unknown>) => void,
+  ): void {
+    const fsPath = document.uri.fsPath;
+    const dir = path.dirname(fsPath);
+    const file = path.basename(fsPath);
+
+    // git blame with porcelain output for structured parsing
+    const cmd = `git blame -L ${lineStart + 1},${lineEnd + 1} --porcelain -- "${file}"`;
+    cp.exec(cmd, { cwd: dir, timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        postMessage({ type: 'blameResult', lineStart, lineEnd, entries: [] });
+        return;
+      }
+
+      const entries: Array<{ line: number; author: string; date: string; summary: string; hash: string }> = [];
+      const lines = stdout.split('\n');
+      let currentHash = '';
+      let currentAuthor = '';
+      let currentDate = '';
+      let currentSummary = '';
+      let currentLine = lineStart;
+
+      for (const raw of lines) {
+        const hashMatch = raw.match(/^([0-9a-f]{40})\s+\d+\s+(\d+)/);
+        if (hashMatch) {
+          currentHash = hashMatch[1];
+          currentLine = parseInt(hashMatch[2], 10) - 1;
+          continue;
+        }
+        if (raw.startsWith('author ')) {
+          currentAuthor = raw.slice(7);
+        } else if (raw.startsWith('author-time ')) {
+          const ts = parseInt(raw.slice(12), 10);
+          const d = new Date(ts * 1000);
+          currentDate = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        } else if (raw.startsWith('summary ')) {
+          currentSummary = raw.slice(8);
+        } else if (raw.startsWith('\t')) {
+          entries.push({
+            line: currentLine,
+            author: currentAuthor,
+            date: currentDate,
+            summary: currentSummary,
+            hash: currentHash.slice(0, 8),
+          });
+        }
+      }
+
+      postMessage({ type: 'blameResult', lineStart, lineEnd, entries });
+    });
   }
 
   // ── HTML ──

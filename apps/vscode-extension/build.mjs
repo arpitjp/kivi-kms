@@ -34,4 +34,8 @@ if (!watch) {
   console.log('Building graph webview...');
   execSync('npx vite build --config vite.graph.config.ts', { stdio: 'inherit' });
   console.log('Graph webview built.');
+
+  console.log('Building dev panel webview...');
+  execSync('npx vite build --config vite.devpanel.config.ts', { stdio: 'inherit' });
+  console.log('Dev panel webview built.');
 }

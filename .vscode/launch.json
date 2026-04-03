@@ -7,7 +7,7 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/apps/vscode-extension",
-        "${workspaceFolder}/apps/vscode-extension/test-fixtures"
+        "${env:HOME}/p/kms"
       ],
       "outFiles": [
         "${workspaceFolder}/apps/vscode-extension/dist/**/*.js"

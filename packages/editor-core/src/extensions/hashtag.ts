@@ -1,5 +1,6 @@
 import { Mark, mergeAttributes } from '@tiptap/core';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { InputRule } from '@tiptap/core';
 import type { EditorView } from '@tiptap/pm/view';
 import type { EditorState } from '@tiptap/pm/state';
@@ -31,6 +32,17 @@ function detectHashTrigger(state: EditorState): { from: number; to: number; quer
 
   for (let d = $pos.depth; d >= 0; d--) {
     if ($pos.node(d).type.name === 'codeBlock') return null;
+  }
+
+  // Don't trigger if cursor is inside or at the boundary of an existing hashTag mark
+  const marksAtCursor = $pos.marks();
+  if (marksAtCursor.some(m => m.type.name === 'hashTag')) return null;
+
+  // Also check the character just before — cursor at end of mark won't have the mark
+  // in $pos.marks(), but the preceding position will
+  if ($pos.parentOffset > 0) {
+    const $before = state.doc.resolve(selection.from - 1);
+    if ($before.marks().some(m => m.type.name === 'hashTag')) return null;
   }
 
   const textBefore = $pos.parent.textBetween(0, $pos.parentOffset, undefined, '\ufffc');
@@ -143,6 +155,34 @@ export const HashTag = Mark.create<HashTagOptions>({
       );
     }
 
+    // Decoration for the hashtag currently being typed (before space confirms it)
+    plugins.push(
+      new Plugin({
+        key: new PluginKey('hashTagTypingDecoration'),
+        state: {
+          init() { return DecorationSet.empty; },
+          apply(_tr, _old, _oldState, newState) {
+            const trigger = detectHashTrigger(newState);
+            if (!trigger) return DecorationSet.empty;
+            // Don't decorate if the range already has a hashTag mark
+            const $from = newState.doc.resolve(trigger.from + 1);
+            if ($from.marks().some(m => m.type.name === 'hashTag')) {
+              return DecorationSet.empty;
+            }
+            const deco = Decoration.inline(trigger.from, trigger.to, {
+              class: 'kivi-tag-typing',
+            });
+            return DecorationSet.create(newState.doc, [deco]);
+          },
+        },
+        props: {
+          decorations(state) {
+            return this.getState(state) ?? DecorationSet.empty;
+          },
+        },
+      }),
+    );
+
     const suggestion = this.options.suggestion;
     if (suggestion) {
       plugins.push(createSuggestionPlugin(suggestion));
@@ -174,6 +214,29 @@ function createSuggestionPlugin(
     activeRange = null;
     active = false;
     lastFetchedQuery = null;
+  }
+
+  function confirmTypedTag(view: EditorView) {
+    if (!activeRange) return;
+    const trigger = detectHashTrigger(view.state);
+    if (!trigger || !trigger.query) { destroy(); return; }
+
+    const { from } = trigger;
+    const to = trigger.to;
+    const tag = trigger.query;
+
+    const text = `#${tag} `;
+    const tr = view.state.tr;
+    tr.delete(from, to);
+    tr.insertText(text, from);
+    const tagMark = view.state.schema.marks.hashTag;
+    if (tagMark) {
+      tr.addMark(from, from + text.length - 1, tagMark.create({ tag }));
+    }
+    tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+    view.dispatch(tr.scrollIntoView());
+    destroy();
+    view.focus();
   }
 
   function selectItem(view: EditorView, index: number) {
@@ -208,9 +271,10 @@ function createSuggestionPlugin(
     }
 
     const coords = view.coordsAtPos(activeRange.from);
+    const container = view.dom.parentElement;
+    const cr = container?.getBoundingClientRect()
+      ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
     popupEl.style.position = 'fixed';
-    popupEl.style.left = `${coords.left}px`;
-    popupEl.style.top = `${coords.bottom + 4}px`;
     popupEl.style.zIndex = '10000';
 
     popupEl.innerHTML = items.map((item, i) => {
@@ -232,16 +296,35 @@ function createSuggestionPlugin(
       });
     });
 
-    requestAnimationFrame(() => {
-      if (!popupEl) return;
-      const rect = popupEl.getBoundingClientRect();
-      if (rect.bottom > window.innerHeight) {
-        popupEl.style.top = `${coords.top - rect.height - 4}px`;
-      }
-      if (rect.right > window.innerWidth) {
-        popupEl.style.left = `${window.innerWidth - rect.width - 8}px`;
-      }
-    });
+    const gap = 4;
+    const pad = 8;
+    const ph = popupEl.offsetHeight || 120;
+    const pw = popupEl.offsetWidth || 160;
+    const viewBottom = Math.min(cr.bottom, window.innerHeight);
+    const viewTop = Math.max(cr.top, 0);
+    const spaceBelow = viewBottom - coords.bottom;
+    const spaceAbove = coords.top - viewTop;
+
+    // Prefer above so the dropdown doesn't cover the text being typed below
+    let top: number;
+    if (spaceAbove >= ph + gap) {
+      top = coords.top - ph - gap;
+    } else if (spaceBelow >= ph + gap) {
+      top = coords.bottom + gap;
+    } else {
+      top = spaceAbove >= spaceBelow
+        ? coords.top - ph - gap
+        : coords.bottom + gap;
+    }
+    top = Math.max(viewTop + pad, Math.min(top, viewBottom - ph - pad));
+
+    let left = coords.left;
+    const maxLeft = Math.min(cr.right, window.innerWidth) - pw - pad;
+    if (left > maxLeft) left = maxLeft;
+    if (left < Math.max(cr.left, 0) + pad) left = Math.max(cr.left, 0) + pad;
+
+    popupEl.style.left = `${left}px`;
+    popupEl.style.top = `${top}px`;
   }
 
   async function fetchItems(query: string, view: EditorView) {
@@ -290,7 +373,25 @@ function createSuggestionPlugin(
 
     props: {
       handleKeyDown(view, event) {
-        if (!active || items.length === 0) return false;
+        if (!active) return false;
+
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          destroy();
+          return true;
+        }
+
+        // Auto-confirm typed tag on Enter/Space even when no suggestions
+        if (items.length === 0) {
+          if (event.key === 'Enter' || event.key === ' ') {
+            if (activeRange) {
+              event.preventDefault();
+              confirmTypedTag(view);
+            }
+            return true;
+          }
+          return false;
+        }
 
         if (event.key === 'ArrowDown') {
           event.preventDefault();
@@ -304,14 +405,19 @@ function createSuggestionPlugin(
           renderPopup(view);
           return true;
         }
-        if (event.key === 'Enter' || event.key === 'Tab') {
+        if (event.key === 'Tab') {
           event.preventDefault();
           selectItem(view, selectedIndex);
           return true;
         }
-        if (event.key === 'Escape') {
+        if (event.key === 'Enter') {
           event.preventDefault();
-          destroy();
+          selectItem(view, selectedIndex);
+          return true;
+        }
+        if (event.key === ' ') {
+          event.preventDefault();
+          confirmTypedTag(view);
           return true;
         }
         return false;

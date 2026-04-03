@@ -143,6 +143,12 @@ function splitParagraphAtInlineCode(para: Paragraph): RootContent[] | null {
     const child = children[j];
     if (child.type !== 'inlineCode') continue;
 
+    // Only treat as a misinterpreted fenced code block if the inline code
+    // contains newlines (multiline content). Simple inline code like `foo`
+    // should remain inline.
+    const ic = child as InlineCode;
+    if (!ic.value.includes('\n')) continue;
+
     const prevText = j > 0 && children[j - 1].type === 'text'
       ? (children[j - 1] as Text).value : '';
     if (prevText.endsWith('\n') || prevText.trimEnd() === '' || j === 0) {

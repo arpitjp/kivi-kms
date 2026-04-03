@@ -788,12 +788,20 @@ async function main() {
         tiptap.commands.focus();
         const resolvedPos = tiptap.state.doc.resolve(heading.pos + 1);
         tiptap.commands.setTextSelection(resolvedPos.pos);
-        const dom = tiptap.view.domAtPos(heading.pos + 1);
-        if (dom.node instanceof HTMLElement) {
-          dom.node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else if (dom.node.parentElement) {
-          dom.node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const domAtPos = tiptap.view.domAtPos(heading.pos + 1);
+        const scrollTarget = domAtPos.node instanceof HTMLElement
+          ? domAtPos.node
+          : domAtPos.node.parentElement;
+        if (scrollTarget) {
+          scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
+        requestAnimationFrame(() => {
+          const headingEl = tiptap.view.nodeDOM(heading.pos) as HTMLElement | null;
+          if (headingEl) {
+            headingEl.classList.add('kivi-heading-highlight');
+            setTimeout(() => headingEl.classList.remove('kivi-heading-highlight'), 1800);
+          }
+        });
       });
       outlineListEl.appendChild(item);
     }

@@ -5,8 +5,8 @@
 }
 
 body {
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
-  font-size: var(--kivi-font-size, var(--vscode-editor-font-size, 14px));
+  font-family: var(--vscode-editor-font-family, var(--vscode-font-family, monospace));
+  font-size: var(--vscode-editor-font-size, 14px);
   color: var(--kivi-text, var(--vscode-editor-foreground, #d4d4d4));
   background: var(--kivi-editor-bg, var(--vscode-editor-background, #1e1e1e));
   line-height: var(--kivi-line-height, 1.6);
@@ -30,6 +30,11 @@ body {
   min-height: 34px;
   overflow-x: auto;
 }
+#kivi-toolbar-format {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 
 .kivi-toolbar-brand {
   display: flex;
@@ -38,9 +43,20 @@ body {
   font-weight: 700;
   font-size: 12px;
   letter-spacing: 0.04em;
-  color: var(--vscode-textLink-foreground, #4fc1ff);
+  color: var(--vscode-foreground, #cccccc);
+  opacity: 0.75;
   margin-right: 2px;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  position: relative;
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.kivi-toolbar-brand:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.06));
 }
 
 .kivi-brand-icon {
@@ -52,6 +68,52 @@ body {
 
 .kivi-toolbar-brand img {
   border-radius: 3px;
+}
+
+.kivi-brand-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  background: var(--vscode-menu-background, #252526);
+  border: 1px solid var(--vscode-menu-border, #454545);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  padding: 4px 0;
+  z-index: 10001;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.kivi-brand-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  color: var(--vscode-menu-foreground, #d4d4d4);
+  cursor: default;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+.kivi-brand-menu-item:hover {
+  background: var(--vscode-menu-selectionBackground, #04395e);
+  color: var(--vscode-menu-selectionForeground, #fff);
+}
+.kivi-brand-menu-item svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.kivi-brand-menu-sep {
+  height: 1px;
+  background: var(--vscode-menu-separatorBackground, rgba(255,255,255,0.1));
+  margin: 4px 8px;
+}
+.kivi-brand-menu-hint {
+  padding: 4px 12px 6px;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #888);
+  cursor: default;
 }
 
 .kivi-toolbar-btn {
@@ -249,6 +311,10 @@ body {
 .kivi-vscode-editor {
   outline: none;
   min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  font-size: var(--kivi-font-size, var(--vscode-editor-font-size, 14px));
   caret-color: var(--vscode-editorCursor-foreground, #d4d4d4);
 }
 
@@ -308,6 +374,7 @@ body {
   white-space: pre-wrap;
   overflow-y: auto;
   tab-size: 2;
+  will-change: scroll-position;
 }
 
 #kivi-raw-editor:focus,
@@ -359,6 +426,8 @@ body {
   border: none;
   pointer-events: none;
   z-index: 0;
+  will-change: transform;
+  contain: layout style;
 }
 
 /* ---------- Markdown token colors ---------- */
@@ -384,10 +453,15 @@ body {
   text-decoration: line-through;
 }
 .md-inline-code {
-  color: var(--vscode-textPreformat-foreground, #9cdcfe);
+  color: var(--vscode-textPreformat-foreground, #e06c50);
   background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.06));
-  border-radius: 3px;
+  border-radius: 4px;
   padding: 1px 4px;
+}
+.vscode-light .md-inline-code,
+.vscode-high-contrast-light .md-inline-code {
+  color: var(--vscode-textPreformat-foreground, #c72e2e);
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.05));
 }
 .md-code-fence {
   color: var(--vscode-editorLineNumber-foreground, #858585);
@@ -434,6 +508,43 @@ body {
 }
 
 /* ---------- View Mode Toggle ---------- */
+
+.kivi-toolbar-zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.kivi-zoom-btn {
+  font-size: 13px !important;
+  font-weight: 600;
+  padding: 3px 6px !important;
+  min-width: 22px;
+  text-align: center;
+}
+.kivi-zoom-label {
+  font-size: 10px !important;
+  padding: 3px 4px !important;
+  min-width: 38px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground, #858585) !important;
+  cursor: pointer;
+}
+.kivi-zoom-label:hover {
+  color: var(--vscode-foreground, #ccc) !important;
+}
+.kivi-zoom-input {
+  width: 38px;
+  font-size: 10px;
+  padding: 2px 3px;
+  text-align: center;
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 3px;
+  background: var(--vscode-input-background, #1e1e1e);
+  color: var(--vscode-input-foreground, #d4d4d4);
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
 
 .kivi-toolbar-view-group {
   display: flex;
@@ -511,12 +622,23 @@ body {
   flex-direction: column;
   overflow: hidden;
   height: 100%;
+  min-width: 0;
 }
 
 .kivi-split-left #editor {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.kivi-split-left .kivi-vscode-editor {
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .kivi-split-divider {
@@ -556,11 +678,12 @@ body {
 
 /* Heading highlight (outline click) */
 @keyframes kivi-heading-flash {
-  0%   { background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 210, 50, 0.3)); }
+  0%   { background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 210, 50, 0.15)); }
+  70%  { background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 210, 50, 0.10)); }
   100% { background: transparent; }
 }
 .kivi-heading-highlight {
-  animation: kivi-heading-flash 2s ease-out;
+  animation: kivi-heading-flash 1.8s ease-out;
   border-radius: 3px;
 }
 
@@ -593,15 +716,24 @@ body {
   opacity: 0.85;
 }
 
-/* Inline code */
+/* Inline code — uses VS Code theme vars with robust fallbacks for dark/light */
 .kivi-vscode-editor code {
-  background: rgba(255, 255, 255, 0.06);
-  color: #e06c75;
-  caret-color: #e06c75;
-  padding: 1.5px 5px;
-  border-radius: 3px;
+  color: var(--vscode-textPreformat-foreground, #e06c50);
+  caret-color: var(--vscode-textPreformat-foreground, #e06c50);
+  background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.06));
+  padding: 2px 5px;
+  border-radius: 4px;
   font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
   font-size: 0.88em;
+  border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.vscode-light .kivi-vscode-editor code,
+.vscode-high-contrast-light .kivi-vscode-editor code {
+  color: var(--vscode-textPreformat-foreground, #c72e2e);
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.05));
+  border-color: var(--vscode-widget-border, rgba(0, 0, 0, 0.1));
 }
 
 /* Code blocks */
@@ -618,7 +750,7 @@ body {
   background: none;
   color: var(--vscode-editor-foreground, #d4d4d4);
   padding: 0;
-  font-size: 13px;
+  font-size: var(--kivi-code-font-size, 0.88em);
   line-height: 1.6;
   display: block;
   white-space: pre;
@@ -667,63 +799,98 @@ body {
 .kivi-vscode-editor pre .hljs-operator { color: #d4d4d4; }
 .kivi-vscode-editor pre .hljs-punctuation { color: #808080; }
 
-/* Code block controls */
+/* Code block floating controls */
 .kivi-codeblock-controls {
   position: absolute;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 2px 8px;
-  background: transparent;
-  z-index: 45;
-  pointer-events: none;
-  height: 24px;
-}
-.kivi-codeblock-lang {
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground, #888);
-  opacity: 0.5;
-  text-transform: lowercase;
-  letter-spacing: 0.03em;
-  cursor: pointer;
-  pointer-events: auto;
-  padding: 1px 6px;
-  border-radius: 3px;
-  transition: opacity 0.12s, background 0.12s;
-}
-.kivi-codeblock-lang:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.08);
-}
-.kivi-codeblock-lang-input {
-  font-size: 11px;
-  background: var(--vscode-input-background, #3c3c3c);
-  color: var(--vscode-input-foreground, #ccc);
-  border: 1px solid var(--vscode-focusBorder, #007fd4);
-  border-radius: 3px;
-  padding: 1px 6px;
-  outline: none;
-  width: 100px;
+  gap: 2px;
+  padding: 3px 4px;
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.92));
+  border: 1px solid var(--vscode-editorWidget-border, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 50;
   pointer-events: auto;
 }
 .kivi-codeblock-btn {
   background: none;
   border: none;
-  color: var(--vscode-descriptionForeground, #888);
+  color: var(--vscode-foreground, #ccc);
   cursor: pointer;
-  padding: 3px;
+  padding: 4px 6px;
   border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s, color 0.12s;
-  opacity: 0.4;
-  pointer-events: auto;
+  transition: background 0.1s, color 0.1s;
+  white-space: nowrap;
 }
 .kivi-codeblock-btn svg { display: block; }
-.kivi-codeblock-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); color: var(--vscode-foreground, #ccc); }
-.kivi-codeblock-btn.active { opacity: 1; color: var(--vscode-focusBorder, #007fd4); }
+.kivi-codeblock-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1)); }
+.kivi-codeblock-btn.active { background: rgba(0, 127, 212, 0.2); color: var(--vscode-textLink-foreground, #4fc1ff); }
+.kivi-cb-lang-btn {
+  font-size: 11px;
+  font-family: var(--vscode-font-family, system-ui);
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  min-width: 50px;
+  padding: 3px 8px;
+  color: var(--vscode-descriptionForeground, #999);
+}
+.kivi-cb-lang-btn:hover { color: var(--vscode-foreground, #ccc); }
+.kivi-cb-danger { color: var(--vscode-errorForeground, #f44747) !important; }
+.kivi-cb-danger:hover { background: rgba(244, 71, 71, 0.15); color: #f44747 !important; }
+.kivi-codeblock-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--vscode-editorWidget-border, rgba(255, 255, 255, 0.1));
+  flex-shrink: 0;
+}
+
+/* Language autocomplete dropdown */
+.kivi-cb-lang-dropdown {
+  position: fixed;
+  z-index: 10000;
+  min-width: 180px;
+  max-width: 240px;
+  background: var(--vscode-editorSuggestWidget-background, #252526);
+  border: 1px solid var(--vscode-editorSuggestWidget-border, #454545);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.kivi-cb-lang-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #ccc);
+  border: none;
+  border-bottom: 1px solid var(--vscode-editorSuggestWidget-border, #454545);
+  outline: none;
+  font-family: var(--vscode-font-family, system-ui);
+}
+.kivi-cb-lang-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.kivi-cb-lang-item {
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--vscode-foreground, #ccc);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.kivi-cb-lang-item:hover,
+.kivi-cb-lang-item.selected {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+  color: var(--vscode-list-hoverForeground, #fff);
+}
 
 .kivi-codeblock-expand {
   display: flex;
@@ -773,14 +940,15 @@ body {
 .kivi-tag-suggest {
   background: var(--vscode-editorSuggestWidget-background, #252526);
   border: 1px solid var(--vscode-editorSuggestWidget-border, #454545);
-  border-radius: 4px;
+  border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
   min-width: 160px;
   max-width: 320px;
   max-height: 240px;
   overflow-y: auto;
-  padding: 2px 0;
-  font-size: var(--kivi-font-size, 13px);
+  padding: 4px 0;
+  font-size: 13px;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
 }
 
 .kivi-tag-suggest-item {
@@ -798,7 +966,8 @@ body {
 }
 
 .kivi-tag-typing {
-  color: var(--vscode-symbolIcon-keywordForeground, #569cd6);
+  color: var(--kivi-tag-color, #4ec9b0);
+  opacity: 0.6;
 }
 
 .kivi-vscode-editor ul[data-type="taskList"] {
@@ -893,8 +1062,16 @@ body {
 
 .kivi-vscode-editor hr {
   border: none;
-  border-top: 1px solid var(--vscode-panel-border, #444);
-  margin: 1.2em 0;
+  height: 2px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--vscode-panel-border, #555) 15%,
+    var(--vscode-panel-border, #555) 85%,
+    transparent
+  );
+  margin: 1.8em 0;
+  opacity: 0.7;
 }
 
 .kivi-vscode-editor a {
@@ -904,10 +1081,17 @@ body {
 
 .kivi-vscode-editor a:hover { text-decoration: underline; }
 
-.kivi-vscode-editor img {
+.kivi-vscode-editor video,
+.kivi-vscode-editor .kivi-video {
   max-width: 100%;
   border-radius: 6px;
   margin: 0.5em 0;
+  display: block;
+  background: #000;
+}
+.kivi-vscode-editor video.ProseMirror-selectednode {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 2px;
 }
 
 .kivi-vscode-editor table {
@@ -1024,8 +1208,8 @@ body {
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-panel-border, #3c3c3c);
   border-radius: 6px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  z-index: 50;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  z-index: 9998;
 }
 .kivi-table-ctrl-btn {
   background: none;
@@ -1053,37 +1237,45 @@ body {
   margin: 0 3px;
 }
 
-/* ---------- Image Controls ---------- */
+/* ---------- Image Controls (compact toolbar) ---------- */
 .kivi-image-controls {
   position: fixed;
+  display: flex;
+  flex-direction: column;
+  background: rgba(30, 30, 30, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  z-index: 9998;
+  animation: kivi-img-ctrl-fade-in 0.12s ease-out;
+}
+@keyframes kivi-img-ctrl-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.kivi-img-ctrl-row {
   display: flex;
   align-items: center;
   gap: 1px;
   padding: 3px 4px;
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-panel-border, #3c3c3c);
-  border-radius: 6px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  z-index: 50;
-  transform: translateY(-100%) translateX(-50%);
 }
 .kivi-img-ctrl-btn {
   background: none;
   border: none;
-  color: var(--vscode-descriptionForeground, #858585);
+  color: var(--vscode-foreground, #ccc);
   cursor: pointer;
   padding: 5px;
   border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s, color 0.12s;
-}
-.kivi-img-ctrl-btn:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
-  color: var(--vscode-foreground, #d4d4d4);
+  transition: background 0.1s, color 0.1s;
 }
 .kivi-img-ctrl-btn svg { display: block; }
+.kivi-img-ctrl-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1)); }
+.kivi-img-ctrl-btn.active { background: rgba(0, 127, 212, 0.2); color: var(--vscode-textLink-foreground, #4fc1ff); }
 .kivi-img-ctrl-danger { color: var(--vscode-errorForeground, #f44747) !important; }
 .kivi-img-ctrl-danger:hover { background: rgba(244, 71, 71, 0.15); color: #f44747 !important; }
 .kivi-img-ctrl-sep {
@@ -1092,75 +1284,135 @@ body {
   background: var(--vscode-panel-border, #444);
   margin: 0 3px;
 }
-/* Size preset buttons inline in toolbar */
-.kivi-img-size-group { display: flex; gap: 1px; align-items: center; }
-.kivi-img-size-inline {
-  background: none; border: none;
+.kivi-img-ctrl-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+}
+.kivi-img-ctrl-edit-label {
+  font-size: 11px;
   color: var(--vscode-descriptionForeground, #858585);
-  cursor: pointer; padding: 2px 5px; border-radius: 3px;
-  font-size: 10px; font-weight: 600;
-  transition: background 0.1s, color 0.1s;
+  font-weight: 600;
+  user-select: none;
+  flex-shrink: 0;
 }
-.kivi-img-size-inline:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); color: var(--vscode-foreground, #d4d4d4); }
-.kivi-img-size-inline.active { color: var(--vscode-focusBorder, #007fd4); background: rgba(0, 127, 212, 0.1); }
-
-/* Detail panel (alt text, URL, size) */
-.kivi-img-detail-panel {
-  position: fixed; z-index: 51;
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-panel-border, #3c3c3c);
-  border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.4);
-  padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
-  min-width: 220px; max-width: 360px;
-}
-.kivi-img-detail-label {
-  font-size: 11px; color: var(--vscode-descriptionForeground, #858585);
-  font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-}
-.kivi-img-detail-input {
+.kivi-img-ctrl-edit-input {
   background: var(--vscode-input-background, #3c3c3c);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 4px; color: var(--vscode-input-foreground, #ccc);
-  padding: 4px 8px; font-size: 12px; font-family: inherit; outline: none; width: 100%;
+  border-radius: 3px;
+  color: var(--vscode-input-foreground, #ccc);
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  outline: none;
+  flex: 1;
+  min-width: 180px;
+  pointer-events: auto;
 }
-.kivi-img-detail-input:focus { border-color: var(--vscode-focusBorder, #007fd4); }
-.kivi-img-detail-apply {
-  background: var(--vscode-button-background, #007fd4);
-  color: var(--vscode-button-foreground, #fff);
-  border: none; border-radius: 4px; padding: 4px 12px;
-  font-size: 11px; font-weight: 600; cursor: pointer; align-self: flex-end;
+.kivi-img-ctrl-edit-input:focus {
+  border-color: var(--vscode-focusBorder, #007fd4);
 }
-.kivi-img-detail-apply:hover { opacity: 0.85; }
-.kivi-img-size-row { display: flex; gap: 4px; }
-.kivi-img-size-btn {
-  background: var(--vscode-input-background, #3c3c3c);
-  border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 4px; color: var(--vscode-descriptionForeground, #858585);
-  cursor: pointer; padding: 3px 10px; font-size: 11px; font-weight: 600;
-  transition: background 0.1s, color 0.1s;
-}
-.kivi-img-size-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); color: var(--vscode-foreground, #d4d4d4); }
-.kivi-img-size-btn.active { border-color: var(--vscode-focusBorder, #007fd4); color: var(--vscode-focusBorder, #007fd4); }
-.kivi-img-size-custom { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
-.kivi-img-size-custom .kivi-img-detail-input { width: 70px; }
-.kivi-img-size-x { color: var(--vscode-descriptionForeground, #858585); font-size: 12px; }
 
-/* Resize handles */
-.kivi-image-resize-handle {
-  width: 10px; height: 10px;
+/* Size presets bar */
+.kivi-img-size-presets {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+  pointer-events: auto;
+}
+.kivi-img-size-preset-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--vscode-descriptionForeground, #858585);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  flex: 1;
+  text-align: center;
+}
+.kivi-img-size-preset-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground, #d4d4d4);
+}
+.kivi-img-size-preset-btn.active {
+  background: rgba(0, 127, 212, 0.2);
+  color: var(--vscode-textLink-foreground, #4fc1ff);
+  border-color: rgba(0, 127, 212, 0.3);
+}
+
+/* Selection outline for active media */
+.kivi-media-outline {
+  position: fixed;
+  z-index: 9997;
+  pointer-events: none;
+  border: 2px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 4px;
+}
+
+/* 4 corner resize handles */
+.kivi-media-resize-handle {
+  width: 10px;
+  height: 10px;
   background: var(--vscode-focusBorder, #007fd4);
   border: 2px solid var(--vscode-editorWidget-background, #252526);
-  border-radius: 2px; position: absolute; z-index: 10;
+  border-radius: 50%;
+  position: fixed;
+  z-index: 9999;
+  pointer-events: auto;
 }
-.kivi-resize-se { right: -4px; bottom: -4px; cursor: se-resize; }
-.kivi-resize-sw { left: -4px; bottom: -4px; cursor: sw-resize; }
 
 .kivi-vscode-editor img {
   cursor: pointer;
+  max-width: 100%;
+  display: block;
+  margin: 0.5em 0;
+  border-radius: 6px;
 }
-.kivi-vscode-editor img.ProseMirror-selectednode {
-  outline: 2px solid var(--vscode-focusBorder, #007fd4);
-  outline-offset: 2px;
+.kivi-vscode-editor img[data-align="left"] {
+  margin-left: 0;
+  margin-right: auto;
+}
+.kivi-vscode-editor img[data-align="center"] {
+  margin-left: auto;
+  margin-right: auto;
+}
+.kivi-vscode-editor img[data-align="right"] {
+  margin-left: auto;
+  margin-right: 0;
+}
+.kivi-vscode-editor img.ProseMirror-selectednode,
+.kivi-vscode-editor video.ProseMirror-selectednode,
+.kivi-vscode-editor audio.ProseMirror-selectednode {
+  outline: none;
+}
+.kivi-vscode-editor video,
+.kivi-vscode-editor audio {
+  cursor: pointer;
+  max-width: 100%;
+  display: block;
+  margin: 0.5em 0;
+  border-radius: 6px;
+}
+.kivi-vscode-editor audio {
+  width: 100%;
+  max-width: 400px;
+}
+.kivi-vscode-editor img.kivi-img-broken {
+  min-width: 200px;
+  min-height: 60px;
+  border: 1px dashed var(--vscode-panel-border, #3c3c3c);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, #252526);
+  display: block;
+  position: relative;
 }
 
 /* ---------- Link Popup ---------- */
@@ -1173,9 +1425,10 @@ body {
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-panel-border, #3c3c3c);
   border-radius: 6px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  z-index: 50;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  z-index: 9999;
   max-width: 420px;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
 }
 .kivi-link-popup-url {
   font-size: 12px;
@@ -1224,9 +1477,9 @@ body {
 .kivi-slash-menu {
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-panel-border, #3c3c3c);
-  border-radius: 8px; padding: 4px 0; min-width: 220px;
+  border-radius: 6px; padding: 4px 0; min-width: 220px;
   max-height: 320px; overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); font-family: var(--vscode-font-family, sans-serif);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36); font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
 }
 .kivi-slash-category {
   padding: 6px 12px 2px; font-size: 10px; text-transform: uppercase;
@@ -1243,7 +1496,7 @@ body {
 /* ---------- Selection Toolbar ---------- */
 .kivi-selection-toolbar {
   position: fixed;
-  z-index: 55;
+  z-index: 9998;
   display: flex;
   align-items: center;
   gap: 1px;
@@ -1251,7 +1504,7 @@ body {
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-panel-border, #3c3c3c);
   border-radius: 6px;
-  box-shadow: 0 2px 16px rgba(0,0,0,0.5);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
   pointer-events: auto;
   animation: kivi-sel-fade-in 0.1s ease-out;
 }
@@ -1322,70 +1575,116 @@ body {
 
 .kivi-raw-gutter .gutter-line {
   position: relative;
-  border-right: 3px solid transparent;
-  padding-right: 5px;
+  padding-right: 8px;
 }
 
-.kivi-raw-gutter .gutter-line.gutter-added {
-  border-right-color: var(--vscode-editorGutter-addedBackground, #2ea043);
+/* VS Code-style: thin 3px colored bar on the RIGHT edge of the gutter */
+.kivi-raw-gutter .gutter-line.gutter-added::after,
+.kivi-raw-gutter .gutter-line.gutter-modified::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
 }
 
-.kivi-raw-gutter .gutter-line.gutter-modified {
-  border-right-color: var(--vscode-editorGutter-modifiedBackground, #1b81a8);
+.kivi-raw-gutter .gutter-line.gutter-added::after {
+  background: var(--vscode-editorGutter-addedBackground, #2ea043);
+}
+
+.kivi-raw-gutter .gutter-line.gutter-modified::after {
+  background: var(--vscode-editorGutter-modifiedBackground, #1b81a8);
+}
+
+/* VS Code-style: deleted indicator is a small red triangle/arrow pointing down at the border */
+.kivi-raw-gutter .gutter-line.gutter-deleted::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -4px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid var(--vscode-editorGutter-deletedBackground, #f85149);
+  z-index: 1;
 }
 
 .kivi-raw-gutter .gutter-line.gutter-added,
-.kivi-raw-gutter .gutter-line.gutter-modified {
+.kivi-raw-gutter .gutter-line.gutter-modified,
+.kivi-raw-gutter .gutter-line.gutter-deleted {
   cursor: pointer;
 }
 
 .kivi-raw-gutter .gutter-line.gutter-added:hover,
-.kivi-raw-gutter .gutter-line.gutter-modified:hover {
+.kivi-raw-gutter .gutter-line.gutter-modified:hover,
+.kivi-raw-gutter .gutter-line.gutter-deleted:hover {
   background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.04));
 }
 
-/* ---------- Diff Preview Popup ---------- */
+/* ---------- Diff Preview Popup (VS Code peekView style) ---------- */
 
 .kivi-diff-popup {
   position: absolute;
   left: 0;
   right: 0;
   z-index: 100;
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-editorWidget-border, #454545);
-  border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  background: var(--vscode-peekViewEditor-background, var(--vscode-editor-background, #1e1e1e));
+  border-top: 3px solid var(--vscode-peekView-border, #3794ff);
+  border-bottom: 3px solid var(--vscode-peekView-border, #3794ff);
   overflow: hidden;
-  max-height: 300px;
+  max-height: 340px;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 }
 
 .kivi-diff-toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px 6px;
-  background: var(--vscode-editorWidget-background, #252526);
-  border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+  gap: 0;
+  padding: 0 4px;
+  min-height: 28px;
+  background: var(--vscode-peekViewTitle-background, #1e1e1e);
+  border-bottom: none;
   flex-shrink: 0;
 }
 
 .kivi-diff-toolbar button {
   background: none;
   border: none;
-  color: var(--vscode-icon-foreground, #c5c5c5);
+  color: var(--vscode-peekViewTitleLabel-foreground, var(--vscode-icon-foreground, #e0e0e0));
   cursor: pointer;
-  padding: 3px 6px;
+  padding: 2px 4px;
   border-radius: 3px;
   font-size: 12px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
 }
 
 .kivi-diff-toolbar button:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.kivi-diff-toolbar button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.kivi-diff-toolbar button:disabled:hover {
+  background: none;
+}
+
+.kivi-diff-toolbar .kivi-diff-action-btn {
+  color: var(--vscode-peekViewTitleLabel-foreground, var(--vscode-icon-foreground, #e0e0e0));
+}
+.kivi-diff-toolbar .kivi-diff-action-btn:hover {
+  color: var(--vscode-foreground, #fff);
+  background: rgba(255,255,255,0.1);
 }
 
 .kivi-diff-toolbar .kivi-diff-spacer {
@@ -1393,46 +1692,76 @@ body {
 }
 
 .kivi-diff-toolbar .kivi-diff-label {
+  font-size: 12px;
+  color: var(--vscode-peekViewTitleLabel-foreground, #ffffff);
+  padding: 0 8px 0 4px;
+  font-weight: 600;
+}
+
+.kivi-diff-toolbar .kivi-diff-change-count {
   font-size: 11px;
-  color: var(--vscode-descriptionForeground, #858585);
+  color: var(--vscode-peekViewTitleDescription-foreground, var(--vscode-descriptionForeground, #888));
   padding: 0 4px;
+  font-family: var(--kivi-mono-font, monospace);
 }
 
 .kivi-diff-content {
   overflow: auto;
-  max-height: 250px;
+  max-height: 300px;
   font-family: var(--kivi-mono-font, var(--vscode-editor-font-family, monospace));
-  font-size: inherit;
-  line-height: inherit;
+  font-size: var(--kivi-font-size, var(--vscode-editor-font-size, 13px));
+  line-height: 1.4;
+  background: var(--vscode-peekViewEditor-background, var(--vscode-editor-background, #1e1e1e));
 }
 
 .kivi-diff-line {
-  padding: 0 12px 0 8px;
+  padding: 0 12px 0 0;
   white-space: pre;
-  min-height: 1.4em;
+  min-height: 20px;
+  line-height: 20px;
+  display: flex;
+}
+
+.kivi-diff-line-gutter {
+  width: 36px;
+  min-width: 36px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--vscode-editorLineNumber-foreground, #858585);
+  user-select: none;
+  flex-shrink: 0;
+  font-size: 0.9em;
+}
+
+.kivi-diff-line-sign {
+  width: 20px;
+  min-width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+  user-select: none;
+  font-weight: 600;
+}
+
+.kivi-diff-line-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .kivi-diff-line-removed {
-  background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.15));
+  background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.20));
   color: var(--vscode-editor-foreground, #d4d4d4);
 }
 
-.kivi-diff-line-removed::before {
-  content: '-';
-  display: inline-block;
-  width: 16px;
+.kivi-diff-line-removed .kivi-diff-line-sign {
   color: var(--vscode-editorGutter-deletedBackground, #f85149);
 }
 
 .kivi-diff-line-added {
-  background: var(--vscode-diffEditor-insertedLineBackground, rgba(0, 255, 0, 0.10));
+  background: var(--vscode-diffEditor-insertedLineBackground, rgba(0, 255, 0, 0.15));
   color: var(--vscode-editor-foreground, #d4d4d4);
 }
 
-.kivi-diff-line-added::before {
-  content: '+';
-  display: inline-block;
-  width: 16px;
+.kivi-diff-line-added .kivi-diff-line-sign {
   color: var(--vscode-editorGutter-addedBackground, #2ea043);
 }
 
@@ -1441,35 +1770,96 @@ body {
   opacity: 0.6;
 }
 
-.kivi-diff-line-context::before {
-  content: ' ';
-  display: inline-block;
-  width: 16px;
+/* ---------- Blame Info Footer ---------- */
+
+.kivi-diff-blame {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  background: var(--vscode-peekViewTitle-background, #1e1e1e);
+  border-top: 1px solid var(--vscode-peekView-border, rgba(55, 148, 255, 0.3));
+  min-height: 18px;
 }
 
-/* ---------- Context Menu ---------- */
+.kivi-diff-blame-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.kivi-diff-blame-entry + .kivi-diff-blame-entry {
+  border-top: 1px solid rgba(255,255,255,0.04);
+  margin-top: 2px;
+  padding-top: 4px;
+}
+
+.kivi-diff-blame-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.kivi-diff-blame-info {
+  font-size: 11px;
+  color: var(--vscode-foreground, #cccccc);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.kivi-diff-blame-info strong {
+  font-weight: 600;
+}
+
+.kivi-diff-blame-date {
+  color: var(--vscode-descriptionForeground, #888);
+  margin-left: 4px;
+}
+
+.kivi-diff-blame-msg {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--kivi-mono-font, monospace);
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- Context Menu (VS Code native style) ---------- */
 
 #kivi-context-menu {
   position: fixed;
   z-index: 10000;
-  min-width: 200px;
-  max-width: 280px;
-  background: var(--vscode-menu-background, #252526);
+  min-width: 160px;
+  background: var(--vscode-menu-background, #1f1f1f);
   border: 1px solid var(--vscode-menu-border, #454545);
   border-radius: 6px;
   padding: 4px 0;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  font-size: 13px;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
   color: var(--vscode-menu-foreground, #cccccc);
+  line-height: 1;
 }
 
 .kivi-ctx-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 12px;
-  cursor: pointer;
+  padding: 6px 24px 6px 10px;
+  cursor: default;
   white-space: nowrap;
+  border-radius: 0;
 }
 
 .kivi-ctx-item:hover {
@@ -1478,15 +1868,123 @@ body {
 }
 
 .kivi-ctx-shortcut {
-  margin-left: 24px;
-  opacity: 0.5;
-  font-size: 11px;
+  margin-left: 32px;
+  font-size: 13px;
+  color: var(--vscode-menu-foreground, #cccccc);
+  opacity: 0.6;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
+}
+
+.kivi-ctx-item:hover .kivi-ctx-shortcut {
+  color: var(--vscode-menu-selectionForeground, #ffffff);
+  opacity: 0.7;
 }
 
 .kivi-ctx-divider {
   height: 1px;
   background: var(--vscode-menu-separatorBackground, #454545);
-  margin: 4px 0;
+  margin: 4px 8px;
+}
+
+/* ---------- Excalidraw Block ---------- */
+
+.kivi-excalidraw-block {
+  margin: 1em 0;
+  padding: 12px 16px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--vscode-editorWidget-border, #2b2b2b);
+  border-radius: 8px;
+  cursor: pointer;
+  display: block;
+  max-width: 100%;
+  transition: border-color 0.15s;
+}
+
+.kivi-excalidraw-block:hover {
+  border-color: var(--vscode-focusBorder, #007acc);
+}
+
+.ProseMirror-selectednode.kivi-excalidraw-block {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007acc);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
+}
+
+.kivi-excalidraw-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.kivi-excalidraw-icon {
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+}
+
+.kivi-excalidraw-canvas {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.kivi-excalidraw-svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.kivi-excalidraw-error {
+  color: var(--vscode-errorForeground, #f48771);
+  font-size: 12px;
+  padding: 8px;
+}
+
+.kivi-excalidraw-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.kivi-excalidraw-btn {
+  background: none;
+  border: 1px solid var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #cccccc);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  transition: all 0.15s;
+}
+
+.kivi-excalidraw-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45484d);
+  border-color: var(--vscode-focusBorder, #007acc);
+  color: var(--vscode-foreground, #e0e0e0);
+}
+
+.kivi-excalidraw-btn-secondary {
+  opacity: 0.7;
+}
+.kivi-excalidraw-btn-secondary:hover {
+  opacity: 1;
+}
+
+.kivi-img-ctrl-label {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 /* ---------- Dragging state ---------- */

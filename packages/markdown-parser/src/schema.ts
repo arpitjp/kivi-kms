@@ -72,8 +72,16 @@ export function hardBreakNode(): PMNodeJSON {
   return { type: 'hardBreak' };
 }
 
-export function imageNode(src: string, alt?: string, title?: string): PMNodeJSON {
-  return { type: 'image', attrs: { src, alt: alt || null, title: title || null } };
+export function imageNode(
+  src: string,
+  alt?: string,
+  title?: string,
+  extra?: { width?: number | null; 'data-align'?: string | null },
+): PMNodeJSON {
+  const attrs: Record<string, unknown> = { src, alt: alt || null, title: title || null };
+  if (extra?.width) attrs.width = extra.width;
+  if (extra?.['data-align']) attrs['data-align'] = extra['data-align'];
+  return { type: 'image', attrs };
 }
 
 export function tableNode(rows: PMNodeJSON[]): PMNodeJSON {

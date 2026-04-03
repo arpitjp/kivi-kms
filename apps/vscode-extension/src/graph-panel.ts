@@ -364,11 +364,12 @@ export class GraphPanel {
     .gtt-tag { font-size: 10px; color: var(--vscode-textLink-foreground, #4fc1ff); opacity: 0.7; }
     .gtt-stats { padding: 6px 12px 0; font-size: 10px; color: var(--vscode-descriptionForeground, #888); }
     .gtt-relation { padding: 4px 12px 0; font-size: 10px; color: var(--vscode-descriptionForeground, #888); opacity: 0.7; font-style: italic; }
-    .gtt-outline-wrap { margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); max-height: 120px; overflow-y: auto; padding: 6px 0; }
+    .gtt-outline-wrap { margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); max-height: 200px; overflow-y: auto; padding: 6px 0; }
     .gtt-outline-wrap::-webkit-scrollbar { width: 3px; }
     .gtt-outline-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
-    .gtt-outline { padding: 0 12px; }
-    .gtt-heading { font-size: 10px; line-height: 1.7; color: var(--vscode-descriptionForeground, #999); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gtt-outline { padding: 0 8px; }
+    .gtt-heading { font-size: 10px; line-height: 1.7; color: var(--vscode-descriptionForeground, #999); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; border-radius: 3px; padding: 1px 4px; transition: background 0.1s, color 0.1s; }
+    .gtt-heading:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)); color: var(--vscode-foreground, #ccc); }
     .gtt-h-marker { color: var(--vscode-descriptionForeground, #666); opacity: 0.4; font-size: 9px; margin-right: 3px; }
     .gtt-stats:last-child, .gtt-relation:last-child, .gtt-tags:last-child, .gtt-title:last-child { padding-bottom: 10px; }
 

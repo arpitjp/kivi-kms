@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Vault } from '@kivi/vault';
 
-const FIXTURES = path.resolve(__dirname, '..', '..', 'test-fixtures');
+const FIXTURES = path.resolve(__dirname, '..', '..', '..', 'test-fixtures');
 function readFixture(name: string): string {
   return fs.readFileSync(path.join(FIXTURES, name), 'utf-8');
 }

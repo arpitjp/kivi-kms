@@ -1,6 +1,7 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { addDelayedTooltip } from '../tooltip.js';
 
 const linkPopupKey = new PluginKey('kiviLinkPopup');
 
@@ -92,14 +93,15 @@ export const LinkPopup = Extension.create({
             popup.setAttribute('aria-label', 'Link actions');
             popup.style.pointerEvents = 'none';
 
-            const urlSpan = document.createElement('a');
+            const urlSpan = document.createElement('span');
             urlSpan.className = 'kivi-link-popup-url';
-            urlSpan.href = href;
-            urlSpan.target = '_blank';
-            urlSpan.rel = 'noopener noreferrer';
             urlSpan.textContent = href.length > 40 ? href.slice(0, 37) + '...' : href;
             urlSpan.title = href;
             urlSpan.style.pointerEvents = 'auto';
+            urlSpan.style.cursor = 'pointer';
+            urlSpan.addEventListener('click', () => {
+              document.dispatchEvent(new CustomEvent('kivi-link-navigate', { detail: { href } }));
+            });
             popup.appendChild(urlSpan);
 
             const editBtn = document.createElement('button');
@@ -115,6 +117,7 @@ export const LinkPopup = Extension.create({
               }));
               removePopup();
             });
+            addDelayedTooltip(editBtn);
             popup.appendChild(editBtn);
 
             const unlinkBtn = document.createElement('button');
@@ -127,6 +130,7 @@ export const LinkPopup = Extension.create({
               editor.chain().focus().extendMarkRange('link').unsetLink().run();
               removePopup();
             });
+            addDelayedTooltip(unlinkBtn);
             popup.appendChild(unlinkBtn);
 
             const copyBtn = document.createElement('button');
@@ -140,6 +144,7 @@ export const LinkPopup = Extension.create({
               copyBtn.innerHTML = ICONS.check;
               setTimeout(() => { copyBtn.innerHTML = ICONS.copy; }, 1200);
             });
+            addDelayedTooltip(copyBtn);
             popup.appendChild(copyBtn);
 
             document.body.appendChild(popup);
@@ -155,16 +160,42 @@ export const LinkPopup = Extension.create({
             }
             popup.style.visibility = 'visible';
             const rect = linkEl.getBoundingClientRect();
-            popup.style.left = `${rect.left}px`;
-            popup.style.top = `${rect.bottom + 4}px`;
+            const container = editorViewRef.dom.parentElement;
+            const cr = container?.getBoundingClientRect()
+              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
 
-            const pr = popup.getBoundingClientRect();
-            let left = pr.left;
-            if (pr.right > window.innerWidth - 8) {
-              left = window.innerWidth - pr.width - 8;
+            const pw = popup.offsetWidth || 200;
+            const ph = popup.offsetHeight || 32;
+            const gap = 4;
+            const pad = 8;
+
+            const spaceBelow = Math.min(cr.bottom, window.innerHeight) - rect.bottom;
+            const spaceAbove = rect.top - Math.max(cr.top, 0);
+
+            let top: number;
+            if (spaceBelow >= ph + gap) {
+              top = rect.bottom + gap;
+            } else if (spaceAbove >= ph + gap) {
+              top = rect.top - ph - gap;
+            } else {
+              top = spaceBelow >= spaceAbove
+                ? rect.bottom + gap
+                : rect.top - ph - gap;
             }
-            if (left < 8) left = 8;
+            const maxTop = Math.min(cr.bottom, window.innerHeight) - ph - pad;
+            const minTop = Math.max(cr.top, 0) + pad;
+            top = Math.max(minTop, Math.min(top, maxTop));
+
+            let left = rect.left;
+            if (left + pw > Math.min(cr.right, window.innerWidth) - pad) {
+              left = Math.min(cr.right, window.innerWidth) - pw - pad;
+            }
+            if (left < Math.max(cr.left, 0) + pad) {
+              left = Math.max(cr.left, 0) + pad;
+            }
+
             popup.style.left = `${left}px`;
+            popup.style.top = `${top}px`;
           }
 
           return {

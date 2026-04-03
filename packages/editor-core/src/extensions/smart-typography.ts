@@ -114,6 +114,7 @@ function toggleMark(view: EditorView, markName: string): boolean {
   } else {
     tr.addMark(selection.from, selection.to, markType.create());
   }
+  tr.setMeta(SMART_TYPO_META, true);
   view.dispatch(tr);
   return true;
 }
@@ -126,6 +127,7 @@ function wrapSelection(view: EditorView, open: string, close: string): boolean {
   const tr = state.tr;
   tr.insertText(open + selectedText + close, from, to);
   tr.setSelection(TextSelection.create(tr.doc, from + open.length, from + open.length + selectedText.length));
+  tr.setMeta(SMART_TYPO_META, true);
   view.dispatch(tr);
   return true;
 }
@@ -607,16 +609,10 @@ function tryMarkdownLinkOnState(state: EditorState): Transaction | null {
   return tr;
 }
 
-// ── Bullet → Task conversion ──
+// ── Bullet/Paragraph → Task conversion ──
 // Detects `[ ] ` or `[x] ` typed at the start of a bullet list item
-// and converts the bullet list into a task list.
+// or a plain paragraph and converts to a task list checkbox.
 
-/**
- * Handles space typed after `[ ]` or `[x]` inside a bullet list item.
- * Converts the bullet list into a task list. Runs in handleTextInput
- * to intercept BEFORE TipTap's wrappingInputRule fires (which would
- * match the same pattern but fail inside a list item context).
- */
 function tryBulletToTaskOnInput(view: EditorView, from: number): boolean {
   const { state } = view;
   const { schema } = state;
@@ -625,11 +621,18 @@ function tryBulletToTaskOnInput(view: EditorView, from: number): boolean {
   if (paragraph.type.name !== 'paragraph') return false;
 
   const textBefore = paragraph.textContent.slice(0, $pos.parentOffset);
-  const match = /^\[([xX ])\]$/.exec(textBefore);
+  // Match `[ ]` or `[x]` at start of paragraph (inside bullet list)
+  // or `- [ ]` / `- [x]` at start of plain paragraph (will wrap in task list)
+  const match = /^(?:-\s)?\[([xX ])\]$/.exec(textBefore);
   if (!match) return false;
 
   const checked = match[1].toLowerCase() === 'x';
 
+  const taskListType = schema.nodes.taskList;
+  const taskItemType = schema.nodes.taskItem;
+  if (!taskListType || !taskItemType) return false;
+
+  // Case 1: Inside a bullet list item → convert bullet to task
   let listItemDepth = -1;
   for (let d = $pos.depth; d >= 1; d--) {
     if ($pos.node(d).type.name === 'listItem') {
@@ -637,28 +640,51 @@ function tryBulletToTaskOnInput(view: EditorView, from: number): boolean {
       break;
     }
   }
-  if (listItemDepth < 1) return false;
 
-  const bulletList = $pos.node(listItemDepth - 1);
-  if (bulletList.type.name !== 'bulletList') return false;
+  if (listItemDepth >= 1) {
+    const bulletList = $pos.node(listItemDepth - 1);
+    if (bulletList.type.name !== 'bulletList') return false;
 
-  const taskListType = schema.nodes.taskList;
-  const taskItemType = schema.nodes.taskItem;
-  if (!taskListType || !taskItemType) return false;
+    // Convert just this list item to a task item (works for any childCount)
+    const listItemNode = $pos.node(listItemDepth);
+    const listItemPos = $pos.before(listItemDepth);
+    const listItemEnd = listItemPos + listItemNode.nodeSize;
 
-  if (bulletList.childCount !== 1) return false;
+    // If this is the only item, replace the whole bullet list
+    if (bulletList.childCount === 1) {
+      const listPos = $pos.before(listItemDepth - 1);
+      const listEnd = listPos + bulletList.nodeSize;
+      const emptyParagraph = schema.nodes.paragraph.create();
+      const taskItem = taskItemType.create({ checked }, emptyParagraph);
+      const taskList = taskListType.create(null, taskItem);
+      const tr = state.tr;
+      tr.replaceWith(listPos, listEnd, taskList);
+      tr.setSelection(TextSelection.create(tr.doc, listPos + 3));
+      view.dispatch(tr.scrollIntoView());
+      return true;
+    }
 
-  const listPos = $pos.before(listItemDepth - 1);
-  const listEnd = listPos + bulletList.nodeSize;
+    // Multiple items: split this item out, convert it, insert task list after
+    const emptyParagraph = schema.nodes.paragraph.create();
+    const taskItem = taskItemType.create({ checked }, emptyParagraph);
+    const taskList = taskListType.create(null, taskItem);
+    const tr = state.tr;
+    tr.replaceWith(listItemPos, listItemEnd, taskList);
+    const newCursorPos = listItemPos + 3;
+    tr.setSelection(TextSelection.create(tr.doc, newCursorPos));
+    view.dispatch(tr.scrollIntoView());
+    return true;
+  }
 
+  // Case 2: Plain paragraph (not inside a list) → wrap in task list
+  const paragraphPos = $pos.before($pos.depth);
+  const paragraphEnd = paragraphPos + paragraph.nodeSize;
   const emptyParagraph = schema.nodes.paragraph.create();
   const taskItem = taskItemType.create({ checked }, emptyParagraph);
   const taskList = taskListType.create(null, taskItem);
-
   const tr = state.tr;
-  tr.replaceWith(listPos, listEnd, taskList);
-  tr.setSelection(TextSelection.create(tr.doc, listPos + 3));
-  tr.setMeta(SMART_TYPO_META, true);
+  tr.replaceWith(paragraphPos, paragraphEnd, taskList);
+  tr.setSelection(TextSelection.create(tr.doc, paragraphPos + 3));
   view.dispatch(tr.scrollIntoView());
   return true;
 }
@@ -691,11 +717,14 @@ function handleTextInput(view: EditorView, from: number, to: number, text: strin
 
   // ── Skip-close: if typing a closing bracket and it's right after cursor, skip ──
   if (CLOSE_TO_OPEN[text]) {
-    if (charAfterCursor(view) === text) {
-      // Before skipping `)`, check if this completes [text](url)
+    // Use `from` (the actual insert position) rather than selection.from
+    // to avoid stale-state issues when keystrokes arrive in rapid succession
+    const $from = state.doc.resolve(from);
+    const charAtFrom = $from.parent.textContent.charAt($from.parentOffset) || '';
+    if (charAtFrom === text) {
       if (text === ')' && tryMarkdownLink(view)) return true;
 
-      const tr = state.tr.setSelection(TextSelection.create(state.doc, selection.from + 1));
+      const tr = state.tr.setSelection(TextSelection.create(state.doc, from + 1));
       view.dispatch(tr.scrollIntoView());
       return true;
     }

@@ -1,6 +1,7 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import { addDelayedTooltip } from '../tooltip.js';
 
 const codeBlockEnhancedKey = new PluginKey('kiviCodeBlockEnhanced');
 
@@ -112,7 +113,7 @@ function updateHighlightDecorations(tr: any, oldDecorations: DecorationSet): Dec
   const changedRanges: { from: number; to: number }[] = [];
   for (let i = 0; i < tr.steps.length; i++) {
     const map = tr.mapping.maps[i];
-    map.forEach((oldFrom: number, oldTo: number, newFrom: number, newTo: number) => {
+    map.forEach((_oldFrom: number, _oldTo: number, newFrom: number, newTo: number) => {
       changedRanges.push({ from: newFrom, to: newTo });
     });
   }
@@ -155,8 +156,21 @@ const COLLAPSED_MAX_LINES = 15;
 
 const SVG_COPY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/></svg>';
 const SVG_CHECK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,8 6.5,11.5 13,4.5"/></svg>';
+const SVG_TRASH = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,4 13,4"/><path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1"/><path d="M4 4l.7 9.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L12 4"/></svg>';
+const SVG_WRAP = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12"/><path d="M2 7h9a2 2 0 0 1 0 4H9"/><polyline points="10,12 9,11 10,10"/><path d="M2 13h5"/></svg>';
 const SVG_EXPAND = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,6 8,10 12,6"/></svg>';
 const SVG_COLLAPSE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,10 8,6 12,10"/></svg>';
+
+const COMMON_LANGUAGES = [
+  'javascript', 'typescript', 'python', 'java', 'c', 'cpp', 'csharp',
+  'go', 'rust', 'ruby', 'php', 'swift', 'kotlin', 'scala',
+  'html', 'css', 'scss', 'json', 'yaml', 'toml', 'xml',
+  'sql', 'graphql', 'bash', 'shell', 'powershell',
+  'markdown', 'latex', 'dockerfile', 'makefile',
+  'lua', 'perl', 'r', 'matlab', 'julia',
+  'dart', 'elixir', 'erlang', 'haskell', 'ocaml',
+  'vim', 'diff', 'ini', 'nginx', 'plaintext',
+];
 
 /**
  * Adds syntax highlighting (lowlight), floating copy/wrap controls,
@@ -199,45 +213,200 @@ export const CodeBlockEnhanced = Extension.create({
 
     const controlsPlugin = new Plugin({
       view(editorView) {
-        const controls = document.createElement('div');
-        controls.className = 'kivi-codeblock-controls';
-        controls.style.display = 'none';
-        controls.style.pointerEvents = 'none';
+        const panel = document.createElement('div');
+        panel.className = 'kivi-codeblock-controls';
+        panel.style.display = 'none';
 
-        const langLabel = document.createElement('span');
-        langLabel.className = 'kivi-codeblock-lang';
-        controls.appendChild(langLabel);
+        // --- Language selector with autocomplete ---
+        const langBtn = document.createElement('button');
+        langBtn.className = 'kivi-codeblock-btn kivi-cb-lang-btn';
+        langBtn.type = 'button';
+        langBtn.title = 'Change language';
+        panel.appendChild(langBtn);
 
-        const spacer = document.createElement('span');
-        spacer.style.flex = '1';
-        controls.appendChild(spacer);
+        const langDropdown = document.createElement('div');
+        langDropdown.className = 'kivi-cb-lang-dropdown';
+        langDropdown.style.display = 'none';
 
+        const langInput = document.createElement('input');
+        langInput.type = 'text';
+        langInput.className = 'kivi-cb-lang-input';
+        langInput.placeholder = 'Filter language…';
+        langDropdown.appendChild(langInput);
+
+        const langList = document.createElement('div');
+        langList.className = 'kivi-cb-lang-list';
+        langDropdown.appendChild(langList);
+
+        // --- Separator ---
+        const sep1 = document.createElement('span');
+        sep1.className = 'kivi-codeblock-sep';
+        panel.appendChild(sep1);
+
+        // --- Word wrap toggle ---
+        const wrapBtn = document.createElement('button');
+        wrapBtn.className = 'kivi-codeblock-btn';
+        wrapBtn.type = 'button';
+        wrapBtn.title = 'Toggle word wrap';
+        wrapBtn.innerHTML = SVG_WRAP;
+        addDelayedTooltip(wrapBtn);
+        panel.appendChild(wrapBtn);
+
+        // --- Copy button ---
         const copyBtn = document.createElement('button');
         copyBtn.className = 'kivi-codeblock-btn';
         copyBtn.type = 'button';
         copyBtn.title = 'Copy code';
         copyBtn.innerHTML = SVG_COPY;
-        copyBtn.setAttribute('aria-label', 'Copy code');
-        controls.appendChild(copyBtn);
+        addDelayedTooltip(copyBtn);
+        panel.appendChild(copyBtn);
+
+        // --- Separator ---
+        const sep2 = document.createElement('span');
+        sep2.className = 'kivi-codeblock-sep';
+        panel.appendChild(sep2);
+
+        // --- Delete button ---
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'kivi-codeblock-btn kivi-cb-danger';
+        deleteBtn.type = 'button';
+        deleteBtn.title = 'Delete code block';
+        deleteBtn.innerHTML = SVG_TRASH;
+        addDelayedTooltip(deleteBtn);
+        panel.appendChild(deleteBtn);
 
         const scrollParent = editorView.dom.parentElement || editorView.dom;
         if (getComputedStyle(scrollParent).position === 'static') {
           scrollParent.style.position = 'relative';
         }
-        scrollParent.appendChild(controls);
+        scrollParent.appendChild(panel);
+        document.body.appendChild(langDropdown);
 
         let hoveredPre: HTMLElement | null = null;
         let cursorPre: HTMLElement | null = null;
         let activePre: HTMLElement | null = null;
-        let hoveringControls = false;
-        let editingLang = false;
+        let hoveringPanel = false;
+        let langDropdownOpen = false;
+        let langSelectedIdx = -1;
         const collapsedBlocks = new WeakSet<HTMLElement>();
+        const wrappedBlocks = new WeakSet<HTMLElement>();
 
-        copyBtn.addEventListener('mousedown', (e) => {
+        function preventPM(e: MouseEvent) { e.preventDefault(); e.stopPropagation(); }
+        for (const btn of [langBtn, copyBtn, wrapBtn, deleteBtn]) {
+          btn.addEventListener('mousedown', preventPM);
+        }
+
+        // --- Language dropdown logic ---
+        function getCodeBlockPos(preEl: HTMLElement): { nodePos: number; node: any } | null {
+          const pos = editorView.posAtDOM(preEl, 0);
+          if (pos < 0) return null;
+          const resolved = editorView.state.doc.resolve(pos);
+          for (let d = resolved.depth; d >= 0; d--) {
+            const node = resolved.node(d);
+            if (node.type.name === 'codeBlock') {
+              return { nodePos: resolved.before(d), node };
+            }
+          }
+          return null;
+        }
+
+        function setLanguage(newLang: string) {
+          if (!activePre) return;
+          const info = getCodeBlockPos(activePre);
+          if (!info) return;
+          editorView.dispatch(
+            editorView.state.tr.setNodeMarkup(info.nodePos, undefined, {
+              ...info.node.attrs,
+              language: newLang,
+            }),
+          );
+          langBtn.textContent = newLang || 'plain text';
+          closeLangDropdown();
+        }
+
+        function renderLangList(filter: string) {
+          langList.innerHTML = '';
+          const q = filter.toLowerCase();
+          const filtered = q ? COMMON_LANGUAGES.filter(l => l.includes(q)) : COMMON_LANGUAGES;
+          langSelectedIdx = -1;
+          for (const lang of filtered) {
+            const item = document.createElement('div');
+            item.className = 'kivi-cb-lang-item';
+            item.textContent = lang;
+            item.addEventListener('mousedown', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setLanguage(lang);
+            });
+            langList.appendChild(item);
+          }
+        }
+
+        function positionLangDropdown() {
+          const btnRect = langBtn.getBoundingClientRect();
+          langDropdown.style.left = `${btnRect.left}px`;
+          langDropdown.style.top = `${btnRect.bottom + 4}px`;
+        }
+
+        function openLangDropdown() {
+          if (langDropdownOpen) return;
+          langDropdownOpen = true;
+          const currentLang = langBtn.textContent === 'plain text' ? '' : langBtn.textContent || '';
+          langInput.value = currentLang;
+          renderLangList(currentLang);
+          langDropdown.style.display = 'block';
+          positionLangDropdown();
+          langInput.focus();
+          langInput.select();
+        }
+
+        function closeLangDropdown() {
+          langDropdownOpen = false;
+          langDropdown.style.display = 'none';
+          langSelectedIdx = -1;
+        }
+
+        langBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
+          if (langDropdownOpen) closeLangDropdown();
+          else openLangDropdown();
         });
 
+        langInput.addEventListener('input', () => {
+          renderLangList(langInput.value);
+        });
+
+        langInput.addEventListener('keydown', (ev) => {
+          const items = langList.querySelectorAll<HTMLElement>('.kivi-cb-lang-item');
+          if (ev.key === 'ArrowDown') {
+            ev.preventDefault();
+            langSelectedIdx = Math.min(langSelectedIdx + 1, items.length - 1);
+            items.forEach((el, i) => el.classList.toggle('selected', i === langSelectedIdx));
+            items[langSelectedIdx]?.scrollIntoView({ block: 'nearest' });
+          } else if (ev.key === 'ArrowUp') {
+            ev.preventDefault();
+            langSelectedIdx = Math.max(langSelectedIdx - 1, 0);
+            items.forEach((el, i) => el.classList.toggle('selected', i === langSelectedIdx));
+            items[langSelectedIdx]?.scrollIntoView({ block: 'nearest' });
+          } else if (ev.key === 'Enter') {
+            ev.preventDefault();
+            if (langSelectedIdx >= 0 && items[langSelectedIdx]) {
+              setLanguage(items[langSelectedIdx].textContent || '');
+            } else {
+              setLanguage(langInput.value.trim().toLowerCase());
+            }
+          } else if (ev.key === 'Escape') {
+            ev.preventDefault();
+            closeLangDropdown();
+          }
+        });
+
+        langInput.addEventListener('blur', () => {
+          setTimeout(() => { if (langDropdownOpen) closeLangDropdown(); }, 150);
+        });
+
+        // --- Copy ---
         copyBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -245,90 +414,50 @@ export const CodeBlockEnhanced = Extension.create({
           const code = activePre.querySelector('code')?.textContent || activePre.textContent || '';
           navigator.clipboard.writeText(code).then(() => {
             copyBtn.innerHTML = SVG_CHECK;
-            setTimeout(() => {
-              copyBtn.innerHTML = SVG_COPY;
-            }, 1500);
+            setTimeout(() => { copyBtn.innerHTML = SVG_COPY; }, 1500);
           });
         });
 
-        function startLangEdit() {
-          if (editingLang || !activePre) return;
-          editingLang = true;
-          const currentLang = langLabel.textContent === 'plain text' ? '' : langLabel.textContent || '';
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.className = 'kivi-codeblock-lang-input';
-          input.value = currentLang;
-          input.placeholder = 'language';
-          langLabel.style.display = 'none';
-          controls.insertBefore(input, langLabel.nextSibling);
-          input.focus();
-          input.select();
-
-          let committed = false;
-          function commit() {
-            if (committed) return;
-            committed = true;
-            const newLang = input.value.trim().toLowerCase();
-            input.remove();
-            langLabel.style.display = '';
-            editingLang = false;
-
-            if (!activePre) return;
-            const pos = editorView.posAtDOM(activePre, 0);
-            if (pos >= 0) {
-              const resolved = editorView.state.doc.resolve(pos);
-              for (let d = resolved.depth; d >= 0; d--) {
-                const node = resolved.node(d);
-                if (node.type.name === 'codeBlock') {
-                  const nodePos = resolved.before(d);
-                  editorView.dispatch(
-                    editorView.state.tr.setNodeMarkup(nodePos, undefined, {
-                      ...node.attrs,
-                      language: newLang,
-                    }),
-                  );
-                  langLabel.textContent = newLang || 'plain text';
-                  break;
-                }
-              }
-            }
-          }
-
-          function cancel() {
-            if (committed) return;
-            committed = true;
-            input.remove();
-            langLabel.style.display = '';
-            editingLang = false;
-          }
-
-          input.addEventListener('keydown', (ev) => {
-            if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
-            if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
-          });
-          input.addEventListener('blur', commit);
-        }
-
-        langLabel.addEventListener('click', (e) => {
+        // --- Word wrap toggle ---
+        wrapBtn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          startLangEdit();
+          if (!activePre) return;
+          const codeEl = activePre.querySelector('code') as HTMLElement | null;
+          if (!codeEl) return;
+          if (wrappedBlocks.has(activePre)) {
+            wrappedBlocks.delete(activePre);
+            codeEl.style.whiteSpace = 'pre';
+            codeEl.style.wordBreak = '';
+            wrapBtn.classList.remove('active');
+          } else {
+            wrappedBlocks.add(activePre);
+            codeEl.style.whiteSpace = 'pre-wrap';
+            codeEl.style.wordBreak = 'break-all';
+            wrapBtn.classList.add('active');
+          }
         });
 
-        function onControlsPointerEnter() {
-          hoveringControls = true;
-        }
-        function onControlsPointerLeave(e: MouseEvent) {
+        // --- Delete ---
+        deleteBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!activePre) return;
+          const info = getCodeBlockPos(activePre);
+          if (!info) return;
+          const { nodePos, node } = info;
+          editorView.dispatch(editorView.state.tr.delete(nodePos, nodePos + node.nodeSize));
+          hideControls();
+        });
+
+        // --- Panel hover tracking ---
+        panel.addEventListener('mouseenter', () => { hoveringPanel = true; });
+        panel.addEventListener('mouseleave', (e) => {
           const related = e.relatedTarget as Node | null;
-          if (related && controls.contains(related)) return;
-          hoveringControls = false;
-          if (!editingLang) reconcile();
-        }
-        for (const el of [langLabel, copyBtn]) {
-          el.addEventListener('mouseenter', onControlsPointerEnter);
-          el.addEventListener('mouseleave', onControlsPointerLeave);
-        }
+          if (related && (panel.contains(related) || langDropdown.contains(related))) return;
+          hoveringPanel = false;
+          if (!langDropdownOpen) reconcile();
+        });
 
         function toContentCoords(viewportRect: DOMRect) {
           const pr = scrollParent.getBoundingClientRect();
@@ -341,50 +470,57 @@ export const CodeBlockEnhanced = Extension.create({
         function repositionControls() {
           if (!activePre) return;
           const preRect = activePre.getBoundingClientRect();
+          const containerRect = scrollParent.getBoundingClientRect();
           const pos = toContentCoords(preRect);
-          controls.style.display = 'flex';
-          controls.style.left = `${pos.left}px`;
-          controls.style.top = `${pos.top}px`;
-          controls.style.width = `${preRect.width}px`;
+
+          panel.style.display = 'flex';
+          const panelW = panel.offsetWidth || 260;
+          const centerX = pos.left + (preRect.width - panelW) / 2;
+          panel.style.left = `${Math.max(pos.left + 4, centerX)}px`;
+
+          const aboveTop = pos.top - 36;
+          const visiblePreTop = Math.max(preRect.top, containerRect.top);
+          const insideTop = toContentCoords({ top: visiblePreTop + 4 } as DOMRect).top;
+
+          if (aboveTop > scrollParent.scrollTop) {
+            panel.style.top = `${aboveTop}px`;
+          } else {
+            panel.style.top = `${insideTop}px`;
+          }
+
+          if (langDropdownOpen) positionLangDropdown();
         }
 
         function showControls(preEl: HTMLElement) {
           activePre = preEl;
 
           let lang = '';
-          const pos = editorView.posAtDOM(preEl, 0);
-          if (pos >= 0) {
-            const resolved = editorView.state.doc.resolve(pos);
-            for (let d = resolved.depth; d >= 0; d--) {
-              const node = resolved.node(d);
-              if (node.type.name === 'codeBlock') {
-                lang = node.attrs.language || '';
-                break;
-              }
-            }
-          }
+          const info = getCodeBlockPos(preEl);
+          if (info) lang = info.node.attrs.language || '';
           if (!lang) {
             lang =
               preEl.getAttribute('data-language') ||
               preEl.querySelector('code')?.className?.match(/language-(\S+)/)?.[1] ||
               '';
           }
-          langLabel.textContent = lang || 'plain text';
+          langBtn.textContent = lang || 'plain text';
 
+          wrapBtn.classList.toggle('active', wrappedBlocks.has(preEl));
           repositionControls();
         }
 
         function hideControls() {
-          controls.style.display = 'none';
+          panel.style.display = 'none';
           activePre = null;
+          closeLangDropdown();
         }
 
         function reconcile() {
-          if (editingLang) return;
+          if (langDropdownOpen) return;
           const target = hoveredPre || cursorPre;
           if (target) {
             showControls(target);
-          } else if (!hoveringControls) {
+          } else if (!hoveringPanel) {
             hideControls();
           }
         }
@@ -398,7 +534,7 @@ export const CodeBlockEnhanced = Extension.create({
         }
         function onMouseOut(e: MouseEvent) {
           const related = e.relatedTarget as HTMLElement | null;
-          if (!related || (!related.closest?.('pre') && !controls.contains(related))) {
+          if (!related || (!related.closest?.('pre') && !panel.contains(related))) {
             hoveredPre = null;
             reconcile();
           }
@@ -519,11 +655,8 @@ export const CodeBlockEnhanced = Extension.create({
           destroy() {
             editorView.dom.removeEventListener('mouseover', onMouseOver);
             editorView.dom.removeEventListener('mouseout', onMouseOut);
-            for (const el of [langLabel, copyBtn]) {
-              el.removeEventListener('mouseenter', onControlsPointerEnter);
-              el.removeEventListener('mouseleave', onControlsPointerLeave);
-            }
-            controls.remove();
+            panel.remove();
+            langDropdown.remove();
             collapseContainer.remove();
           },
         };

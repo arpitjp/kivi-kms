@@ -333,4 +333,59 @@ describe('mermaid and excalidraw fenced blocks', () => {
     expect(doc.content[0].type).toBe('excalidrawBlock');
     expect(doc.content[0].attrs?.data).toContain('foo');
   });
+
+  // ── HTML <img> tag parsing ──
+
+  it('parses standard markdown image as block node', () => {
+    const md = '![Alt text](photo.png)';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; attrs?: Record<string, unknown> }[] };
+    const img = doc.content[0];
+    expect(img.type).toBe('image');
+    expect(img.attrs?.src).toBe('photo.png');
+    expect(img.attrs?.alt).toBe('Alt text');
+  });
+
+  it('parses <img> HTML tag with width', () => {
+    const md = '<img src="photo.png" alt="A photo" width="300" />';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; attrs?: Record<string, unknown> }[] };
+    const img = doc.content[0];
+    expect(img.type).toBe('image');
+    expect(img.attrs?.src).toBe('photo.png');
+    expect(img.attrs?.alt).toBe('A photo');
+    expect(img.attrs?.width).toBe(300);
+  });
+
+  it('parses <img> HTML tag with data-align', () => {
+    const md = '<img src="photo.png" data-align="center" />';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; attrs?: Record<string, unknown> }[] };
+    const img = doc.content[0];
+    expect(img.type).toBe('image');
+    expect(img.attrs?.src).toBe('photo.png');
+    expect(img.attrs?.['data-align']).toBe('center');
+  });
+
+  it('parses <img> HTML tag with width and data-align', () => {
+    const md = '<img src="img.jpg" alt="Pic" width="200" data-align="right" />';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; attrs?: Record<string, unknown> }[] };
+    const img = doc.content[0];
+    expect(img.type).toBe('image');
+    expect(img.attrs?.src).toBe('img.jpg');
+    expect(img.attrs?.alt).toBe('Pic');
+    expect(img.attrs?.width).toBe(200);
+    expect(img.attrs?.['data-align']).toBe('right');
+  });
+
+  it('parses <img> tag without self-closing slash', () => {
+    const md = '<img src="test.png" width="100">';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; attrs?: Record<string, unknown> }[] };
+    const img = doc.content[0];
+    expect(img.type).toBe('image');
+    expect(img.attrs?.src).toBe('test.png');
+    expect(img.attrs?.width).toBe(100);
+  });
 });

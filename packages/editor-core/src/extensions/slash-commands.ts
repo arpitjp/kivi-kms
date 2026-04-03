@@ -11,32 +11,54 @@ export interface SlashCommandItem {
   action: (editor: Editor) => void;
 }
 
-const defaultItems: SlashCommandItem[] = [
-  { id: 'h1', label: 'Heading 1', aliases: ['h1', '#'], icon: 'H1', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
-  { id: 'h2', label: 'Heading 2', aliases: ['h2', '##'], icon: 'H2', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
-  { id: 'h3', label: 'Heading 3', aliases: ['h3', '###'], icon: 'H3', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
-  { id: 'bullet', label: 'Bullet List', aliases: ['ul', 'bullet'], icon: '•', category: 'Basic', action: (e) => e.chain().focus().toggleBulletList().run() },
-  { id: 'ordered', label: 'Numbered List', aliases: ['ol', 'num'], icon: '1.', category: 'Basic', action: (e) => e.chain().focus().toggleOrderedList().run() },
-  { id: 'task', label: 'Task List', aliases: ['todo', 'task', 'check'], icon: '☑', category: 'Basic', action: (e) => e.chain().focus().toggleTaskList().run() },
-  { id: 'quote', label: 'Blockquote', aliases: ['quote', 'bq'], icon: '❝', category: 'Basic', action: (e) => e.chain().focus().toggleBlockquote().run() },
-  { id: 'code', label: 'Code Block', aliases: ['code', 'cb'], icon: '{ }', category: 'Basic', action: (e) => e.chain().focus().toggleCodeBlock().run() },
-  { id: 'hr', label: 'Horizontal Rule', aliases: ['hr', 'divider', '---'], icon: '—', category: 'Basic', action: (e) => e.chain().focus().setHorizontalRule().run() },
-  { id: 'table', label: 'Table', aliases: ['table'], icon: '⊞', category: 'Advanced', action: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3 }).run() },
-  { id: 'math', label: 'Math Block', aliases: ['math', 'latex', 'equation'], icon: '∑', category: 'Advanced', action: (e) => e.chain().focus().insertContent({ type: 'mathBlock', content: [{ type: 'text', text: 'E = mc^2' }] }).run() },
-  { id: 'image', label: 'Image', aliases: ['img', 'image', 'pic'], icon: '🖼', category: 'Insert', action: (e) => {
-    const url = window.prompt('Image URL:');
-    if (url) e.chain().focus().setImage({ src: url }).run();
-  }},
-  { id: 'video', label: 'Video', aliases: ['video', 'vid'], icon: '▶', category: 'Insert', action: (e) => {
-    const url = window.prompt('Video URL or path:');
-    if (url) e.chain().focus().insertContent(`<video src="${url}" controls style="max-width:100%"></video>`).run();
-  }},
-  { id: 'toc', label: 'Table of Contents', aliases: ['toc', 'contents'], icon: '☰', category: 'Insert', action: (e) => e.chain().focus().insertContent({ type: 'tocBlock' }).run() },
-];
+function buildDefaultItems(promptInput?: (msg: string, placeholder?: string) => Promise<string | null>): SlashCommandItem[] {
+  return [
+    { id: 'h1', label: 'Heading 1', aliases: ['h1', '#'], icon: 'H1', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
+    { id: 'h2', label: 'Heading 2', aliases: ['h2', '##'], icon: 'H2', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
+    { id: 'h3', label: 'Heading 3', aliases: ['h3', '###'], icon: 'H3', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
+    { id: 'bullet', label: 'Bullet List', aliases: ['ul', 'bullet'], icon: '•', category: 'Basic', action: (e) => e.chain().focus().toggleBulletList().run() },
+    { id: 'ordered', label: 'Numbered List', aliases: ['ol', 'num'], icon: '1.', category: 'Basic', action: (e) => e.chain().focus().toggleOrderedList().run() },
+    { id: 'task', label: 'Task List', aliases: ['todo', 'task', 'check'], icon: '☑', category: 'Basic', action: (e) => e.chain().focus().toggleTaskList().run() },
+    { id: 'quote', label: 'Blockquote', aliases: ['quote', 'bq'], icon: '❝', category: 'Basic', action: (e) => e.chain().focus().toggleBlockquote().run() },
+    { id: 'code', label: 'Code Block', aliases: ['code', 'cb'], icon: '{ }', category: 'Basic', action: (e) => e.chain().focus().toggleCodeBlock().run() },
+    { id: 'hr', label: 'Horizontal Rule', aliases: ['hr', 'divider', '---'], icon: '—', category: 'Basic', action: (e) => e.chain().focus().setHorizontalRule().run() },
+    { id: 'table', label: 'Table', aliases: ['table'], icon: '⊞', category: 'Advanced', action: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3 }).run() },
+    { id: 'math', label: 'Math Block', aliases: ['math', 'latex', 'equation'], icon: '∑', category: 'Advanced', action: (e) => e.chain().focus().insertContent({ type: 'mathBlock', content: [{ type: 'text', text: 'E = mc^2' }] }).run() },
+    { id: 'image', label: 'Image', aliases: ['img', 'image', 'pic'], icon: '🖼', category: 'Insert', action: (e) => {
+      if (promptInput) {
+        promptInput('Image URL:', 'https://...').then(url => { if (url) e.chain().focus().setImage({ src: url }).run(); });
+      } else {
+        const url = window.prompt('Image URL:');
+        if (url) e.chain().focus().setImage({ src: url }).run();
+      }
+    }},
+    { id: 'video', label: 'Video', aliases: ['video', 'vid'], icon: '▶', category: 'Insert', action: (e) => {
+      if (promptInput) {
+        promptInput('Video URL or path:', 'https://...').then(url => { if (url) e.chain().focus().insertContent(`<video src="${url}" controls style="max-width:100%"></video>`).run(); });
+      } else {
+        const url = window.prompt('Video URL or path:');
+        if (url) e.chain().focus().insertContent(`<video src="${url}" controls style="max-width:100%"></video>`).run();
+      }
+    }},
+    { id: 'excalidraw', label: 'Excalidraw', aliases: ['excalidraw', 'draw', 'diagram', 'sketch'], icon: '✎', category: 'Insert', action: (e) => {
+      if (promptInput) {
+        promptInput('Excalidraw file path (leave empty for inline):', './assets/drawing.excalidraw').then(path => {
+          if (path) e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src: path, data: '{}' } }).run();
+          else e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { data: '{}' } }).run();
+        });
+      } else {
+        e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { data: '{}' } }).run();
+      }
+    }},
+    { id: 'toc', label: 'Table of Contents', aliases: ['toc', 'contents'], icon: '☰', category: 'Insert', action: (e) => e.chain().focus().insertContent({ type: 'tocBlock' }).run() },
+  ];
+}
 
 export interface SlashCommandsOptions {
   items?: SlashCommandItem[];
   onCreatePage?: () => void;
+  /** Async input prompt — use instead of window.prompt() for sandboxed envs. */
+  promptInput?: (message: string, placeholder?: string) => Promise<string | null>;
 }
 
 const slashPluginKey = new PluginKey('slashCommands');
@@ -50,7 +72,7 @@ export const SlashCommands = Extension.create<SlashCommandsOptions>({
 
   addProseMirrorPlugins() {
     const opts = this.options;
-    const baseItems = opts.items ?? defaultItems;
+    const baseItems = opts.items ?? buildDefaultItems(opts.promptInput);
 
     const items: SlashCommandItem[] = [...baseItems];
     if (opts.onCreatePage) {
@@ -115,21 +137,52 @@ function showSlashMenu(
   menu.setAttribute('role', 'listbox');
   menu.setAttribute('aria-label', 'Slash commands');
   menu.style.position = 'fixed';
-  menu.style.left = `${coords.left}px`;
-  menu.style.top = `${coords.bottom + 4}px`;
   menu.style.zIndex = '9999';
 
   let selectedIndex = 0;
   let filteredItems = [...items];
   let filterText = '';
 
+  function positionSlashMenu(c: { left: number; top: number; bottom: number }) {
+    const container = view.dom.parentElement;
+    const cr = container?.getBoundingClientRect()
+      ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+    const gap = 4;
+    const pad = 8;
+    const mh = menu.offsetHeight || 200;
+    const mw = menu.offsetWidth || 240;
+    const viewBottom = Math.min(cr.bottom, window.innerHeight);
+    const viewTop = Math.max(cr.top, 0);
+    const spaceBelow = viewBottom - c.bottom;
+    const spaceAbove = c.top - viewTop;
+
+    let top: number;
+    if (spaceBelow >= mh + gap) {
+      top = c.bottom + gap;
+    } else if (spaceAbove >= mh + gap) {
+      top = c.top - mh - gap;
+    } else {
+      top = spaceBelow >= spaceAbove ? c.bottom + gap : c.top - mh - gap;
+    }
+    top = Math.max(viewTop + pad, Math.min(top, viewBottom - mh - pad));
+
+    let left = c.left;
+    const maxLeft = Math.min(cr.right, window.innerWidth) - mw - pad;
+    if (left > maxLeft) left = maxLeft;
+    if (left < Math.max(cr.left, 0) + pad) left = Math.max(cr.left, 0) + pad;
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  positionSlashMenu(coords);
+
   function reposition() {
     if (menuId !== activeSlashMenuId) return;
     try {
       const { from: curFrom } = view.state.selection;
       const c = view.coordsAtPos(curFrom);
-      menu.style.left = `${c.left}px`;
-      menu.style.top = `${c.bottom + 4}px`;
+      positionSlashMenu(c);
     } catch {
       // view might be destroyed
     }
@@ -282,12 +335,19 @@ function showSlashMenu(
     document.removeEventListener('click', handleClick, true);
     window.removeEventListener('scroll', handleScroll, true);
     window.removeEventListener('resize', handleScroll);
+    const sp = view.dom.parentElement;
+    if (sp) sp.removeEventListener('scroll', handleScroll);
   }
 
   render();
   document.body.appendChild(menu);
+  requestAnimationFrame(() => positionSlashMenu(coords));
   document.addEventListener('keydown', handleKeyDown, true);
   document.addEventListener('click', handleClick, true);
   window.addEventListener('scroll', handleScroll, true);
   window.addEventListener('resize', handleScroll);
+  const scrollParent = view.dom.parentElement;
+  if (scrollParent) {
+    scrollParent.addEventListener('scroll', handleScroll, { passive: true } as AddEventListenerOptions);
+  }
 }

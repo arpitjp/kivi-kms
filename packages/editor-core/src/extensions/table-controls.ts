@@ -1,6 +1,7 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { addDelayedTooltip } from '../tooltip.js';
 
 const tableControlsKey = new PluginKey('kiviTableControls');
 
@@ -87,6 +88,7 @@ export const TableControls = Extension.create({
             b.style.pointerEvents = 'auto';
             b.addEventListener('mousedown', (e) => e.preventDefault());
             b.addEventListener('click', () => { action(); });
+            addDelayedTooltip(b);
             return b;
           }
 
@@ -144,19 +146,35 @@ export const TableControls = Extension.create({
             }
             menu.style.visibility = 'visible';
             const tableRect = tableEl.getBoundingClientRect();
-            const editorRect = view.dom.getBoundingClientRect();
+            const container = view.dom.parentElement;
+            const containerRect = container?.getBoundingClientRect()
+              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+            const menuH = menu.offsetHeight || 36;
+            const menuW = menu.offsetWidth || 400;
 
-            let left = tableRect.left;
-            let top = tableRect.top - menu.offsetHeight - 6;
+            // Visible top of table (clamped to editor container)
+            const visibleTableTop = Math.max(tableRect.top, containerRect.top);
+            const visibleTableBottom = Math.min(tableRect.bottom, containerRect.bottom);
 
-            if (top < editorRect.top) {
-              top = tableRect.bottom + 6;
+            // Prefer placing above the visible top of table
+            let top = visibleTableTop - menuH - 4;
+
+            // If no room above (toolbar would go off screen or above container), place inside table at top
+            if (top < containerRect.top) {
+              top = visibleTableTop + 4;
             }
 
-            const menuWidth = menu.offsetWidth || 400;
-            if (left + menuWidth > window.innerWidth - 8) {
-              left = window.innerWidth - menuWidth - 8;
+            // If table bottom is close and toolbar would overlap outside, clamp
+            if (top + menuH > visibleTableBottom) {
+              top = visibleTableBottom - menuH - 4;
             }
+
+            // Final clamp to viewport
+            top = Math.max(4, Math.min(top, window.innerHeight - menuH - 4));
+
+            // Center horizontally over table
+            let left = tableRect.left + (tableRect.width - menuW) / 2;
+            if (left + menuW > window.innerWidth - 8) left = window.innerWidth - menuW - 8;
             if (left < 8) left = 8;
 
             menu.style.left = `${left}px`;

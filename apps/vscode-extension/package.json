@@ -34,7 +34,7 @@
             "filenamePattern": "*.markdown"
           }
         ],
-        "priority": "option"
+        "priority": "default"
       }
     ],
     "viewsContainers": {
@@ -63,6 +63,16 @@
         {
           "id": "kivi.tags",
           "name": "Tags"
+        },
+        {
+          "id": "kivi.issues",
+          "name": "Issues",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "kivi.assets",
+          "name": "Assets",
+          "visibility": "collapsed"
         }
       ]
     },
@@ -123,6 +133,16 @@
         "icon": "$(collapse-all)"
       },
       {
+        "command": "kivi.refreshIssues",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kivi.refreshAssets",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "kivi.searchTag",
         "title": "Search Tag in Workspace",
         "category": "Kivi"
@@ -160,6 +180,12 @@
         "title": "Reveal in Explorer",
         "category": "Kivi",
         "icon": "$(file-symlink-directory)"
+      },
+      {
+        "command": "kivi.openDevTools",
+        "title": "Open Dev Tools",
+        "category": "Kivi",
+        "icon": "$(debug-console)"
       }
     ],
     "menus": {
@@ -227,6 +253,10 @@
         {
           "command": "kivi.revealInExplorer",
           "when": "kivi.editorFocused"
+        },
+        {
+          "command": "kivi.openDevTools",
+          "when": "kivi.devMode"
         }
       ],
       "explorer/context": [
@@ -300,6 +330,16 @@
           "command": "kivi.collapseTags",
           "when": "view == kivi.tags",
           "group": "navigation"
+        },
+        {
+          "command": "kivi.refreshIssues",
+          "when": "view == kivi.issues",
+          "group": "navigation"
+        },
+        {
+          "command": "kivi.refreshAssets",
+          "when": "view == kivi.assets",
+          "group": "navigation"
         }
       ]
     },
@@ -355,12 +395,18 @@
           "maximum": 5,
           "markdownDescription": "Editor line height as a unitless ratio (e.g. `1.7`). Set to `0` for the default."
         },
-        "kivi.appearance.zoom": {
+        "kivi.appearance.editorZoom": {
           "type": "number",
           "default": 100,
           "minimum": 50,
           "maximum": 200,
-          "markdownDescription": "Kivi editor zoom level in percent (e.g. `120`). Set to `100` for normal size."
+          "markdownDescription": "Extra zoom for the Kivi editor area (live + raw) as a percentage. `100` = no extra zoom. `120` = 20% larger. Applied via CSS zoom on top of VS Code's `window.zoomLevel` (which affects the whole webview). Does **not** affect the toolbar."
+        },
+        "kivi.appearance.wordWrap": {
+          "type": "string",
+          "enum": ["inherit", "on", "off"],
+          "default": "inherit",
+          "markdownDescription": "Word wrap in Kivi editors. `inherit` uses VS Code's `editor.wordWrap` setting. `on` / `off` override it for Kivi only."
         },
         "kivi.appearance.customCSS": {
           "type": "string",
@@ -382,6 +428,11 @@
           "type": "string",
           "default": "assets",
           "markdownDescription": "Default folder name for pasted images and other assets. Relative to workspace root."
+        },
+        "kivi.dev.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Kivi developer tools (logs, perf, state inspector). Automatically on in Extension Development Host. Set via settings JSON for production debugging."
         }
       }
     }

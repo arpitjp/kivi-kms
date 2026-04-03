@@ -24,12 +24,16 @@ export interface EditorConfig {
   lineHeight?: number;
   /** Callback for "New Page" slash command */
   onCreatePage?: () => void;
+  /** Async input prompt — used by slash commands in sandboxed webviews where window.prompt() is blocked */
+  promptInput?: (message: string, placeholder?: string) => Promise<string | null>;
   /** Callback to resolve link preview data (for hover tooltips) */
   onResolveLink?: (link: { kind: string; target: string; alias?: string }) => Promise<Record<string, unknown> | null>;
   /** Callback to navigate to a link target (Cmd/Ctrl+click) */
   onNavigateLink?: (link: { kind: string; target: string; alias?: string }) => void;
   /** Custom image storage adapter (saves pasted images to disk instead of data URLs) */
   imageStorageAdapter?: { store(blob: Blob, filename: string): Promise<string> };
+  /** Custom file storage adapter (saves pasted files to disk and returns a relative path) */
+  fileStorageAdapter?: { store(blob: Blob, filename: string): Promise<string> };
   /** Tag autocomplete: returns matching tags for a query prefix */
   tagSuggestion?: { items: (query: string) => string[] | Promise<string[]> };
   /** When true, content is stored but not loaded synchronously; call loadMarkdownAsync() after creation */

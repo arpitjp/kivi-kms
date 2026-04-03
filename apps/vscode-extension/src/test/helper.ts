@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
-export const FIXTURES_DIR = path.resolve(__dirname, '..', '..', 'test-fixtures');
+export const FIXTURES_DIR = path.resolve(__dirname, '..', '..', '..', 'test-fixtures');
 
 export function getFixturePath(filename: string): string {
   return path.join(FIXTURES_DIR, filename);

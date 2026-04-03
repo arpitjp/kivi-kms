@@ -217,6 +217,115 @@ suite('Kivi Extension', () => {
         'All editors should be closed',
       );
     });
+
+    test('kivi.openInKivi command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.openInKivi'), 'openInKivi should be registered');
+    });
+
+    test('kivi.openWithTextEditor command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.openWithTextEditor'), 'openWithTextEditor should be registered');
+    });
+
+    test('kivi.openToSide command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.openToSide'), 'openToSide should be registered');
+    });
+
+    test('kivi.setDefaultEditor command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.setDefaultEditor'), 'setDefaultEditor should be registered');
+    });
+
+    test('kivi.removeDefaultEditor command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.removeDefaultEditor'), 'removeDefaultEditor should be registered');
+    });
+
+    test('kivi.revealInExplorer command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.revealInExplorer'), 'revealInExplorer should be registered');
+    });
+
+    test('kivi.openGraph command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.openGraph'), 'openGraph should be registered');
+    });
+
+    test('kivi.showGraphInTab command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.showGraphInTab'), 'showGraphInTab should be registered');
+    });
+
+    test('kivi.scrollToHeading command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.scrollToHeading'), 'scrollToHeading should be registered');
+    });
+
+    test('kivi.openDevTools command is registered', async () => {
+      const commands = await vscode.commands.getCommands(true);
+      assert.ok(commands.includes('kivi.openDevTools'), 'openDevTools should be registered');
+    });
+
+    test('openInKivi opens a markdown file in the custom editor', async () => {
+      const uri = vscode.Uri.file(getFixturePath('sample.md'));
+      await vscode.commands.executeCommand('kivi.openInKivi', uri);
+      await sleep(2000);
+
+      const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
+      assert.ok(doc, 'Document should be open after openInKivi');
+    });
+
+    test('openWithTextEditor opens in default text editor', async () => {
+      const uri = vscode.Uri.file(getFixturePath('sample.md'));
+      await vscode.commands.executeCommand('kivi.openWithTextEditor', uri);
+      await sleep(1000);
+
+      const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
+      assert.ok(doc, 'Document should be open after openWithTextEditor');
+    });
+
+    test('openToSide opens file in a side column', async () => {
+      const uri = vscode.Uri.file(getFixturePath('sample.md'));
+      await vscode.commands.executeCommand('kivi.openInKivi', uri);
+      await sleep(1000);
+
+      const uri2 = vscode.Uri.file(getFixturePath('large.md'));
+      await vscode.commands.executeCommand('kivi.openToSide', uri2);
+      await sleep(2000);
+
+      const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri2.fsPath);
+      assert.ok(doc, 'Side document should be open');
+    });
+  });
+
+  suite('Default Editor Configuration', () => {
+    test('kivi.defaultEditor setting defaults to true', () => {
+      const cfg = vscode.workspace.getConfiguration('kivi');
+      const isDefault = cfg.get<boolean>('defaultEditor', true);
+      assert.strictEqual(isDefault, true, 'defaultEditor should default to true');
+    });
+
+    test('editorAssociations includes *.md when defaultEditor is true', () => {
+      const wbCfg = vscode.workspace.getConfiguration('workbench');
+      const assoc = wbCfg.get<Record<string, string>>('editorAssociations') ?? {};
+      assert.strictEqual(
+        assoc['*.md'],
+        'kivi.markdownEditor',
+        'editorAssociations should map *.md to kivi.markdownEditor',
+      );
+    });
+
+    test('editorAssociations includes *.markdown when defaultEditor is true', () => {
+      const wbCfg = vscode.workspace.getConfiguration('workbench');
+      const assoc = wbCfg.get<Record<string, string>>('editorAssociations') ?? {};
+      assert.strictEqual(
+        assoc['*.markdown'],
+        'kivi.markdownEditor',
+        'editorAssociations should map *.markdown to kivi.markdownEditor',
+      );
+    });
   });
 
   suite('Sidebar Tree Views', () => {

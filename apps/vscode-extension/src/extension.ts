@@ -4,7 +4,10 @@ import { BacklinksProvider } from './backlinks-provider.js';
 import { FileExplorerProvider } from './file-explorer-provider.js';
 import { OutlineProvider } from './outline-provider.js';
 import { TagTreeProvider } from './tag-tree-provider.js';
+import { IssuesProvider } from './issues-provider.js';
+import { AssetsProvider } from './assets-provider.js';
 import { GraphPanel } from './graph-panel.js';
+import { DevPanel } from './dev-panel.js';
 import { getActiveMarkdownUri } from './utils.js';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -13,6 +16,37 @@ export function activate(context: vscode.ExtensionContext) {
   vscode.commands.executeCommand('setContext', 'hasCustomMarkdownPreview', true);
   vscode.commands.executeCommand('setContext', 'kivi.isActive', true);
 
+  // ── Dev mode ──
+  // On in Extension Development Host, or when kivi.dev.enabled is true in settings JSON.
+  // The command is always registered (so toggling the setting doesn't require reload)
+  // but only visible in the palette when devMode is active.
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('kivi.openDevTools', () => {
+      if (!DevPanel.enabled) {
+        vscode.window.showInformationMessage('Dev tools are not enabled. Set "kivi.dev.enabled": true in settings JSON.');
+        return;
+      }
+      DevPanel.open(context);
+    }),
+  );
+
+  const applyDevMode = () => {
+    const shouldEnable = DevPanel.shouldEnable(context);
+    if (shouldEnable && !DevPanel.enabled) {
+      DevPanel.enable();
+      DevPanel.log('info', 'extension', `Dev mode activated (${context.extensionMode === vscode.ExtensionMode.Development ? 'Extension Development Host' : 'kivi.dev.enabled setting'})`);
+    }
+    vscode.commands.executeCommand('setContext', 'kivi.devMode', shouldEnable);
+  };
+  applyDevMode();
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('kivi.dev.enabled')) applyDevMode();
+    }),
+  );
+
   // ── Default editor setting ──
 
   const applyDefaultEditorSetting = () => {
@@ -20,15 +54,30 @@ export function activate(context: vscode.ExtensionContext) {
     const isDefault = cfg.get<boolean>('defaultEditor', true);
     const wbCfg = vscode.workspace.getConfiguration('workbench');
     const assoc = wbCfg.get<Record<string, string>>('editorAssociations') ?? {};
+    const patterns = ['*.md', '*.markdown'];
 
     if (isDefault) {
-      if (assoc['*.md'] !== KiviEditorProvider.viewType) {
-        wbCfg.update('editorAssociations', { ...assoc, '*.md': KiviEditorProvider.viewType }, vscode.ConfigurationTarget.Global);
+      let needsUpdate = false;
+      const updated = { ...assoc };
+      for (const pat of patterns) {
+        if (updated[pat] !== KiviEditorProvider.viewType) {
+          updated[pat] = KiviEditorProvider.viewType;
+          needsUpdate = true;
+        }
+      }
+      if (needsUpdate) {
+        wbCfg.update('editorAssociations', updated, vscode.ConfigurationTarget.Global);
       }
     } else {
-      if (assoc['*.md'] === KiviEditorProvider.viewType) {
-        const updated = { ...assoc };
-        delete updated['*.md'];
+      let needsUpdate = false;
+      const updated = { ...assoc };
+      for (const pat of patterns) {
+        if (updated[pat] === KiviEditorProvider.viewType) {
+          delete updated[pat];
+          needsUpdate = true;
+        }
+      }
+      if (needsUpdate) {
         wbCfg.update('editorAssociations', updated, vscode.ConfigurationTarget.Global);
       }
     }
@@ -36,7 +85,10 @@ export function activate(context: vscode.ExtensionContext) {
   applyDefaultEditorSetting();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('kivi.defaultEditor')) applyDefaultEditorSetting();
+      if (e.affectsConfiguration('kivi.defaultEditor')) {
+        DevPanel.log('info', 'config', `kivi.defaultEditor changed to ${vscode.workspace.getConfiguration('kivi').get('defaultEditor')}`);
+        applyDefaultEditorSetting();
+      }
     }),
   );
 
@@ -49,17 +101,24 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('kivi.openInKivi', (uri?: vscode.Uri) => {
       const target = uri ?? getActiveUri();
-      if (target) vscode.commands.executeCommand('vscode.openWith', target, KiviEditorProvider.viewType);
+      if (target) {
+        DevPanel.log('debug', 'cmd', `openInKivi: ${target.fsPath.split('/').pop()}`);
+        vscode.commands.executeCommand('vscode.openWith', target, KiviEditorProvider.viewType);
+      }
     }),
 
     vscode.commands.registerCommand('kivi.openWithTextEditor', (uri?: vscode.Uri) => {
       const target = uri ?? getActiveUri();
-      if (target) vscode.commands.executeCommand('vscode.openWith', target, 'default');
+      if (target) {
+        DevPanel.log('debug', 'cmd', `openWithTextEditor: ${target.fsPath.split('/').pop()}`);
+        vscode.commands.executeCommand('vscode.openWith', target, 'default');
+      }
     }),
 
     vscode.commands.registerCommand('kivi.openToSide', (uri?: vscode.Uri) => {
       const target = uri ?? getActiveUri();
       if (target) {
+        DevPanel.log('debug', 'cmd', `openToSide: ${target.fsPath.split('/').pop()}`);
         vscode.commands.executeCommand('vscode.openWith', target, KiviEditorProvider.viewType, vscode.ViewColumn.Beside);
       }
     }),
@@ -69,8 +128,14 @@ export function activate(context: vscode.ExtensionContext) {
       if (uri) vscode.commands.executeCommand('revealInExplorer', uri);
     }),
 
-    vscode.commands.registerCommand('kivi.openGraph', () => GraphPanel.open(context)),
-    vscode.commands.registerCommand('kivi.openGraphGlobal', () => GraphPanel.open(context)),
+    vscode.commands.registerCommand('kivi.openGraph', () => {
+      DevPanel.log('debug', 'cmd', 'openGraph');
+      GraphPanel.open(context);
+    }),
+    vscode.commands.registerCommand('kivi.openGraphGlobal', () => {
+      DevPanel.log('debug', 'cmd', 'openGraphGlobal');
+      GraphPanel.open(context);
+    }),
 
     vscode.commands.registerCommand('kivi.setDefaultEditor', () => {
       vscode.workspace.getConfiguration('kivi').update('defaultEditor', true, vscode.ConfigurationTarget.Global);
@@ -149,6 +214,56 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // ── Issues view ──
+
+  const issuesProvider = new IssuesProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('kivi.issues', issuesProvider),
+    vscode.commands.registerCommand('kivi.refreshIssues', () => issuesProvider.refresh()),
+    vscode.commands.registerCommand('kivi.issueNavigate', async (filePath: string, line?: number) => {
+      const uri = vscode.Uri.file(filePath);
+      if (filePath.endsWith('.md') || filePath.endsWith('.markdown')) {
+        await vscode.commands.executeCommand('vscode.openWith', uri, 'kivi.markdownEditor');
+        if (line) {
+          const panel = KiviEditorProvider.getPanelForUri(uri.toString());
+          if (panel) {
+            panel.webview.postMessage({ type: 'scrollToLine', line });
+          }
+        }
+      } else {
+        await vscode.commands.executeCommand('vscode.open', uri);
+      }
+    }),
+  );
+
+  // ── Assets view ──
+
+  const assetsProvider = new AssetsProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('kivi.assets', assetsProvider),
+    vscode.commands.registerCommand('kivi.refreshAssets', () => assetsProvider.refresh()),
+    vscode.commands.registerCommand('kivi.assetNavigate', async (assetPath: string, refFile?: string, refLine?: number) => {
+      if (refFile && refLine) {
+        const uri = vscode.Uri.file(refFile);
+        if (refFile.endsWith('.md') || refFile.endsWith('.markdown')) {
+          await vscode.commands.executeCommand('vscode.openWith', uri, 'kivi.markdownEditor');
+          const panel = KiviEditorProvider.getPanelForUri(uri.toString());
+          if (panel) {
+            panel.webview.postMessage({ type: 'scrollToLine', line: refLine });
+          }
+        } else {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(doc);
+          const pos = new vscode.Position(Math.max(0, refLine - 1), 0);
+          editor.selection = new vscode.Selection(pos, pos);
+          editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+        }
+      } else {
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(assetPath));
+      }
+    }),
+  );
+
   // ── Index workspace (concurrency-limited, silent during batch) ──
 
   const CONCURRENCY = 16;
@@ -195,44 +310,166 @@ export function activate(context: vscode.ExtensionContext) {
 
     backlinksProvider.refresh();
     tagTreeProvider.refresh();
+    issuesProvider.refresh();
+    assetsProvider.refresh();
     KiviEditorProvider.broadcastTagIndex();
+    DevPanel.log('info', 'indexer', `Indexed ${files.length} files, ${KiviEditorProvider.workspaceTags.size} tags`);
   };
 
+  DevPanel.perf('workspace-index', 'start');
   // Defer indexing generously on startup — the first file open should be instant.
-  setTimeout(() => indexWorkspace(), 3000);
+  setTimeout(() => indexWorkspace().then(() => DevPanel.perf('workspace-index', 'end')), 3000);
 
-  // ── Auto-fix wiki-links on rename (concurrency-limited) ──
+  // ── Auto-fix references on rename/move (wiki-links, markdown links, image refs) ──
 
   context.subscriptions.push(
     vscode.workspace.onDidRenameFiles(async (e) => {
+      const dec = new TextDecoder();
+      const enc = new TextEncoder();
+      const mdFiles = await vscode.workspace.findFiles('**/*.{md,markdown}', '**/node_modules/**', 5000);
+
       for (const { oldUri, newUri } of e.files) {
-        if (!oldUri.fsPath.endsWith('.md') && !newUri.fsPath.endsWith('.md')) continue;
         const oldRel = vscode.workspace.asRelativePath(oldUri, false);
         const newRel = vscode.workspace.asRelativePath(newUri, false);
+        const isMd = oldUri.fsPath.endsWith('.md') || oldUri.fsPath.endsWith('.markdown');
+
         const oldName = oldRel.replace(/\.md$/, '').split('/').pop() || '';
         const newName = newRel.replace(/\.md$/, '').split('/').pop() || '';
-        if (oldName === newName) continue;
+        const oldBasename = oldRel.split('/').pop() || '';
+        const newBasename = newRel.split('/').pop() || '';
 
-        const mdFiles = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 2000);
-        const dec = new TextDecoder();
+        if (oldRel === newRel) continue;
+
+        DevPanel.log('info', 'rename', `Reference update: ${oldRel} → ${newRel}`);
+
+        for (let i = 0; i < mdFiles.length; i += CONCURRENCY) {
+          const batch = mdFiles.slice(i, i + CONCURRENCY);
+          await Promise.all(batch.map(async (file) => {
+            try {
+              const bytes = await vscode.workspace.fs.readFile(file);
+              let content = dec.decode(bytes);
+              let changed = false;
+
+              // 1. Wiki-links: [[oldName]] or [[oldName|alias]]
+              if (isMd && oldName !== newName) {
+                const wikiPattern = new RegExp(
+                  `\\[\\[${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\|[^\\]]*)?\\]\\]`, 'g',
+                );
+                if (wikiPattern.test(content)) {
+                  wikiPattern.lastIndex = 0;
+                  content = content.replace(wikiPattern, `[[${newName}$1]]`);
+                  changed = true;
+                }
+              }
+
+              // 2. Markdown links and images: [text](path) and ![alt](path)
+              // Compute old path relative to this file's directory
+              const fileRel = vscode.workspace.asRelativePath(file, false);
+              const fileDir = fileRel.includes('/') ? fileRel.slice(0, fileRel.lastIndexOf('/')) : '';
+              const oldRelFromFile = computeRelPath(fileDir, oldRel);
+              const newRelFromFile = computeRelPath(fileDir, newRel);
+
+              if (oldRelFromFile !== newRelFromFile) {
+                const escaped = oldRelFromFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                // Match: [any text](oldRelFromFile) or ![any text](oldRelFromFile)
+                const linkPattern = new RegExp(
+                  `(!?\\[[^\\]]*\\])\\(${escaped}\\)`, 'g',
+                );
+                if (linkPattern.test(content)) {
+                  linkPattern.lastIndex = 0;
+                  content = content.replace(linkPattern, `$1(${newRelFromFile})`);
+                  changed = true;
+                }
+
+                // Also match bare path references (HTML src=, etc.)
+                const bareOld = oldBasename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const bareNew = newBasename;
+                if (oldBasename !== newBasename) {
+                  const srcPattern = new RegExp(
+                    `(src=["'])([^"']*?)${bareOld}(["'])`, 'g',
+                  );
+                  if (srcPattern.test(content)) {
+                    srcPattern.lastIndex = 0;
+                    content = content.replace(srcPattern, (_match, pre, pathPre, post) => {
+                      return `${pre}${pathPre}${bareNew}${post}`;
+                    });
+                    changed = true;
+                  }
+                }
+              }
+
+              if (changed) {
+                await vscode.workspace.fs.writeFile(file, enc.encode(content));
+              }
+            } catch { /* skip unreadable files */ }
+          }));
+        }
+      }
+    }),
+  );
+
+  // ── Warn when deleting assets that are still referenced in markdown ──
+
+  context.subscriptions.push(
+    vscode.workspace.onDidDeleteFiles(async (e) => {
+      const dec = new TextDecoder();
+      const assetExts = new Set([
+        '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico',
+        '.mp4', '.webm', '.mov', '.avi', '.mkv',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip',
+      ]);
+
+      for (const uri of e.files) {
+        const ext = uri.fsPath.slice(uri.fsPath.lastIndexOf('.')).toLowerCase();
+        if (!assetExts.has(ext)) continue;
+
+        const basename = uri.fsPath.split('/').pop() || '';
+        if (!basename) continue;
+
+        // Check if any markdown file references this asset
+        const mdFiles = await vscode.workspace.findFiles('**/*.{md,markdown}', '**/node_modules/**', 2000);
+        const referencingFiles: string[] = [];
+
         for (let i = 0; i < mdFiles.length; i += CONCURRENCY) {
           const batch = mdFiles.slice(i, i + CONCURRENCY);
           await Promise.all(batch.map(async (file) => {
             try {
               const bytes = await vscode.workspace.fs.readFile(file);
               const content = dec.decode(bytes);
-              const wikiPattern = new RegExp(`\\[\\[${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\|[^\\]]*)?\\]\\]`, 'g');
-              if (wikiPattern.test(content)) {
-                wikiPattern.lastIndex = 0;
-                const updated = content.replace(wikiPattern, `[[${newName}$1]]`);
-                await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(updated));
+              if (content.includes(basename)) {
+                referencingFiles.push(vscode.workspace.asRelativePath(file, false));
               }
             } catch { /* skip */ }
           }));
         }
+
+        if (referencingFiles.length > 0) {
+          const fileList = referencingFiles.length <= 3
+            ? referencingFiles.join(', ')
+            : `${referencingFiles.slice(0, 3).join(', ')} and ${referencingFiles.length - 3} more`;
+          vscode.window.showWarningMessage(
+            `Deleted asset "${basename}" is still referenced in: ${fileList}. These references are now broken.`,
+            'OK',
+          );
+        }
       }
     }),
   );
+
+  function computeRelPath(fromDir: string, toPath: string): string {
+    const fromParts = fromDir ? fromDir.split('/') : [];
+    const toParts = toPath.split('/');
+    let common = 0;
+    while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
+      common++;
+    }
+    const ups = fromParts.length - common;
+    const remaining = toParts.slice(common);
+    const parts: string[] = [];
+    for (let i = 0; i < ups; i++) parts.push('..');
+    parts.push(...remaining);
+    return parts.length === 0 ? toParts[toParts.length - 1] : parts.join('/');
+  }
 
   // ── File watcher (debounced to batch rapid changes) ──
 
@@ -250,6 +487,8 @@ export function activate(context: vscode.ExtensionContext) {
     if (watcherRefreshTimer) clearTimeout(watcherRefreshTimer);
     watcherRefreshTimer = setTimeout(() => {
       tagTreeProvider.refresh();
+      issuesProvider.refresh();
+      assetsProvider.refresh();
       KiviEditorProvider.broadcastTagIndex();
       if (watcherNeedsBacklinks) { backlinksProvider.refresh(); watcherNeedsBacklinks = false; }
       if (watcherNeedsFileExplorer) { fileExplorerProvider.refresh(); watcherNeedsFileExplorer = false; }
@@ -261,6 +500,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     watcher.onDidCreate(async (uri) => {
+      const name = uri.fsPath.split('/').pop();
+      DevPanel.log('debug', 'watcher', `File created: ${name}`);
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
         const content = decoder.decode(bytes);
@@ -277,6 +518,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (existing) clearTimeout(existing);
       changeTimers.set(key, setTimeout(async () => {
         changeTimers.delete(key);
+        DevPanel.log('debug', 'watcher', `File changed: ${uri.fsPath.split('/').pop()}`);
         try {
           const bytes = await vscode.workspace.fs.readFile(uri);
           const content = decoder.decode(bytes);
@@ -289,10 +531,10 @@ export function activate(context: vscode.ExtensionContext) {
       }, 300));
     }),
     watcher.onDidDelete((uri) => {
-      // Cancel any pending change timer for this file
       const key = uri.toString();
       const pending = changeTimers.get(key);
       if (pending) { clearTimeout(pending); changeTimers.delete(key); }
+      DevPanel.log('debug', 'watcher', `File deleted: ${uri.fsPath.split('/').pop()}`);
       backlinksProvider.removeFromIndex(uri.fsPath);
       tagTreeProvider.removeFile(uri.fsPath);
       scheduleWatcherRefresh({ fileExplorer: true, backlinks: true });

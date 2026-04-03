@@ -10,9 +10,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "./out/test",
-    "rootDir": "./src/test",
+    "rootDir": "./src",
     "sourceMap": true,
     "resolveJsonModule": true
   },
-  "include": ["src/test/**/*.ts"]
+  "include": ["src/test/**/*.ts", "src/utils.ts", "src/shared/**/*.ts"]
 }

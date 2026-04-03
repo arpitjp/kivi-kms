@@ -1,4 +1,4 @@
-import type { Node as MdastNode, Root, RootContent, PhrasingContent } from 'mdast';
+import type { Root, RootContent, PhrasingContent } from 'mdast';
 
 interface PMNode {
   type: string;
@@ -23,8 +23,11 @@ export function proseMirrorToMdast(doc: PMNode): Root {
 
 function convertBlockNode(node: PMNode): RootContent[] {
   switch (node.type) {
-    case 'paragraph':
-      return [{ type: 'paragraph', children: convertInlineContent(node.content || []) }];
+    case 'paragraph': {
+      const paraChildren = convertInlineContent(node.content || []);
+      trimTrailingWhitespace(paraChildren);
+      return [{ type: 'paragraph', children: paraChildren }];
+    }
 
     case 'heading': {
       const headingChildren = convertInlineContent(node.content || []);
@@ -39,7 +42,7 @@ function convertBlockNode(node: PMNode): RootContent[] {
     case 'blockquote':
       return [{
         type: 'blockquote',
-        children: (node.content || []).flatMap(convertBlockNode) as RootContent[],
+        children: (node.content || []).flatMap(convertBlockNode) as import('mdast').BlockContent[],
       }];
 
     case 'codeBlock':
@@ -81,15 +84,13 @@ function convertBlockNode(node: PMNode): RootContent[] {
       return [convertTable(node)];
 
     case 'image':
-      return [{
-        type: 'paragraph',
-        children: [{
-          type: 'image',
-          url: (node.attrs?.src as string) || '',
-          alt: (node.attrs?.alt as string) || undefined,
-          title: (node.attrs?.title as string) || undefined,
-        }],
-      }];
+      return [convertBlockImage(node)];
+
+    case 'video':
+      return [convertVideo(node)];
+
+    case 'audio':
+      return [convertAudio(node)];
 
     case 'frontmatter':
       return [{ type: 'yaml' as 'code', value: getTextContent(node) } as unknown as RootContent];
@@ -124,12 +125,35 @@ function convertBlockNode(node: PMNode): RootContent[] {
         value: getTextContent(node),
       }];
 
-    case 'excalidrawBlock':
+    case 'excalidrawBlock': {
+      const excSrc = node.attrs?.src as string | null;
+      if (excSrc) {
+        const width = node.attrs?.width as number | null;
+        if (width) {
+          // Width specified — use HTML img tag to preserve it
+          return [{
+            type: 'html',
+            value: `<img src="${excSrc}" alt="${excSrc.split('/').pop()?.replace(/\.excalidraw$/i, '') || 'excalidraw'}" width="${width}" />`,
+          } as unknown as RootContent];
+        }
+        // File-referenced excalidraw: serialize as image syntax
+        return [{
+          type: 'paragraph',
+          children: [{
+            type: 'image',
+            url: excSrc,
+            alt: excSrc.split('/').pop()?.replace(/\.excalidraw$/i, '') || 'excalidraw',
+            title: null,
+          }],
+        } as unknown as RootContent];
+      }
+      // Inline data: serialize as fenced code block
       return [{
         type: 'code',
         lang: 'excalidraw',
         value: (node.attrs?.data as string) || '{}',
       }];
+    }
 
     default:
       return [];
@@ -221,12 +245,16 @@ function convertInlineContent(nodes: PMNode[]): PhrasingContent[] {
     } else if (node.type === 'hardBreak') {
       result.push({ type: 'break' });
     } else if (node.type === 'image') {
-      result.push({
-        type: 'image',
-        url: (node.attrs?.src as string) || '',
-        alt: (node.attrs?.alt as string) || undefined,
-        title: (node.attrs?.title as string) || undefined,
-      });
+      if (imageHasCustomAttrs(node)) {
+        result.push({ type: 'html', value: buildImageHtml(node) } as unknown as PhrasingContent);
+      } else {
+        result.push({
+          type: 'image',
+          url: (node.attrs?.src as string) || '',
+          alt: (node.attrs?.alt as string) || undefined,
+          title: (node.attrs?.title as string) || undefined,
+        });
+      }
     } else if (node.type === 'footnoteRef') {
       const label = (node.attrs?.label as string) || '';
       result.push({
@@ -325,4 +353,58 @@ function getTextContent(node: PMNode): string {
   if (node.text) return node.text;
   if (!node.content) return '';
   return node.content.map(getTextContent).join('');
+}
+
+function imageHasCustomAttrs(node: PMNode): boolean {
+  return !!node.attrs?.width || !!node.attrs?.['data-align'];
+}
+
+function buildImageHtml(node: PMNode): string {
+  const src = (node.attrs?.src as string) || '';
+  const alt = (node.attrs?.alt as string) || '';
+  const width = node.attrs?.width as number | null;
+  const align = node.attrs?.['data-align'] as string | null;
+  let html = `<img src="${src}"`;
+  if (alt) html += ` alt="${alt}"`;
+  if (width) html += ` width="${width}"`;
+  if (align) html += ` data-align="${align}"`;
+  html += ' />';
+  return html;
+}
+
+function convertVideo(node: PMNode): RootContent {
+  const src = (node.attrs?.src as string) || '';
+  const controls = node.attrs?.controls !== false;
+  const width = (node.attrs?.width as string | null);
+  let html = `<video src="${src}"`;
+  if (controls) html += ' controls';
+  if (width) html += ` width="${width}"`;
+  html += ' style="max-width:100%"></video>';
+  return { type: 'html', value: html } as unknown as RootContent;
+}
+
+function convertAudio(node: PMNode): RootContent {
+  const src = (node.attrs?.src as string) || '';
+  const controls = node.attrs?.controls !== false;
+  const width = (node.attrs?.width as string | null);
+  let html = `<audio src="${src}"`;
+  if (controls) html += ' controls';
+  if (width) html += ` width="${width}"`;
+  html += '></audio>';
+  return { type: 'html', value: html } as unknown as RootContent;
+}
+
+function convertBlockImage(node: PMNode): RootContent {
+  if (imageHasCustomAttrs(node)) {
+    return { type: 'html', value: buildImageHtml(node) } as unknown as RootContent;
+  }
+  return {
+    type: 'paragraph',
+    children: [{
+      type: 'image',
+      url: (node.attrs?.src as string) || '',
+      alt: (node.attrs?.alt as string) || undefined,
+      title: (node.attrs?.title as string) || undefined,
+    }],
+  };
 }

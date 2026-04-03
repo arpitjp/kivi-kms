@@ -115,6 +115,64 @@ describe('serializeDocument', () => {
     const result = serializeDocument(kiviDoc);
     expect(result).toBe(md);
   });
+
+  it('round-trips <img> with width and data-align', () => {
+    const md = '<img src="photo.png" alt="A photo" width="300" data-align="center" />';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips <img> with only width', () => {
+    const md = '<img src="photo.png" alt="Pic" width="200" />';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips <img> with only data-align', () => {
+    const md = '<img src="photo.png" data-align="right" />';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips standard markdown image without custom attrs', () => {
+    const md = '![Alt](photo.png)';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('image gains data-align attr after parse → serializes as <img>', () => {
+    const md = '![](photo.png)';
+    const kiviDoc = parseMarkdown(md);
+    const blockId = kiviDoc.blockOrder[0];
+    const block = kiviDoc.sourceMap.blocks.get(blockId);
+    if (block) block.dirty = true;
+    // Image is now a block-level node (lifted out of paragraph)
+    const doc = kiviDoc.doc as { content?: any[] };
+    const imgNode = doc.content?.[0];
+    expect(imgNode?.type).toBe('image');
+    imgNode.attrs = { ...imgNode.attrs, 'data-align': 'center' };
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe('<img src="photo.png" data-align="center" />');
+  });
+
+  it('image gains width attr after parse → serializes as <img>', () => {
+    const md = '![](photo.png)';
+    const kiviDoc = parseMarkdown(md);
+    const blockId = kiviDoc.blockOrder[0];
+    const block = kiviDoc.sourceMap.blocks.get(blockId);
+    if (block) block.dirty = true;
+    // Image is now a block-level node (lifted out of paragraph)
+    const doc = kiviDoc.doc as { content?: any[] };
+    const imgNode = doc.content?.[0];
+    expect(imgNode?.type).toBe('image');
+    imgNode.attrs = { ...imgNode.attrs, width: 300 };
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe('<img src="photo.png" width="300" />');
+  });
 });
 
 describe('serializeNode', () => {
@@ -230,5 +288,47 @@ describe('serializeNode wiki-link, hashtag, TOC, mermaid, excalidraw', () => {
       content: [{ type: 'text', text: '#mytag', marks: [{ type: 'hashTag', attrs: { tag: 'mytag' } }] }],
     };
     expect(serializeNode(node)).toBe('\\#mytag');
+  });
+
+  // ── Image with custom attributes ──
+
+  it('serializes plain image as standard markdown', () => {
+    const node = {
+      type: 'image',
+      attrs: { src: 'photo.png', alt: 'A photo', title: null },
+    };
+    expect(serializeNode(node)).toBe('![A photo](photo.png)');
+  });
+
+  it('serializes image with width as HTML img tag', () => {
+    const node = {
+      type: 'image',
+      attrs: { src: 'photo.png', alt: 'A photo', title: null, width: 300 },
+    };
+    expect(serializeNode(node)).toBe('<img src="photo.png" alt="A photo" width="300" />');
+  });
+
+  it('serializes image with data-align as HTML img tag', () => {
+    const node = {
+      type: 'image',
+      attrs: { src: 'photo.png', alt: '', title: null, 'data-align': 'center' },
+    };
+    expect(serializeNode(node)).toBe('<img src="photo.png" data-align="center" />');
+  });
+
+  it('serializes image with both width and data-align', () => {
+    const node = {
+      type: 'image',
+      attrs: { src: 'img.jpg', alt: 'Pic', title: null, width: 200, 'data-align': 'right' },
+    };
+    expect(serializeNode(node)).toBe('<img src="img.jpg" alt="Pic" width="200" data-align="right" />');
+  });
+
+  it('serializes image without custom attrs as standard markdown', () => {
+    const node = {
+      type: 'image',
+      attrs: { src: 'test.png', alt: 'Test', title: null, width: null, 'data-align': null },
+    };
+    expect(serializeNode(node)).toBe('![Test](test.png)');
   });
 });

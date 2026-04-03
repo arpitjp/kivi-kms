@@ -1,6 +1,8 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { NodeSelection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { addDelayedTooltip } from '../tooltip.js';
 
 const selectionToolbarKey = new PluginKey('kiviSelectionToolbar');
 
@@ -137,6 +139,7 @@ export const SelectionToolbar = Extension.create({
                 action.cmd(editor);
                 updateActiveState(el);
               });
+              addDelayedTooltip(btn);
               el.appendChild(btn);
             }
 
@@ -162,23 +165,40 @@ export const SelectionToolbar = Extension.create({
             const { from, to } = view.state.selection;
             const start = view.coordsAtPos(from);
             const end = view.coordsAtPos(to);
+            const container = view.dom.parentElement;
+            const cr = container?.getBoundingClientRect()
+              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
 
             const midX = (start.left + end.left) / 2;
             const topY = Math.min(start.top, end.top);
+            const bottomY = Math.max(start.bottom, end.bottom);
 
-            const toolbarWidth = toolbar.offsetWidth || 180;
-            const toolbarHeight = toolbar.offsetHeight || 34;
+            const tw = toolbar.offsetWidth || 180;
+            const th = toolbar.offsetHeight || 34;
+            const gap = 8;
+            const pad = 8;
 
-            let left = midX - toolbarWidth / 2;
-            let top = topY - toolbarHeight - 8;
+            const viewTop = Math.max(cr.top, 0);
+            const viewBottom = Math.min(cr.bottom, window.innerHeight);
+            const spaceAbove = topY - viewTop;
+            const spaceBelow = viewBottom - bottomY;
 
-            if (left < 8) left = 8;
-            if (left + toolbarWidth > window.innerWidth - 8) {
-              left = window.innerWidth - toolbarWidth - 8;
+            let top: number;
+            if (spaceAbove >= th + gap) {
+              top = topY - th - gap;
+            } else if (spaceBelow >= th + gap) {
+              top = bottomY + gap;
+            } else {
+              top = spaceAbove >= spaceBelow
+                ? topY - th - gap
+                : bottomY + gap;
             }
-            if (top < 4) {
-              top = Math.max(start.bottom, end.bottom) + 8;
-            }
+            top = Math.max(viewTop + pad, Math.min(top, viewBottom - th - pad));
+
+            let left = midX - tw / 2;
+            const maxLeft = Math.min(cr.right, window.innerWidth) - tw - pad;
+            const minLeft = Math.max(cr.left, 0) + pad;
+            left = Math.max(minLeft, Math.min(left, maxLeft));
 
             toolbar.style.left = `${left}px`;
             toolbar.style.top = `${top}px`;
@@ -212,8 +232,7 @@ export const SelectionToolbar = Extension.create({
               return;
             }
 
-            const isNodeSelection = view.state.selection.constructor.name === 'NodeSelection';
-            if (isNodeSelection) {
+            if (view.state.selection instanceof NodeSelection) {
               removeToolbar();
               return;
             }

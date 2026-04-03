@@ -18,6 +18,8 @@ export interface KiviSettings {
   showToolbar: boolean;
   editorZoom: number;
   wordWrap: boolean;
+  stickyScrollEnabled: boolean;
+  stickyScrollMaxDepth: number;
   // VS Code native editor settings (forwarded so webview can match)
   vscodeEditorFontSize: number;
   vscodeEditorFontFamily: string;
@@ -49,6 +51,8 @@ function readKiviSettings(): KiviSettings {
     showToolbar: cfg.get<boolean>('ui.showToolbar', true),
     editorZoom: cfg.get<number>('appearance.editorZoom', 100),
     wordWrap: resolveWordWrap(cfg.get<string>('appearance.wordWrap', 'inherit'), editorCfg.get<string>('wordWrap', 'on')),
+    stickyScrollEnabled: cfg.get<boolean>('stickyScroll.enabled', true),
+    stickyScrollMaxDepth: cfg.get<number>('stickyScroll.maxDepth', 5),
     vscodeEditorFontSize: editorCfg.get<number>('fontSize', 14),
     vscodeEditorFontFamily: editorCfg.get<string>('fontFamily', ''),
     vscodeEditorLineHeight: editorCfg.get<number>('lineHeight', 0),
@@ -65,6 +69,10 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
   /** Workspace-wide tag set, populated by indexWorkspace in extension.ts */
   static workspaceTags = new Set<string>();
+
+  /** Fires when the webview reports the user scrolled to a new heading */
+  static readonly _onActiveHeading = new vscode.EventEmitter<string>();
+  static readonly onActiveHeading = KiviEditorProvider._onActiveHeading.event;
 
   /** Send updated tag list to all active webview panels */
   static broadcastTagIndex() {
@@ -338,9 +346,38 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           break;
         }
 
+        case 'requestFullBlame': {
+          this.getFullBlameInfo(document, postMessage);
+          break;
+        }
+
         case 'openExternal': {
           const url = msg.url as string | undefined;
           if (url) vscode.env.openExternal(vscode.Uri.parse(url));
+          break;
+        }
+
+        case 'openCommit': {
+          const hash = msg.hash as string | undefined;
+          if (hash) {
+            const dir = path.dirname(document.uri.fsPath);
+            cp.exec(`git remote get-url origin`, { cwd: dir, timeout: 3000 }, (err, stdout) => {
+              if (!err && stdout.trim()) {
+                const remote = stdout.trim()
+                  .replace(/\.git$/, '')
+                  .replace(/^git@([^:]+):/, 'https://$1/');
+                const isGerrit = /gerrit|review/i.test(remote);
+                const commitUrl = isGerrit
+                  ? `${remote}/+/${hash}`
+                  : `${remote}/commit/${hash}`;
+                vscode.env.openExternal(vscode.Uri.parse(commitUrl));
+              } else {
+                vscode.commands.executeCommand(
+                  'git.viewCommit', hash,
+                );
+              }
+            });
+          }
           break;
         }
 
@@ -478,6 +515,14 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const line = msg.line as number | undefined;
           if (typeof line === 'number') {
             postMessage({ type: 'scrollToLine', line });
+          }
+          break;
+        }
+
+        case 'activeHeading': {
+          const heading = msg.heading as string | undefined;
+          if (heading) {
+            KiviEditorProvider._onActiveHeading.fire(heading);
           }
           break;
         }
@@ -1017,6 +1062,66 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     });
   }
 
+  // ── Full-file git blame (for inline annotations) ──
+
+  private getFullBlameInfo(
+    document: vscode.TextDocument,
+    postMessage: (msg: Record<string, unknown>) => void,
+  ): void {
+    const fsPath = document.uri.fsPath;
+    const dir = path.dirname(fsPath);
+    const file = path.basename(fsPath);
+
+    const cmd = `git blame --porcelain -- "${file}"`;
+    cp.exec(cmd, { cwd: dir, timeout: 15000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+      if (err) {
+        postMessage({ type: 'fullBlameResult', entries: [] });
+        return;
+      }
+
+      const entries: Array<{
+        line: number; author: string; authorMail: string;
+        authorTime: number; summary: string; hash: string;
+      }> = [];
+      const lines = stdout.split('\n');
+      let currentHash = '';
+      let currentAuthor = '';
+      let currentAuthorMail = '';
+      let currentAuthorTime = 0;
+      let currentSummary = '';
+      let currentLine = 0;
+
+      for (const raw of lines) {
+        const hashMatch = raw.match(/^([0-9a-f]{40})\s+\d+\s+(\d+)/);
+        if (hashMatch) {
+          currentHash = hashMatch[1];
+          currentLine = parseInt(hashMatch[2], 10) - 1;
+          continue;
+        }
+        if (raw.startsWith('author ')) {
+          currentAuthor = raw.slice(7);
+        } else if (raw.startsWith('author-mail ')) {
+          currentAuthorMail = raw.slice(12).replace(/^<|>$/g, '');
+        } else if (raw.startsWith('author-time ')) {
+          currentAuthorTime = parseInt(raw.slice(12), 10);
+        } else if (raw.startsWith('summary ')) {
+          currentSummary = raw.slice(8);
+        } else if (raw.startsWith('\t')) {
+          entries.push({
+            line: currentLine,
+            author: currentAuthor,
+            authorMail: currentAuthorMail,
+            authorTime: currentAuthorTime,
+            summary: currentSummary,
+            hash: currentHash,
+          });
+        }
+      }
+
+      postMessage({ type: 'fullBlameResult', entries });
+    });
+  }
+
   // ── HTML ──
 
   private getHtml(webview: vscode.Webview, embeddedContent?: string): string {
@@ -1038,7 +1143,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; img-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource};" />
+    content="default-src 'none'; img-src ${webview.cspSource} data: https:; media-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource};" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Kivi</title>
   <style nonce="${nonce}">

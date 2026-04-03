@@ -48,13 +48,20 @@ export function serializeDocument(kiviDoc: KiviDocument, options?: SerializeOpti
     parts.push(sourceMap.preamble);
   }
 
+  const lastIdx = topLevelNodes.length - 1;
+
   for (let i = 0; i < topLevelNodes.length; i++) {
     const blockId = !blockCountChanged ? blockOrder[i] : undefined;
     const blockMeta = blockId ? sourceMap.blocks.get(blockId) : undefined;
     const node = topLevelNodes[i];
 
+    // Skip trailing empty paragraph (editor adds one for cursor placement)
+    if (i === lastIdx && i > 0 && isEmptyParagraph(node)) break;
+
     if (!blockCountChanged && blockMeta && !blockMeta.dirty && blockMeta.originalSource !== null) {
       parts.push(blockMeta.originalSource);
+    } else if (isEmptyParagraph(node)) {
+      parts.push('<br>');
     } else {
       parts.push(serializeNode(node, blockMeta?.styleHints));
     }
@@ -78,6 +85,14 @@ export function serializeDocument(kiviDoc: KiviDocument, options?: SerializeOpti
   }
 
   return parts.join('');
+}
+
+function isEmptyParagraph(node: PMNodeJSON): boolean {
+  if (node.type !== 'paragraph') return false;
+  if (!node.content || node.content.length === 0) return true;
+  return node.content.every(
+    (c) => c.type === 'text' && (!c.text || c.text.trim() === ''),
+  );
 }
 
 /**
@@ -129,5 +144,5 @@ function stringifyMdast(root: Root, styleHints?: StyleHints): string {
   }
 
   const result = processor.stringify(root);
-  return result.trimEnd();
+  return result.replace(/&#x20;/g, ' ').trimEnd();
 }

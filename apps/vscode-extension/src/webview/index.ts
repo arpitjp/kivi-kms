@@ -28,6 +28,8 @@ interface KiviSettings {
   showToolbar: boolean;
   editorZoom: number;
   wordWrap: boolean;
+  stickyScrollEnabled: boolean;
+  stickyScrollMaxDepth: number;
   vscodeEditorFontSize: number;
   vscodeEditorFontFamily: string;
   vscodeEditorLineHeight: number;
@@ -60,6 +62,16 @@ let isUpdatingFromExtension = false;
 let lastSentContent = '';
 let savedBaseLines: string[] = [];
 let pendingBlameCallback: ((entries: Array<{ line: number; author: string; date: string; summary: string; hash: string }>) => void) | null = null;
+
+// ── Inline Git Blame (GitLens-style) ──
+type BlameEntry = {
+  line: number; author: string; authorMail: string;
+  authorTime: number; summary: string; hash: string;
+};
+let blameEnabled = false;
+let blameEntries: BlameEntry[] = [];
+let blameByLine: Map<number, BlameEntry> = new Map();
+let activeBlamePopup: HTMLElement | null = null;
 let overrideStyleEl: HTMLStyleElement | null = null;
 let customCSSStyleEl: HTMLStyleElement | null = null;
 let viewMode: 'live' | 'source' | 'split' = 'live';
@@ -330,6 +342,13 @@ function applySettings(s: KiviSettings) {
   const toolbar = document.getElementById('kivi-toolbar');
   if (toolbar) {
     toolbar.style.display = s.showToolbar ? '' : 'none';
+  }
+
+  if (typeof (globalThis as any).__kiviUpdateStickyScrollSettings === 'function') {
+    (globalThis as any).__kiviUpdateStickyScrollSettings(
+      s.stickyScrollEnabled ?? true,
+      s.stickyScrollMaxDepth ?? 5,
+    );
   }
 }
 
@@ -610,6 +629,7 @@ function init() {
         rawBackdrop.scrollTop = rawEl.scrollTop;
         rawBackdrop.scrollLeft = rawEl.scrollLeft;
         rawGutter.scrollTop = rawEl.scrollTop;
+        if (viewMode === 'source') detectActiveHeadingRaw(rawEl);
       });
     }
   }, { passive: true });
@@ -674,8 +694,41 @@ function init() {
     promptInput: (message, placeholder) => requestInput(message, placeholder),
     tagSuggestion: {
       items: (query: string) => {
-        const q = query.toLowerCase();
-        return workspaceTags.filter(t => t.toLowerCase().startsWith(q));
+        if (!query) return workspaceTags.slice(0, 15);
+        const qLower = query.toLowerCase();
+
+        const scored: { tag: string; score: number }[] = [];
+        for (const tag of workspaceTags) {
+          const tLower = tag.toLowerCase();
+
+          if (tLower.startsWith(qLower)) {
+            scored.push({ tag, score: 100 });
+            continue;
+          }
+
+          const segments = tLower.split('/');
+          if (segments.some(s => s.startsWith(qLower))) {
+            scored.push({ tag, score: 80 });
+            continue;
+          }
+
+          if (tLower.includes(qLower)) {
+            scored.push({ tag, score: 60 });
+            continue;
+          }
+
+          let qi = 0;
+          for (let ti = 0; ti < tLower.length && qi < qLower.length; ti++) {
+            if (tLower[ti] === qLower[qi]) qi++;
+          }
+          if (qi === qLower.length) {
+            scored.push({ tag, score: 40 - (tLower.length - qLower.length) });
+            continue;
+          }
+        }
+
+        scored.sort((a, b) => b.score - a.score || a.tag.localeCompare(b.tag));
+        return scored.map(s => s.tag);
       },
     },
     imageStorageAdapter: {
@@ -763,6 +816,11 @@ function init() {
     },
   });
 
+  // Handle "Open in Excalidraw" from image controls for .excalidraw.png/.svg
+  document.addEventListener('kivi-open-excalidraw', ((e: CustomEvent<{ src: string }>) => {
+    vscode.postMessage({ type: 'openExcalidraw', src: e.detail.src });
+  }) as EventListener);
+
   // Load content asynchronously to avoid blocking first paint
   if (initialMarkdown) {
     lastSentContent = initialMarkdown;
@@ -842,6 +900,168 @@ function init() {
     const detail = (e as CustomEvent).detail as { src: string } | undefined;
     if (detail?.src) vscode.postMessage({ type: 'checkOrphanAsset', src: detail.src });
   });
+
+  // ── Sticky scroll container ──
+  let stickyScrollEnabled = true;
+  let stickyScrollMaxDepth = 5;
+
+  const stickyScrollEl = document.createElement('div');
+  stickyScrollEl.id = 'kivi-sticky-scroll';
+  stickyScrollEl.style.display = 'none';
+  editorEl.parentElement?.insertBefore(stickyScrollEl, editorEl);
+
+  function updateStickyScrollSettings(enabled: boolean, maxDepth: number) {
+    stickyScrollEnabled = enabled;
+    stickyScrollMaxDepth = maxDepth;
+    if (!enabled) {
+      stickyScrollEl.style.display = 'none';
+      stickyScrollEl.innerHTML = '';
+    }
+  }
+  (globalThis as any).__kiviUpdateStickyScrollSettings = updateStickyScrollSettings;
+
+  // ── Outline sync: track which heading is visible as user scrolls ──
+  let _lastActiveHeading = '';
+  let _headingScrollFrame: ReturnType<typeof requestAnimationFrame> | null = null;
+
+  function detectActiveHeading() {
+    if (!editor || (viewMode !== 'live' && viewMode !== 'split')) return;
+    const tiptapEd = editor.getTiptapEditor();
+    const view = tiptapEd.view;
+    const scrollParent = view.dom.parentElement;
+    if (!scrollParent) return;
+
+    const scrollTop = scrollParent.scrollTop;
+    const viewportMid = scrollTop + scrollParent.clientHeight * 0.15;
+    const parentRect = scrollParent.getBoundingClientRect();
+
+    let bestHeading = '';
+    let bestTop = -Infinity;
+    const allHeadings: { text: string; level: number; relTop: number; offset: number }[] = [];
+
+    tiptapEd.state.doc.forEach((node: any, offset: number) => {
+      if (node.type.name === 'heading') {
+        const dom = view.nodeDOM(offset) as HTMLElement | null;
+        if (!dom) return;
+        const rect = dom.getBoundingClientRect();
+        const relTop = rect.top - parentRect.top + scrollTop;
+        const level = node.attrs?.level ?? 1;
+        const text = node.textContent.trim();
+
+        allHeadings.push({ text, level, relTop, offset });
+
+        if (relTop <= viewportMid && relTop > bestTop) {
+          bestTop = relTop;
+          bestHeading = text;
+        }
+      }
+    });
+
+    if (bestHeading && bestHeading !== _lastActiveHeading) {
+      _lastActiveHeading = bestHeading;
+      vscode.postMessage({ type: 'activeHeading', heading: bestHeading });
+    }
+
+    if (stickyScrollEnabled && allHeadings.length > 0) {
+      updateStickyScroll(allHeadings, viewportMid, tiptapEd);
+    } else if (!stickyScrollEnabled || allHeadings.length === 0) {
+      stickyScrollEl.style.display = 'none';
+      stickyScrollEl.innerHTML = '';
+    }
+  }
+
+  let _lastStickyKey = '';
+
+  function updateStickyScroll(
+    allHeadings: { text: string; level: number; relTop: number; offset: number }[],
+    viewportMid: number,
+    tiptapEd: any,
+  ) {
+    const above = allHeadings.filter(h => h.relTop <= viewportMid);
+    if (above.length === 0) {
+      if (_lastStickyKey !== '') {
+        _lastStickyKey = '';
+        stickyScrollEl.style.display = 'none';
+        stickyScrollEl.innerHTML = '';
+      }
+      return;
+    }
+
+    const breadcrumb: { text: string; level: number; offset: number }[] = [];
+    for (const h of above) {
+      while (breadcrumb.length > 0 && breadcrumb[breadcrumb.length - 1].level >= h.level) {
+        breadcrumb.pop();
+      }
+      breadcrumb.push(h);
+    }
+
+    const visible = breadcrumb.filter(h => h.level <= stickyScrollMaxDepth);
+    if (visible.length === 0) {
+      if (_lastStickyKey !== '') {
+        _lastStickyKey = '';
+        stickyScrollEl.style.display = 'none';
+        stickyScrollEl.innerHTML = '';
+      }
+      return;
+    }
+
+    const key = visible.map(h => `${h.level}:${h.offset}`).join('|');
+    if (key === _lastStickyKey) return;
+    _lastStickyKey = key;
+
+    stickyScrollEl.style.display = '';
+    stickyScrollEl.innerHTML = '';
+
+    for (let i = 0; i < visible.length; i++) {
+      const h = visible[i];
+      const span = document.createElement('span');
+      span.className = 'kivi-sticky-crumb';
+      span.dataset.level = String(h.level);
+      span.textContent = h.text;
+      span.addEventListener('click', () => {
+        tiptapEd.commands.setTextSelection(h.offset + 1);
+        tiptapEd.commands.scrollIntoView();
+      });
+      stickyScrollEl.appendChild(span);
+      if (i < visible.length - 1) {
+        const sep = document.createElement('span');
+        sep.className = 'kivi-sticky-sep';
+        sep.textContent = '›';
+        stickyScrollEl.appendChild(sep);
+      }
+    }
+  }
+
+  function detectActiveHeadingRaw(textarea: HTMLTextAreaElement) {
+    const text = textarea.value;
+    const lines = text.split('\n');
+    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+    const visibleLine = Math.floor(textarea.scrollTop / lineHeight);
+
+    let bestHeading = '';
+    let inCodeBlock = false;
+    for (let i = 0; i <= Math.min(visibleLine + 2, lines.length - 1); i++) {
+      const line = lines[i];
+      if (line.trimStart().startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
+      if (inCodeBlock) continue;
+      const m = /^#{1,6}\s+(.+)$/.exec(line);
+      if (m) bestHeading = m[1].trim();
+    }
+
+    if (bestHeading && bestHeading !== _lastActiveHeading) {
+      _lastActiveHeading = bestHeading;
+      vscode.postMessage({ type: 'activeHeading', heading: bestHeading });
+    }
+  }
+
+  const scrollEl = editorEl.querySelector('.ProseMirror')?.parentElement || editorEl;
+  scrollEl.addEventListener('scroll', () => {
+    if (_headingScrollFrame) return;
+    _headingScrollFrame = requestAnimationFrame(() => {
+      _headingScrollFrame = null;
+      detectActiveHeading();
+    });
+  }, { passive: true });
 
   // Sync raw -> extension host
   let rawDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -991,6 +1211,17 @@ function init() {
         break;
       }
 
+      case 'fullBlameResult': {
+        const entries = msg.entries as BlameEntry[] | undefined;
+        if (entries) {
+          blameEntries = entries;
+          blameByLine = new Map();
+          for (const e of entries) blameByLine.set(e.line, e);
+          refreshAllGutters();
+        }
+        break;
+      }
+
       case 'excalidrawExtensionStatus': {
         _hasExcalidrawExtension = !!msg.installed;
         break;
@@ -1056,33 +1287,41 @@ function init() {
       }
 
       case 'scrollToHeading': {
-        if (editor && msg.heading) {
+        if (editor && (msg.heading || msg.line)) {
           const tiptapEd = editor.getTiptapEditor();
           const { doc } = tiptapEd.state;
-          let found = false;
-          const normalizeHeading = (s: string) =>
-            s.replace(/`([^`]*)`/g, '$1').trim().toLowerCase();
-          const target = normalizeHeading(String(msg.heading));
+          let foundOffset = -1;
+          const target = String(msg.heading || '').trim().toLowerCase();
+
           doc.forEach((node, offset) => {
-            if (found) return;
+            if (foundOffset >= 0) return;
             if (node.type.name === 'heading') {
               const nodeText = node.textContent.trim().toLowerCase();
               if (nodeText === target) {
-                tiptapEd.commands.setTextSelection(offset + 1);
-                tiptapEd.commands.scrollIntoView();
-                found = true;
-
-                // Brief highlight effect on the heading
-                requestAnimationFrame(() => {
-                  const domNode = tiptapEd.view.nodeDOM(offset) as HTMLElement | null;
-                  if (domNode) {
-                    domNode.classList.add('kivi-heading-highlight');
-                    setTimeout(() => domNode.classList.remove('kivi-heading-highlight'), 2000);
-                  }
-                });
+                foundOffset = offset;
               }
             }
           });
+
+          if (foundOffset >= 0) {
+            tiptapEd.commands.setTextSelection(foundOffset + 1);
+            tiptapEd.commands.scrollIntoView();
+            requestAnimationFrame(() => {
+              const domNode = tiptapEd.view.nodeDOM(foundOffset) as HTMLElement | null;
+              if (domNode) {
+                domNode.classList.add('kivi-heading-highlight');
+                setTimeout(() => domNode.classList.remove('kivi-heading-highlight'), 2000);
+              }
+            });
+          }
+        }
+        break;
+      }
+
+      case 'insertExcalidraw': {
+        if (editor && msg.src) {
+          const tiptapEd = editor.getTiptapEditor();
+          (tiptapEd.commands as any).insertExcalidraw?.({ src: msg.src });
         }
         break;
       }
@@ -1744,12 +1983,167 @@ function updateLineNumbers(textarea: HTMLTextAreaElement, gutter: HTMLElement) {
   }
 }
 
+// ── Inline blame (GitLens-style) ──
+
+function timeAgo(epoch: number): string {
+  const now = Date.now() / 1000;
+  const diff = now - epoch;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 604800)}w ago`;
+  if (diff < 31536000) return `${Math.floor(diff / 2592000)}mo ago`;
+  const years = Math.floor(diff / 31536000);
+  return years === 1 ? '1y ago' : `${years}y ago`;
+}
+
+function toggleBlame() {
+  blameEnabled = !blameEnabled;
+  if (blameEnabled && blameEntries.length === 0) {
+    vscode.postMessage({ type: 'requestFullBlame' });
+  }
+  refreshAllGutters();
+  document.querySelectorAll('.kivi-raw-gutter').forEach(g => {
+    g.classList.toggle('blame-active', blameEnabled);
+  });
+}
+
+function closeBlamePopup() {
+  if (activeBlamePopup) {
+    activeBlamePopup.remove();
+    activeBlamePopup = null;
+  }
+}
+
+function showBlameDetailPopup(entry: BlameEntry, anchor: HTMLElement, wrapper: HTMLElement) {
+  closeBlamePopup();
+
+  const popup = document.createElement('div');
+  popup.className = 'kivi-blame-popup';
+  activeBlamePopup = popup;
+
+  const isUncommitted = entry.hash.startsWith('0000000');
+
+  const header = document.createElement('div');
+  header.className = 'kivi-blame-popup-header';
+
+  const avatar = document.createElement('span');
+  avatar.className = 'kivi-blame-popup-avatar';
+  avatar.textContent = entry.author.charAt(0).toUpperCase();
+
+  const authorInfo = document.createElement('div');
+  authorInfo.className = 'kivi-blame-popup-author';
+  const authorName = document.createElement('strong');
+  authorName.textContent = isUncommitted ? 'Uncommitted' : entry.author;
+  const authorTime = document.createElement('span');
+  authorTime.className = 'kivi-blame-popup-time';
+  authorTime.textContent = isUncommitted ? '' : ` • ${timeAgo(entry.authorTime)}`;
+  authorInfo.appendChild(authorName);
+  authorInfo.appendChild(authorTime);
+
+  header.appendChild(avatar);
+  header.appendChild(authorInfo);
+  popup.appendChild(header);
+
+  if (!isUncommitted) {
+    const commitRow = document.createElement('div');
+    commitRow.className = 'kivi-blame-popup-commit';
+
+    const hashEl = document.createElement('code');
+    hashEl.className = 'kivi-blame-popup-hash';
+    hashEl.textContent = entry.hash.slice(0, 8);
+
+    const summaryEl = document.createElement('span');
+    summaryEl.className = 'kivi-blame-popup-summary';
+    summaryEl.textContent = entry.summary;
+
+    commitRow.appendChild(hashEl);
+    commitRow.appendChild(summaryEl);
+    popup.appendChild(commitRow);
+
+    if (entry.authorMail) {
+      const emailRow = document.createElement('div');
+      emailRow.className = 'kivi-blame-popup-detail';
+      emailRow.textContent = entry.authorMail;
+      popup.appendChild(emailRow);
+    }
+
+    const dateRow = document.createElement('div');
+    dateRow.className = 'kivi-blame-popup-detail';
+    const d = new Date(entry.authorTime * 1000);
+    dateRow.textContent = d.toLocaleString(undefined, {
+      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+    popup.appendChild(dateRow);
+
+    const actions = document.createElement('div');
+    actions.className = 'kivi-blame-popup-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'kivi-blame-popup-btn';
+    copyBtn.textContent = 'Copy Hash';
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(entry.hash).catch(() => {});
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = 'Copy Hash'; }, 1500);
+    });
+
+    const copyFullBtn = document.createElement('button');
+    copyFullBtn.className = 'kivi-blame-popup-btn';
+    copyFullBtn.textContent = 'Copy Message';
+    copyFullBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(`${entry.hash.slice(0, 8)} ${entry.summary}`).catch(() => {});
+      copyFullBtn.textContent = 'Copied!';
+      setTimeout(() => { copyFullBtn.textContent = 'Copy Message'; }, 1500);
+    });
+
+    const openBtn = document.createElement('button');
+    openBtn.className = 'kivi-blame-popup-btn kivi-blame-popup-btn-primary';
+    openBtn.textContent = 'Open Commit';
+    openBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'openCommit', hash: entry.hash });
+    });
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(copyFullBtn);
+    actions.appendChild(openBtn);
+    popup.appendChild(actions);
+  }
+
+  wrapper.style.position = 'relative';
+  const anchorRect = anchor.getBoundingClientRect();
+  const wrapperRect = wrapper.getBoundingClientRect();
+  popup.style.top = `${anchorRect.bottom - wrapperRect.top + wrapper.scrollTop + 2}px`;
+  popup.style.left = `${Math.max(0, anchorRect.left - wrapperRect.left)}px`;
+  wrapper.appendChild(popup);
+
+  const escHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { closeBlamePopup(); document.removeEventListener('keydown', escHandler); }
+  };
+  document.addEventListener('keydown', escHandler);
+
+  const clickHandler = (e: MouseEvent) => {
+    if (!popup.contains(e.target as Node)) {
+      closeBlamePopup();
+      document.removeEventListener('click', clickHandler);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', clickHandler), 0);
+}
+
 function _updateLineNumbersImmediate(textarea: HTMLTextAreaElement, gutter: HTMLElement) {
   const currentLines = textarea.value.split('\n');
   const lineCount = currentLines.length;
   const info = computeGutterInfo(savedBaseLines, currentLines);
   const existingChildren = gutter.children;
   const existingCount = existingChildren.length;
+
+  let inCodeBlock = false;
 
   for (let i = 0; i < lineCount; i++) {
     let div: HTMLElement;
@@ -1760,14 +2154,91 @@ function _updateLineNumbersImmediate(textarea: HTMLTextAreaElement, gutter: HTML
       gutter.appendChild(div);
     }
     div.className = 'gutter-line';
-    div.textContent = `${i + 1}`;
+
     const mark = info.marks[i];
     if (mark === 'a') div.classList.add('gutter-added');
     else if (mark === 'm') div.classList.add('gutter-modified');
     else if (mark === 'd') div.classList.add('gutter-deleted');
 
+    const line = currentLines[i];
+    if (line.trimStart().startsWith('```')) inCodeBlock = !inCodeBlock;
+    const headingLevel = inCodeBlock ? 0 : (/^(#{1,6})\s/.exec(line)?.[1]?.length ?? 0);
+
+    let foldArrow = div.querySelector('.gutter-fold-arrow') as HTMLElement | null;
+    if (headingLevel > 0) {
+      if (!foldArrow) {
+        foldArrow = document.createElement('span');
+        foldArrow.className = 'gutter-fold-arrow';
+        foldArrow.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M7.976 10.072l4.357-4.357.62.618L7.976 11.31 2.93 6.333l.62-.618z"/></svg>';
+        div.insertBefore(foldArrow, div.firstChild);
+      }
+    } else if (foldArrow) {
+      foldArrow.remove();
+    }
+
     const isChanged = mark !== 'u';
     div.onclick = isChanged ? () => showDiffPopup(textarea, gutter, i, info) : null;
+
+    if (blameEnabled) {
+      const blameInfo = blameByLine.get(i);
+      const prevBlame = i > 0 ? blameByLine.get(i - 1) : null;
+      const isSameCommit = prevBlame && blameInfo && prevBlame.hash === blameInfo.hash;
+
+      let lineNum = div.querySelector('.gutter-linenum') as HTMLElement | null;
+      if (!lineNum) {
+        lineNum = document.createElement('span');
+        lineNum.className = 'gutter-linenum';
+        div.appendChild(lineNum);
+      }
+      lineNum.textContent = `${i + 1}`;
+
+      let blameAnnotation = div.querySelector('.gutter-blame') as HTMLElement | null;
+      if (!blameAnnotation) {
+        blameAnnotation = document.createElement('span');
+        blameAnnotation.className = 'gutter-blame';
+        div.insertBefore(blameAnnotation, lineNum);
+      }
+
+      if (blameInfo && !isSameCommit) {
+        const isUncommitted = blameInfo.hash.startsWith('0000000');
+        blameAnnotation.textContent = isUncommitted
+          ? 'You • Uncommitted'
+          : `${blameInfo.author.split(' ')[0]}, ${timeAgo(blameInfo.authorTime)}`;
+        blameAnnotation.title = `${blameInfo.author} • ${blameInfo.hash.slice(0, 8)} • ${blameInfo.summary}\n⌘+hover for details`;
+        blameAnnotation.classList.remove('gutter-blame-dim');
+      } else if (blameInfo && isSameCommit) {
+        blameAnnotation.textContent = '⁞';
+        blameAnnotation.title = `${blameInfo.author} • ${blameInfo.hash.slice(0, 8)}\n⌘+hover for details`;
+        blameAnnotation.classList.add('gutter-blame-dim');
+      } else {
+        blameAnnotation.textContent = '';
+        blameAnnotation.title = '';
+        blameAnnotation.classList.remove('gutter-blame-dim');
+      }
+
+      if (blameInfo) {
+        const entry = blameInfo;
+        const wrapper = textarea.closest('#kivi-raw-wrapper') || textarea.closest('.kivi-split-right');
+        blameAnnotation.onclick = (e: MouseEvent) => {
+          e.stopPropagation();
+          showBlameDetailPopup(entry, div, wrapper as HTMLElement);
+        };
+        div.onmouseenter = (e: MouseEvent) => {
+          if (e.metaKey || e.ctrlKey) {
+            showBlameDetailPopup(entry, div, wrapper as HTMLElement);
+          }
+        };
+      } else {
+        div.onmouseenter = null;
+      }
+    } else {
+      div.textContent = `${i + 1}`;
+      div.onmouseenter = null;
+      const existingBlame = div.querySelector('.gutter-blame');
+      if (existingBlame) existingBlame.remove();
+      const existingNum = div.querySelector('.gutter-linenum');
+      if (existingNum) existingNum.remove();
+    }
   }
 
   while (gutter.children.length > lineCount) {
@@ -2245,6 +2716,11 @@ function initContextMenu() {
     { label: 'Toggle Blockquote', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.toggleBlockquote().run(); } },
     { label: 'Toggle Code Block', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.toggleCodeBlock().run(); } },
     { divider: true, label: '' },
+    { label: 'Fold Section', shortcut: '⌘⇧[', action: () => { (editor?.getTiptapEditor() as any)?.commands?.foldAtCursor?.(); } },
+    { label: 'Unfold Section', shortcut: '⌘⇧]', action: () => { (editor?.getTiptapEditor() as any)?.commands?.unfoldAtCursor?.(); } },
+    { label: 'Fold All', action: () => { (editor?.getTiptapEditor() as any)?.commands?.foldAll?.(); } },
+    { label: 'Unfold All', action: () => { (editor?.getTiptapEditor() as any)?.commands?.unfoldAll?.(); } },
+    { divider: true, label: '' },
     { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
     { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
   ];
@@ -2373,7 +2849,7 @@ function initContextMenu() {
 
   document.addEventListener('contextmenu', (e) => {
     const target = e.target as HTMLElement;
-    if (!target.closest('#editor') && !target.closest('.kivi-split-raw-editor') && !target.closest('#kivi-raw-editor')) return;
+    if (!target.closest('#editor') && !target.closest('.kivi-split-raw-editor') && !target.closest('#kivi-raw-editor') && !target.closest('.kivi-raw-gutter')) return;
     e.preventDefault();
 
     const img = target.tagName === 'IMG' ? target as HTMLImageElement : target.closest('img') as HTMLImageElement | null;
@@ -2393,7 +2869,19 @@ function initContextMenu() {
         renderMenu(textItems);
       }
     } else {
-      renderMenu(textItems);
+      const rawItems: MenuItem[] = [
+        { label: 'Cut', shortcut: '⌘X', action: () => document.execCommand('cut') },
+        { label: 'Copy', shortcut: '⌘C', action: () => document.execCommand('copy') },
+        { label: 'Paste', shortcut: '⌘V', action: () => document.execCommand('paste') },
+        { divider: true, label: '' },
+        { label: 'Select All', shortcut: '⌘A', action: () => document.execCommand('selectAll') },
+        { divider: true, label: '' },
+        { label: blameEnabled ? 'Hide Git Blame' : 'Show Git Blame', action: () => toggleBlame() },
+        { divider: true, label: '' },
+        { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+        { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
+      ];
+      renderMenu(rawItems);
     }
 
     menu.style.left = '0px';

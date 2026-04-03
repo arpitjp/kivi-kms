@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { KiviEditorProvider } from './editor-provider.js';
 import { BacklinksProvider } from './backlinks-provider.js';
 import { FileExplorerProvider } from './file-explorer-provider.js';
-import { OutlineProvider } from './outline-provider.js';
+import { OutlineProvider, makeHeadingSlug } from './outline-provider.js';
+import type { OutlineItem } from './outline-provider.js';
 import { TagTreeProvider } from './tag-tree-provider.js';
 import { IssuesProvider } from './issues-provider.js';
 import { AssetsProvider } from './assets-provider.js';
@@ -147,6 +148,65 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.window.showInformationMessage('Kivi is no longer the default Markdown editor.');
     }),
 
+    vscode.commands.registerCommand('kivi.createExcalidraw', async () => {
+      const excExt = vscode.extensions.getExtension('pomdtr.excalidraw-editor')
+        || vscode.extensions.getExtension('nicolo-ribaudo.excalidraw-editor');
+      if (!excExt) {
+        const choice = await vscode.window.showWarningMessage(
+          'Excalidraw editor extension is not installed. Install it to create and edit Excalidraw diagrams.',
+          'Install Extension',
+        );
+        if (choice === 'Install Extension') {
+          vscode.commands.executeCommand('workbench.extensions.search', 'excalidraw editor');
+        }
+        return;
+      }
+      const mdUri = getActiveMarkdownUri();
+      const baseDir = mdUri ? vscode.Uri.joinPath(mdUri, '..') : vscode.workspace.workspaceFolders?.[0]?.uri;
+      if (!baseDir) {
+        vscode.window.showErrorMessage('No workspace folder open.');
+        return;
+      }
+      const name = await vscode.window.showInputBox({
+        prompt: 'Excalidraw file name',
+        value: 'diagram.excalidraw',
+        validateInput: (v) => v.trim() ? null : 'Name is required',
+      });
+      if (!name) return;
+      const fileName = name.endsWith('.excalidraw') ? name : `${name}.excalidraw`;
+      const fileUri = vscode.Uri.joinPath(baseDir, fileName);
+      const emptyScene = JSON.stringify({
+        type: 'excalidraw',
+        version: 2,
+        source: 'kivi',
+        elements: [],
+        appState: { gridSize: null, viewBackgroundColor: '#ffffff' },
+        files: {},
+      }, null, 2);
+      try {
+        await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(emptyScene));
+      } catch {
+        vscode.window.showErrorMessage(`Failed to create ${fileName}`);
+        return;
+      }
+      try {
+        await vscode.commands.executeCommand('vscode.openWith', fileUri, 'excalidraw-editor.editor');
+      } catch {
+        await vscode.commands.executeCommand('vscode.open', fileUri);
+      }
+      // Insert reference into the active markdown editor
+      if (mdUri) {
+        const panel = KiviEditorProvider.getPanelForUri(mdUri.toString());
+        if (panel) {
+          const relPath = vscode.workspace.asRelativePath(fileUri, false);
+          const mdRelPath = vscode.workspace.asRelativePath(mdUri, false);
+          const mdDir = mdRelPath.substring(0, mdRelPath.lastIndexOf('/') + 1);
+          const ref = relPath.startsWith(mdDir) ? relPath.slice(mdDir.length) : relPath;
+          panel.webview.postMessage({ type: 'insertExcalidraw', src: ref });
+        }
+      }
+    }),
+
     vscode.commands.registerCommand('kivi.showGraphInTab', () => {
       const mdUri = getActiveMarkdownUri();
       const focusNode = mdUri ? vscode.workspace.asRelativePath(mdUri, false) : undefined;
@@ -185,6 +245,21 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: outlineProvider,
   });
   context.subscriptions.push(outlineView);
+
+  // Auto-reveal the active heading in the outline as user scrolls
+  let _revealTimer: ReturnType<typeof setTimeout> | undefined;
+  context.subscriptions.push(
+    KiviEditorProvider.onActiveHeading((heading) => {
+      if (_revealTimer) clearTimeout(_revealTimer);
+      _revealTimer = setTimeout(() => {
+        if (!outlineView.visible) return;
+        const item = outlineProvider.findByLabel(heading);
+        if (item) {
+          outlineView.reveal(item, { select: true, focus: false, expand: true });
+        }
+      }, 100);
+    }),
+  );
 
   // ── Backlinks ──
 
@@ -551,6 +626,13 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('kivi.refreshOutline', () => outlineProvider.refresh()),
     vscode.commands.registerCommand('kivi.collapseOutline', () => outlineProvider.collapseAll()),
+    vscode.commands.registerCommand('kivi.copyOutlineLink', (item: OutlineItem) => {
+      if (!item) return;
+      const slug = makeHeadingSlug(item.label);
+      const link = `[${item.label}](#${slug})`;
+      vscode.env.clipboard.writeText(link);
+      vscode.window.showInformationMessage(`Copied: ${link}`);
+    }),
     vscode.commands.registerCommand('kivi.collapseTags', () => {
       vscode.commands.executeCommand('workbench.actions.treeView.kivi.tags.collapseAll');
     }),

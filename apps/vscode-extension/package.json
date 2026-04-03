@@ -92,6 +92,12 @@
         "category": "Kivi"
       },
       {
+        "command": "kivi.createExcalidraw",
+        "title": "Create Excalidraw Diagram",
+        "category": "Kivi",
+        "icon": "$(symbol-misc)"
+      },
+      {
         "command": "kivi.openGraph",
         "title": "Open Graph View",
         "category": "Kivi",
@@ -186,6 +192,12 @@
         "title": "Open Dev Tools",
         "category": "Kivi",
         "icon": "$(debug-console)"
+      },
+      {
+        "command": "kivi.copyOutlineLink",
+        "title": "Copy Link",
+        "category": "Kivi",
+        "icon": "$(link)"
       }
     ],
     "menus": {
@@ -220,6 +232,10 @@
         },
         {
           "command": "kivi.collapseOutline",
+          "when": "false"
+        },
+        {
+          "command": "kivi.copyOutlineLink",
           "when": "false"
         },
         {
@@ -341,6 +357,18 @@
           "when": "view == kivi.assets",
           "group": "navigation"
         }
+      ],
+      "view/item/context": [
+        {
+          "command": "kivi.copyOutlineLink",
+          "when": "view == kivi.outline && viewItem == kiviOutlineHeading",
+          "group": "inline"
+        },
+        {
+          "command": "kivi.copyOutlineLink",
+          "when": "view == kivi.outline && viewItem == kiviOutlineHeading",
+          "group": "1_copy"
+        }
       ]
     },
     "configuration": {
@@ -428,6 +456,18 @@
           "type": "string",
           "default": "assets",
           "markdownDescription": "Default folder name for pasted images and other assets. Relative to workspace root."
+        },
+        "kivi.stickyScroll.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a sticky header with the current heading hierarchy while scrolling."
+        },
+        "kivi.stickyScroll.maxDepth": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Maximum heading depth to show in sticky scroll (1 = H1 only, 6 = all levels)."
         },
         "kivi.dev.enabled": {
           "type": "boolean",

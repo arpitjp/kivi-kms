@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 
-interface OutlineItem {
+export interface OutlineItem {
   label: string;
+  rawText: string;
   level: number;
   line: number;
   children: OutlineItem[];
@@ -16,11 +17,35 @@ const headingIcons: Record<number, string> = {
   6: 'symbol-property',
 };
 
+function stripMarkdownInline(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/_(.+?)_/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\s+#+\s*$/, '')
+    .trim();
+}
+
+export function makeHeadingSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<OutlineItem | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private roots: OutlineItem[] = [];
+  private allItems: OutlineItem[] = [];
   private collapsed = false;
 
   refresh(): void {
@@ -44,14 +69,15 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
         : vscode.TreeItemCollapsibleState.None,
     );
 
-    item.description = `H${element.level}`;
-    // Use a custom command that works for both text editors and custom webview editors
+    item.description = `L${element.line}`;
+    item.tooltip = `H${element.level} — line ${element.line}`;
     item.command = {
       command: 'kivi.scrollToHeading',
       title: 'Go to heading',
       arguments: [element.label, element.line],
     };
     item.iconPath = new vscode.ThemeIcon(headingIcons[element.level] || 'symbol-key');
+    item.contextValue = 'kiviOutlineHeading';
 
     return item;
   }
@@ -66,8 +92,20 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
     return element.children;
   }
 
+  getParent(element: OutlineItem): OutlineItem | undefined {
+    return findParent(this.roots, element);
+  }
+
+  findByLabel(label: string): OutlineItem | undefined {
+    const normalized = label.trim().toLowerCase();
+    return this.allItems.find(
+      (item) => item.label.trim().toLowerCase() === normalized,
+    );
+  }
+
   private async parseActiveDocument(): Promise<void> {
     this.roots = [];
+    this.allItems = [];
 
     let text: string | undefined;
 
@@ -100,17 +138,31 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
 
       const match = /^(#{1,6})\s+(.+)$/.exec(line);
       if (match) {
+        const rawText = match[2].trim().replace(/\s+#+\s*$/, '');
+        const label = stripMarkdownInline(rawText);
+        if (!label) continue;
         flatHeadings.push({
           level: match[1].length,
-          label: match[2].trim().replace(/\s+#+\s*$/, ''),
+          label,
+          rawText,
           line: i + 1,
           children: [],
         });
       }
     }
 
+    this.allItems = flatHeadings;
     this.roots = buildTree(flatHeadings);
   }
+}
+
+function findParent(roots: OutlineItem[], target: OutlineItem): OutlineItem | undefined {
+  for (const root of roots) {
+    if (root.children.includes(target)) return root;
+    const found = findParent(root.children, target);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function buildTree(headings: OutlineItem[]): OutlineItem[] {

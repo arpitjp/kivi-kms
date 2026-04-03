@@ -911,11 +911,42 @@ body {
   word-break: break-all;
 }
 
+/* ── Gap Cursor ────────────────────────────────────────────── */
+#editor .ProseMirror .ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: relative;
+  font-size: inherit;
+  line-height: inherit;
+}
+#editor .ProseMirror .ProseMirror-gapcursor::after {
+  content: '';
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1.5px;
+  height: 1.15em;
+  background: #d4d4d4;
+  border: none;
+  animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+}
+@keyframes ProseMirror-cursor-blink {
+  to { visibility: hidden; }
+}
+#editor .ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+
 /* ── ProseMirror Content ─────────────────────────────────────── */
-#editor .ProseMirror { outline: none; min-height: 100%; color: #d4d4d4; }
+#editor .ProseMirror { outline: none; min-height: 100%; color: #d4d4d4; padding-bottom: 40vh; }
+#editor .ProseMirror > :first-child { margin-top: 0 !important; }
 #editor .ProseMirror h1 { font-size: 2em; font-weight: 700; margin: 1em 0 0.5em; color: #e6e6e6; }
 #editor .ProseMirror h2 { font-size: 1.5em; font-weight: 600; margin: 0.8em 0 0.4em; color: #e0e0e0; }
 #editor .ProseMirror h3 { font-size: 1.25em; font-weight: 600; margin: 0.6em 0 0.3em; color: #dcdcdc; }
+#editor .ProseMirror h4 { font-size: 1.125em; font-weight: 600; margin: 0.5em 0 0.2em; color: #d4d4d4; }
+#editor .ProseMirror h5 { font-size: 1.075em; font-weight: 600; margin: 0.5em 0 0.2em; color: #d4d4d4; }
+#editor .ProseMirror h6 { font-size: 1em; font-weight: 600; margin: 0.5em 0 0.2em; color: #d4d4d4; }
 
 /* Heading highlight (outline click) */
 @keyframes kivi-heading-flash {
@@ -928,20 +959,68 @@ body {
   border-radius: 3px;
 }
 
+/* ---------- Heading Fold ---------- */
+#editor .ProseMirror h1,
+#editor .ProseMirror h2,
+#editor .ProseMirror h3,
+#editor .ProseMirror h4,
+#editor .ProseMirror h5,
+#editor .ProseMirror h6 { position: relative; }
+
+.kivi-fold-arrow {
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #858585;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  border-radius: 3px;
+  z-index: 2;
+  user-select: none;
+}
+.kivi-fold-arrow:hover { opacity: 1 !important; color: #d4d4d4; background: rgba(90, 93, 94, 0.31); }
+#editor .ProseMirror h1:hover > .kivi-fold-arrow,
+#editor .ProseMirror h2:hover > .kivi-fold-arrow,
+#editor .ProseMirror h3:hover > .kivi-fold-arrow,
+#editor .ProseMirror h4:hover > .kivi-fold-arrow,
+#editor .ProseMirror h5:hover > .kivi-fold-arrow,
+#editor .ProseMirror h6:hover > .kivi-fold-arrow { opacity: 0.6; }
+.kivi-fold-arrow.kivi-fold-folded { opacity: 0.7; color: #4fc1ff; }
+.kivi-fold-arrow.kivi-fold-folded:hover { opacity: 1; color: #4fc1ff; }
+.kivi-heading-folded { margin-bottom: 0.1em !important; }
+.kivi-heading-folded::after {
+  content: '...';
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 0.65em;
+  color: #858585;
+  vertical-align: middle;
+  opacity: 0.6;
+  letter-spacing: 1px;
+}
+
 #editor .ProseMirror p { margin: 0.5em 0; }
 #editor .ProseMirror strong { font-weight: 700; color: #e0e0e0; }
 #editor .ProseMirror em { font-style: italic; }
 #editor .ProseMirror s { text-decoration: line-through; color: var(--text-muted); }
 /* Inline code */
 #editor .ProseMirror code {
-  background: rgba(255, 255, 255, 0.06);
-  color: #e06c50;
+  color: #e8956a;
+  caret-color: #e8956a;
+  background: rgba(232, 149, 106, 0.08);
   padding: 2px 6px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   font-size: 0.88em;
   font-weight: 400;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(232, 149, 106, 0.15);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
@@ -974,6 +1053,7 @@ body {
   background: none;
   color: #d4d4d4;
   padding: 0;
+  border: none;
   border-radius: 0;
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   font-size: 13px;
@@ -1155,10 +1235,12 @@ body {
 #editor .ProseMirror hr { border: none; height: 2px; background: linear-gradient(to right, transparent, var(--border) 15%, var(--border) 85%, transparent); margin: 1.8em 0; opacity: 0.7; }
 #editor .ProseMirror a { color: var(--accent); text-decoration: underline; }
 #editor .ProseMirror img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: pointer; transition: outline 0.12s; display: block; }
-#editor .ProseMirror video, #editor .ProseMirror .kivi-video { max-width: 100%; border-radius: 8px; margin: 0.5em 0; display: block; cursor: pointer; }
-#editor .ProseMirror audio { max-width: 100%; display: block; margin: 0.5em 0; cursor: pointer; width: 100%; max-width: 400px; }
-#editor .ProseMirror video.ProseMirror-selectednode,
-#editor .ProseMirror audio.ProseMirror-selectednode { outline: none; }
+#editor .ProseMirror .kivi-video-wrapper { margin: 0.5em 0; position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+#editor .ProseMirror .kivi-video-wrapper.ProseMirror-selectednode { outline: none; }
+#editor .ProseMirror video, #editor .ProseMirror .kivi-video { max-width: 100%; border-radius: 8px; display: block; cursor: pointer; background: #000; }
+#editor .ProseMirror .kivi-audio-wrapper { margin: 0.5em 0; position: relative; display: block; max-width: 100%; }
+#editor .ProseMirror .kivi-audio-wrapper.ProseMirror-selectednode { outline: none; }
+#editor .ProseMirror audio, #editor .ProseMirror .kivi-audio { width: 100%; max-width: 100%; display: block; }
 #editor .ProseMirror img[data-align="left"] { margin-left: 0; margin-right: auto; }
 #editor .ProseMirror img[data-align="center"] { margin-left: auto; margin-right: auto; }
 #editor .ProseMirror img[data-align="right"] { margin-left: auto; margin-right: 0; }
@@ -1246,6 +1328,26 @@ body {
 .kivi-table-ctrl-danger { color: var(--kivi-error, #f44747) !important; }
 .kivi-table-ctrl-danger:hover { background: rgba(244, 71, 71, 0.15); color: #f44747 !important; }
 .kivi-table-ctrl-sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; flex-shrink: 0; }
+
+/* ── Block Copy Controls (blockquote, math) ─────────────────────── */
+.kivi-block-copy-controls {
+  position: fixed; display: flex; align-items: center; gap: 2px;
+  padding: 2px 3px; background: #252526;
+  border: 1px solid #3c3c3c; border-radius: 5px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3); z-index: 50;
+  opacity: 0.85; transition: opacity 0.15s;
+}
+.kivi-block-copy-controls:hover { opacity: 1; }
+.kivi-block-copy-btn {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 4px; border-radius: 3px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.12s, color 0.12s; pointer-events: auto;
+}
+.kivi-block-copy-btn:hover { background: rgba(255, 255, 255, 0.12); color: #e0e0e0; }
+.kivi-block-copy-btn svg { display: block; }
+.kivi-block-copy-danger { color: var(--kivi-error, #f44747) !important; }
+.kivi-block-copy-danger:hover { background: rgba(244, 71, 71, 0.15); color: #f44747 !important; }
 
 /* ── Image Controls (compact toolbar) ─────────────────────── */
 .kivi-image-controls {
@@ -1430,6 +1532,13 @@ body {
 .kivi-sel-btn svg { display: block; }
 .kivi-sel-btn:hover { background: rgba(255, 255, 255, 0.1); color: #e0e0e0; }
 .kivi-sel-btn.active { background: rgba(77, 170, 252, 0.2); color: var(--accent); }
+.kivi-sel-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
 
 /* ── Search highlights ───────────────────────────────────────── */
 .kivi-search-highlight { background: rgba(255, 200, 0, 0.3); border-radius: 2px; }

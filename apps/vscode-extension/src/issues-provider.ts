@@ -115,18 +115,24 @@ export class IssuesProvider implements vscode.TreeDataProvider<IssueNode> {
           if (/^```/.test(line.trimStart())) { inFence = !inFence; continue; }
           if (inFence) continue;
 
-          // Check wiki links
+          // Check wiki links — only flag as broken if the target looks
+          // like it should resolve to a local file (has an extension or path
+          // separator).  Plain [[Page Name]] links are Foam/Obsidian-style
+          // forward references and are not issues.
           WIKI_LINK_RE.lastIndex = 0;
           let m: RegExpExecArray | null;
           while ((m = WIKI_LINK_RE.exec(line)) !== null) {
-            const target = m[1].trim().toLowerCase().replace(/\.md$/, '');
+            const raw = m[1].trim();
+            const target = raw.toLowerCase().replace(/\.md$/, '');
             if (target.includes('#')) continue;
+            // Skip plain wiki-links (forward references) — not broken
+            if (!raw.includes('/') && !raw.includes('.')) continue;
             if (!allMdNames.has(target)) {
               brokenLinks.push({
                 kind: 'issue',
-                label: `[[${m[1].trim()}]]`,
+                label: `[[${raw}]]`,
                 description: relPath,
-                severity: 'error',
+                severity: 'warning',
                 filePath: uri.fsPath,
                 line: i + 1,
               });
@@ -163,7 +169,6 @@ export class IssuesProvider implements vscode.TreeDataProvider<IssueNode> {
         const assetFiles = await vscode.workspace.findFiles(assetsGlob, '**/node_modules/**', 5000);
         for (const assetUri of assetFiles) {
           if (!referencedAssets.has(assetUri.fsPath)) {
-            const relAsset = vscode.workspace.asRelativePath(assetUri, false);
             const ext = path.extname(assetUri.fsPath).toLowerCase();
             const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(ext);
             const isVideo = ['.mp4', '.webm', '.mov', '.avi'].includes(ext);

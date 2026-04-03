@@ -18,6 +18,9 @@ export { CodeBlockEnhanced } from './code-block-enhanced.js';
 export { SelectionToolbar } from './selection-toolbar.js';
 export { DevWatchdog, type DevWatchdogOptions } from './dev-watchdog.js';
 export { SmartTypography } from './smart-typography.js';
+export { HeadingFold, headingFoldKey } from './heading-fold.js';
+export { CursorFix } from './cursor-fix.js';
+export { BlockCopyControls } from './block-copy-controls.js';
 export {
   LinkPreviewExtension,
   type LinkPreviewOptions,

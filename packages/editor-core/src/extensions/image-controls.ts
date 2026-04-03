@@ -96,7 +96,12 @@ function resolveMediaElement(dom: Node | null, typeName: string): HTMLElement | 
     return (dom as HTMLElement)?.querySelector?.(selector) as HTMLElement | null;
   }
   if (dom instanceof HTMLElement && dom.tagName.toLowerCase() === selector) return dom;
-  return (dom as HTMLElement)?.querySelector?.(selector) as HTMLElement | null;
+  const found = (dom as HTMLElement)?.querySelector?.(selector) as HTMLElement | null;
+  if (found) return found;
+  if (dom instanceof HTMLElement && dom.classList?.contains(`kivi-${typeName}-wrapper`)) {
+    return dom.querySelector(selector) as HTMLElement | null;
+  }
+  return null;
 }
 
 export const ImageControls = Extension.create({
@@ -127,6 +132,8 @@ export const ImageControls = Extension.create({
             onScroll = null;
           }
 
+          let scrollRaf: number | null = null;
+
           function attachScroll(view: EditorView) {
             detachScroll();
             const parent = view.dom.parentElement;
@@ -134,7 +141,11 @@ export const ImageControls = Extension.create({
             scrollParentEl = parent;
             onScroll = () => {
               if (!activeEl || !panel) return;
-              repositionFloating();
+              if (scrollRaf) return;
+              scrollRaf = requestAnimationFrame(() => {
+                scrollRaf = null;
+                if (activeEl && panel) repositionFloating();
+              });
             };
             parent.addEventListener('scroll', onScroll, { passive: true });
           }
@@ -185,22 +196,29 @@ export const ImageControls = Extension.create({
             }
             setFloatingVisibility(true);
             const elRect = activeEl.getBoundingClientRect();
-            const editorRect = activeView.dom.getBoundingClientRect();
+            const container = activeView.dom.parentElement;
+            const containerRect = container?.getBoundingClientRect()
+              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
             const panelWidth = panel.offsetWidth || 200;
             const panelHeight = panel.offsetHeight || 48;
+            const gap = 4;
 
-            let left = elRect.left + elRect.width / 2 - panelWidth / 2;
-            const insidePadding = 12;
-            let top = elRect.top + insidePadding;
+            const visibleTop = Math.max(elRect.top, containerRect.top);
+            const visibleBottom = Math.min(elRect.bottom, containerRect.bottom);
 
-            if (elRect.height < panelHeight + insidePadding * 2 + 8) {
-              top = elRect.bottom + 6;
+            let top = visibleTop - panelHeight - gap;
+
+            if (top < containerRect.top) {
+              top = visibleTop + gap;
             }
 
-            const visibleTop = Math.max(editorRect.top, 0);
-            if (top < visibleTop + 4) top = visibleTop + 4;
-            if (top + panelHeight > window.innerHeight - 8) top = window.innerHeight - panelHeight - 8;
+            if (top + panelHeight > visibleBottom - gap) {
+              top = visibleBottom - panelHeight - gap;
+            }
 
+            top = Math.max(gap, Math.min(top, window.innerHeight - panelHeight - gap));
+
+            let left = elRect.left + elRect.width / 2 - panelWidth / 2;
             if (left + panelWidth > window.innerWidth - 8) left = window.innerWidth - panelWidth - 8;
             if (left < 8) left = 8;
 
@@ -212,6 +230,7 @@ export const ImageControls = Extension.create({
 
           function removeOverlay() {
             detachScroll();
+            if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
             for (const h of resizeHandles) h.remove();
             resizeHandles.length = 0;
             panel?.remove();
@@ -418,6 +437,17 @@ export const ImageControls = Extension.create({
               buttonRow.appendChild(makeBtn(ICONS.link, 'Edit source URL', () => toggleEditRow('src')));
               if (kind === 'image') {
                 buttonRow.appendChild(makeBtn(ICONS.alt, 'Edit alt text', () => toggleEditRow('alt')));
+                const imgSrc = (getNodeAttr('src') as string) || '';
+                if (/\.excalidraw\.(png|svg)$/i.test(imgSrc)) {
+                  buttonRow.appendChild(makeSep());
+                  const excBtn = makeBtn(
+                    svg('<path d="M14.5 1.5l-13 13M1.5 1.5l13 13M8 1v14M1 8h14"/>'),
+                    'Open in Excalidraw',
+                    () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: imgSrc } })),
+                  );
+                  excBtn.title = 'Open in Excalidraw';
+                  buttonRow.appendChild(excBtn);
+                }
               }
             }
 

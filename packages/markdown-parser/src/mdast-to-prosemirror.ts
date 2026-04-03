@@ -179,15 +179,22 @@ function convertParagraph(node: Paragraph): PMNodeJSON | PMNodeJSON[] {
     }
   }
 
-  // Tiptap Image is a block node — images cannot live inside paragraphs.
-  // If the paragraph is just a single image, lift it to block level.
-  if (node.children.length === 1 && node.children[0].type === 'image') {
-    return convertImage(node.children[0]);
+  // Block nodes (images, excalidraw links) cannot live inside paragraphs.
+  // If the paragraph is just a single block-producing child, lift it.
+  if (node.children.length === 1) {
+    const only = node.children[0];
+    if (only.type === 'image') return convertImage(only);
+    if (only.type === 'link' && isExcalidrawUrl((only as Link).url)) {
+      return { type: 'excalidrawBlock', attrs: { src: (only as Link).url, data: '{}' } };
+    }
   }
 
-  // Mixed content: split into runs of inline content vs images.
-  const hasImage = node.children.some((c) => c.type === 'image');
-  if (hasImage) {
+  // Mixed content: split into runs of inline content vs block-producing nodes.
+  const isBlockChild = (c: PhrasingContent) =>
+    c.type === 'image' || (c.type === 'link' && isExcalidrawUrl((c as Link).url));
+
+  const hasBlockChild = node.children.some(isBlockChild);
+  if (hasBlockChild) {
     const blocks: PMNodeJSON[] = [];
     let inlineBuf: PhrasingContent[] = [];
 
@@ -202,6 +209,9 @@ function convertParagraph(node: Paragraph): PMNodeJSON | PMNodeJSON[] {
       if (child.type === 'image') {
         flushInline();
         blocks.push(convertImage(child));
+      } else if (child.type === 'link' && isExcalidrawUrl((child as Link).url)) {
+        flushInline();
+        blocks.push({ type: 'excalidrawBlock', attrs: { src: (child as Link).url, data: '{}' } });
       } else {
         inlineBuf.push(child);
       }
@@ -395,9 +405,8 @@ function convertInlineCode(node: InlineCode, parentMarks: PMMarkJSON[]): PMNodeJ
 }
 
 function convertLink(node: Link, parentMarks: PMMarkJSON[]): PMNodeJSON[] {
-  if (isExcalidrawUrl(node.url)) {
-    return [{ type: 'excalidrawBlock', attrs: { src: node.url, data: '{}' } }];
-  }
+  // Excalidraw links are promoted to block nodes in convertParagraph.
+  // In other inline contexts (headings, list items), keep as a regular link.
   const mark = linkMark(node.url, node.title ?? undefined);
   return convertPhrasingContent(node.children, [...parentMarks, mark]);
 }
@@ -419,6 +428,10 @@ const INLINE_HTML_MARKS: [RegExp, () => PMMarkJSON][] = [
 ];
 
 function convertHtml(node: Html): PMNodeJSON | PMNodeJSON[] {
+  // <br> / <br/> → empty paragraph (preserves intentional blank lines)
+  if (/^<br\s*\/?>$/i.test(node.value.trim())) {
+    return paragraphNode([]);
+  }
   for (const [regex, markFn] of INLINE_HTML_MARKS) {
     const m = node.value.match(regex);
     if (m) return textNode(m[1], [markFn()]);

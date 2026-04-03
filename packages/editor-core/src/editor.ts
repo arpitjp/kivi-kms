@@ -1,5 +1,6 @@
 import { Editor, Extension } from '@tiptap/core';
-import { TextSelection } from '@tiptap/pm/state';
+import { Plugin, TextSelection } from '@tiptap/pm/state';
+import type { EditorView } from '@tiptap/pm/view';
 import StarterKit from '@tiptap/starter-kit';
 import Code from '@tiptap/extension-code';
 import Link from '@tiptap/extension-link';
@@ -41,6 +42,9 @@ import { LinkPreviewExtension } from './extensions/link-preview.js';
 import type { DetectedLink, LinkPreviewData } from './extensions/link-preview.js';
 import { SmartTypography } from './extensions/smart-typography.js';
 import { Video, Audio } from './extensions/video.js';
+import { HeadingFold } from './extensions/heading-fold.js';
+import { CursorFix } from './extensions/cursor-fix.js';
+import { BlockCopyControls } from './extensions/block-copy-controls.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -64,8 +68,107 @@ export class KiviEditor {
           code: false,
         }),
         Code.extend({
-          inclusive: false,
+          exitable: false,
           addInputRules() { return []; },
+
+          addKeyboardShortcuts() {
+            const parentShortcuts = this.parent?.() ?? {};
+            return {
+              ...parentShortcuts,
+              ArrowRight: () => {
+                const { state } = this.editor;
+                const { $from, empty } = state.selection;
+                if (!empty) return false;
+
+                const codeType = state.schema.marks.code;
+                if (!codeType || !codeType.isInSet($from.marks())) return false;
+
+                const afterHasCode = $from.nodeAfter?.marks.some(
+                  (m: any) => m.type === codeType,
+                ) ?? false;
+                if (afterHasCode) return false;
+
+                const newPos = $from.pos + 1;
+                const tr = state.tr;
+                if (newPos <= state.doc.content.size) {
+                  tr.setSelection(TextSelection.create(state.doc, newPos));
+                }
+                tr.setStoredMarks(
+                  $from.marks().filter((m: any) => m.type !== codeType),
+                );
+                this.editor.view.dispatch(tr);
+                return true;
+              },
+
+              ArrowLeft: () => {
+                const { state } = this.editor;
+                const { $from, empty } = state.selection;
+                if (!empty) return false;
+
+                const codeType = state.schema.marks.code;
+                if (!codeType || !codeType.isInSet($from.marks())) return false;
+
+                const beforeHasCode = $from.nodeBefore?.marks.some(
+                  (m: any) => m.type === codeType,
+                ) ?? false;
+                if (beforeHasCode) return false;
+
+                const newPos = $from.pos - 1;
+                const tr = state.tr;
+                if (newPos >= 0) {
+                  tr.setSelection(TextSelection.create(state.doc, newPos));
+                }
+                tr.setStoredMarks(
+                  $from.marks().filter((m: any) => m.type !== codeType),
+                );
+                this.editor.view.dispatch(tr);
+                return true;
+              },
+            };
+          },
+
+          addProseMirrorPlugins() {
+            const codeType = this.type;
+            return [
+              new Plugin({
+                props: {
+                  handleTextInput(
+                    view: EditorView,
+                    from: number,
+                    to: number,
+                    text: string,
+                  ): boolean {
+                    if (from === to) return false;
+                    if ('`"\'([{*_~'.includes(text)) return false;
+
+                    const { state } = view;
+                    if (!codeType) return false;
+
+                    let allCode = true;
+                    let anyCode = false;
+                    state.doc.nodesBetween(from, to, (node: any) => {
+                      if (node.isText) {
+                        if (node.marks.some((m: any) => m.type === codeType)) {
+                          anyCode = true;
+                        } else {
+                          allCode = false;
+                        }
+                      }
+                    });
+
+                    if (!anyCode || !allCode) return false;
+
+                    const tr = state.tr;
+                    tr.insertText(text, from, to);
+                    tr.addMark(from, from + text.length, codeType.create());
+                    tr.setStoredMarks([codeType.create()]);
+                    view.dispatch(tr);
+                    return true;
+                  },
+                },
+              }),
+            ];
+          },
         }),
         Link.configure({
           openOnClick: false,
@@ -172,6 +275,9 @@ export class KiviEditor {
         Audio,
         DevWatchdog,
         SmartTypography,
+        HeadingFold,
+        CursorFix,
+        BlockCopyControls,
         LinkPreviewExtension.configure({
           onResolveLink: options.onResolveLink
             ? async (link: DetectedLink) => {

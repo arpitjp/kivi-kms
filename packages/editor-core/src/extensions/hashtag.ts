@@ -192,6 +192,40 @@ export const HashTag = Mark.create<HashTagOptions>({
   },
 });
 
+// ── Highlight helpers ──
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+}
+
+function highlightTagMatch(tag: string, query: string): string {
+  if (!query) return escHtml(tag);
+
+  const tLower = tag.toLowerCase();
+  const qLower = query.toLowerCase();
+
+  const subIdx = tLower.indexOf(qLower);
+  if (subIdx >= 0) {
+    return (
+      escHtml(tag.substring(0, subIdx)) +
+      '<b>' + escHtml(tag.substring(subIdx, subIdx + query.length)) + '</b>' +
+      escHtml(tag.substring(subIdx + query.length))
+    );
+  }
+
+  let result = '';
+  let qi = 0;
+  for (let ti = 0; ti < tag.length; ti++) {
+    if (qi < qLower.length && tLower[ti] === qLower[qi]) {
+      result += '<b>' + escHtml(tag[ti]) + '</b>';
+      qi++;
+    } else {
+      result += escHtml(tag[ti]);
+    }
+  }
+  return result;
+}
+
 // ── Suggestion plugin (self-contained) ──
 
 function createSuggestionPlugin(
@@ -277,10 +311,11 @@ function createSuggestionPlugin(
     popupEl.style.position = 'fixed';
     popupEl.style.zIndex = '10000';
 
+    const query = activeRange ? detectHashTrigger(view.state)?.query ?? '' : '';
     popupEl.innerHTML = items.map((item, i) => {
       const cls = i === selectedIndex ? ' kivi-tag-suggest-active' : '';
-      const escaped = item.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-      return `<div class="kivi-tag-suggest-item${cls}" data-idx="${i}">#${escaped}</div>`;
+      const highlighted = highlightTagMatch(item, query);
+      return `<div class="kivi-tag-suggest-item${cls}" data-idx="${i}">#${highlighted}</div>`;
     }).join('');
 
     popupEl.querySelectorAll('.kivi-tag-suggest-item').forEach((el) => {

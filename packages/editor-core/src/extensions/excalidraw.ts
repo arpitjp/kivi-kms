@@ -365,11 +365,16 @@ export const ExcalidrawBlock = Node.create({
           try {
             const content = await _excalidrawCallbacks.readFile(node.attrs.src);
             renderPreview(content);
-          } catch {
-            canvas.innerHTML = '<div class="kivi-excalidraw-error">Could not load file</div>';
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            canvas.innerHTML = `<div class="kivi-excalidraw-error">Could not load file: ${node.attrs.src}</div>
+              <div class="kivi-excalidraw-error-detail">${msg}</div>`;
           }
-        } else {
+        } else if (!node.attrs.src) {
           renderPreview(node.attrs.data || '{}');
+        } else {
+          canvas.innerHTML = `<div class="kivi-excalidraw-error">File reader not available</div>
+            <div class="kivi-excalidraw-error-detail">${node.attrs.src}</div>`;
         }
       }
 

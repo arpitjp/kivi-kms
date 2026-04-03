@@ -18,15 +18,49 @@ const ICONS = {
   superscript: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="5" x2="9" y2="14"/><line x1="9" y1="5" x2="1" y2="14"/><text x="11" y="6" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text></svg>`,
   highlight: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="8" height="11" rx="1" fill="#fde68a" fill-opacity="0.4"/><path d="M12 11l-2 4h4l-2-4z" fill="currentColor" stroke="none"/></svg>`,
   link: svg('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'),
+  bullet: svg('<line x1="3" y1="4" x2="3" y2="4" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="4" x2="14" y2="4"/><line x1="3" y1="8" x2="3" y2="8" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="8" x2="14" y2="8"/><line x1="3" y1="12" x2="3" y2="12" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="12" x2="14" y2="12"/>'),
+  ordered: svg('<text x="1" y="5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">1</text><line x1="6" y1="4" x2="14" y2="4"/><text x="1" y="9.5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text><line x1="6" y1="8" x2="14" y2="8"/><text x="1" y="13.5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">3</text><line x1="6" y1="12" x2="14" y2="12"/>'),
+  task: svg('<rect x="1.5" y="2" width="4.5" height="4.5" rx="1" stroke-width="1.3"/><polyline points="2.5,4 3.5,5.2 5.2,3" stroke-width="1.2"/><line x1="8" y1="4" x2="14" y2="4"/><rect x="1.5" y="9.5" width="4.5" height="4.5" rx="1" stroke-width="1.3"/><line x1="8" y1="12" x2="14" y2="12"/>'),
+  indent: svg('<polyline points="9,3 13,8 9,13"/><line x1="2" y1="4" x2="7" y2="4"/><line x1="2" y1="8" x2="7" y2="8"/><line x1="2" y1="12" x2="7" y2="12"/>'),
+  outdent: svg('<polyline points="7,3 3,8 7,13"/><line x1="9" y1="4" x2="14" y2="4"/><line x1="9" y1="8" x2="14" y2="8"/><line x1="9" y1="12" x2="14" y2="12"/>'),
 };
 
 type FormatAction = {
   id: string;
   icon: string;
   title: string;
+  separator?: boolean;
   cmd: (editor: import('@tiptap/core').Editor) => void;
   isActive: (editor: import('@tiptap/core').Editor) => boolean;
 };
+
+function sinkCurrentListItem(e: import('@tiptap/core').Editor) {
+  const { $from } = e.state.selection;
+  const listItem = $from.node(-1)?.type.name === 'listItem' || $from.node(-1)?.type.name === 'taskItem';
+  if (listItem) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain = e.chain().focus() as any;
+    if ($from.node(-1)?.type.name === 'taskItem') {
+      chain.sinkListItem('taskItem').run();
+    } else {
+      chain.sinkListItem('listItem').run();
+    }
+  }
+}
+
+function liftCurrentListItem(e: import('@tiptap/core').Editor) {
+  const { $from } = e.state.selection;
+  const listItem = $from.node(-1)?.type.name === 'listItem' || $from.node(-1)?.type.name === 'taskItem';
+  if (listItem) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain = e.chain().focus() as any;
+    if ($from.node(-1)?.type.name === 'taskItem') {
+      chain.liftListItem('taskItem').run();
+    } else {
+      chain.liftListItem('listItem').run();
+    }
+  }
+}
 
 const ACTIONS: FormatAction[] = [
   { id: 'bold', icon: ICONS.bold, title: 'Bold', cmd: (e) => e.chain().focus().toggleBold().run(), isActive: (e) => e.isActive('bold') },
@@ -46,6 +80,12 @@ const ACTIONS: FormatAction[] = [
       }));
     }
   }, isActive: (e) => e.isActive('link') },
+  { id: 'sep-list', icon: '', title: '', separator: true, cmd: () => {}, isActive: () => false },
+  { id: 'bullet', icon: ICONS.bullet, title: 'Bullet List', cmd: (e) => e.chain().focus().toggleBulletList().run(), isActive: (e) => e.isActive('bulletList') },
+  { id: 'ordered', icon: ICONS.ordered, title: 'Numbered List', cmd: (e) => e.chain().focus().toggleOrderedList().run(), isActive: (e) => e.isActive('orderedList') },
+  { id: 'task', icon: ICONS.task, title: 'Task List', cmd: (e) => e.chain().focus().toggleTaskList().run(), isActive: (e) => e.isActive('taskList') },
+  { id: 'outdent', icon: ICONS.outdent, title: 'Outdent', cmd: (e) => liftCurrentListItem(e), isActive: () => false },
+  { id: 'indent', icon: ICONS.indent, title: 'Indent', cmd: (e) => sinkCurrentListItem(e), isActive: () => false },
 ];
 
 function selectionVisibleInEditor(view: EditorView): boolean {
@@ -128,6 +168,13 @@ export const SelectionToolbar = Extension.create({
             el.style.pointerEvents = 'none';
 
             for (const action of ACTIONS) {
+              if (action.separator) {
+                const sep = document.createElement('span');
+                sep.className = 'kivi-sel-sep';
+                sep.style.pointerEvents = 'none';
+                el.appendChild(sep);
+                continue;
+              }
               const btn = document.createElement('button');
               btn.className = 'kivi-sel-btn';
               btn.type = 'button';
@@ -149,9 +196,16 @@ export const SelectionToolbar = Extension.create({
           }
 
           function updateActiveState(el: HTMLElement) {
+            const actionButtons = ACTIONS.filter((a) => !a.separator);
             const buttons = el.querySelectorAll<HTMLButtonElement>('.kivi-sel-btn');
+            const inList = editor.isActive('bulletList') || editor.isActive('orderedList') || editor.isActive('taskList');
             buttons.forEach((btn, i) => {
-              btn.classList.toggle('active', ACTIONS[i].isActive(editor));
+              if (i >= actionButtons.length) return;
+              const action = actionButtons[i];
+              btn.classList.toggle('active', action.isActive(editor));
+              if (action.id === 'indent' || action.id === 'outdent') {
+                btn.style.display = inList ? '' : 'none';
+              }
             });
           }
 

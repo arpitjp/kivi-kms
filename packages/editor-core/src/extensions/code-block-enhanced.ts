@@ -288,8 +288,13 @@ export const CodeBlockEnhanced = Extension.create({
         let hoveringPanel = false;
         let langDropdownOpen = false;
         let langSelectedIdx = -1;
+        let hideTimer: ReturnType<typeof setTimeout> | null = null;
         const collapsedBlocks = new WeakSet<HTMLElement>();
         const wrappedBlocks = new WeakSet<HTMLElement>();
+
+        function clearHideTimer() {
+          if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+        }
 
         function preventPM(e: MouseEvent) { e.preventDefault(); e.stopPropagation(); }
         for (const btn of [langBtn, copyBtn, wrapBtn, deleteBtn]) {
@@ -451,12 +456,12 @@ export const CodeBlockEnhanced = Extension.create({
         });
 
         // --- Panel hover tracking ---
-        panel.addEventListener('mouseenter', () => { hoveringPanel = true; });
+        panel.addEventListener('mouseenter', () => { hoveringPanel = true; clearHideTimer(); });
         panel.addEventListener('mouseleave', (e) => {
           const related = e.relatedTarget as Node | null;
           if (related && (panel.contains(related) || langDropdown.contains(related))) return;
           hoveringPanel = false;
-          if (!langDropdownOpen) reconcile();
+          if (!langDropdownOpen) deferredReconcile();
         });
 
         function toContentCoords(viewportRect: DOMRect) {
@@ -475,12 +480,14 @@ export const CodeBlockEnhanced = Extension.create({
 
           panel.style.display = 'flex';
           const panelW = panel.offsetWidth || 260;
+          const panelH = panel.offsetHeight || 32;
+          const gap = 4;
           const centerX = pos.left + (preRect.width - panelW) / 2;
-          panel.style.left = `${Math.max(pos.left + 4, centerX)}px`;
+          panel.style.left = `${Math.max(pos.left + gap, centerX)}px`;
 
-          const aboveTop = pos.top - 36;
+          const aboveTop = pos.top - panelH - gap;
           const visiblePreTop = Math.max(preRect.top, containerRect.top);
-          const insideTop = toContentCoords({ top: visiblePreTop + 4 } as DOMRect).top;
+          const insideTop = toContentCoords({ top: visiblePreTop + gap } as DOMRect).top;
 
           if (aboveTop > scrollParent.scrollTop) {
             panel.style.top = `${aboveTop}px`;
@@ -519,16 +526,26 @@ export const CodeBlockEnhanced = Extension.create({
           if (langDropdownOpen) return;
           const target = hoveredPre || cursorPre;
           if (target) {
+            clearHideTimer();
             showControls(target);
           } else if (!hoveringPanel) {
             hideControls();
           }
         }
 
+        function deferredReconcile() {
+          clearHideTimer();
+          hideTimer = setTimeout(() => {
+            hideTimer = null;
+            reconcile();
+          }, 120);
+        }
+
         function onMouseOver(e: MouseEvent) {
           const target = (e.target as HTMLElement).closest?.('pre');
           if (target instanceof HTMLElement && editorView.dom.contains(target)) {
             hoveredPre = target;
+            clearHideTimer();
             reconcile();
           }
         }
@@ -536,7 +553,7 @@ export const CodeBlockEnhanced = Extension.create({
           const related = e.relatedTarget as HTMLElement | null;
           if (!related || (!related.closest?.('pre') && !panel.contains(related))) {
             hoveredPre = null;
-            reconcile();
+            deferredReconcile();
           }
         }
 
@@ -653,6 +670,7 @@ export const CodeBlockEnhanced = Extension.create({
         return {
           update,
           destroy() {
+            clearHideTimer();
             editorView.dom.removeEventListener('mouseover', onMouseOver);
             editorView.dom.removeEventListener('mouseout', onMouseOut);
             panel.remove();

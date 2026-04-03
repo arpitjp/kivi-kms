@@ -9,6 +9,8 @@ const svg = (d: string) =>
   `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
 const ICONS = {
+  copy: svg('<rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/>'),
+  check: svg('<polyline points="3,8 6.5,11.5 13,4.5" stroke-width="2"/>'),
   rowAfter: svg('<rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="8" y1="10" x2="8" y2="14" stroke-width="1.8"/><line x1="6" y1="12" x2="10" y2="12" stroke-width="1.8"/>'),
   colAfter: svg('<rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="8" y1="2" x2="8" y2="14"/><line x1="10" y1="8" x2="14" y2="8" stroke-width="1.8"/><line x1="12" y1="6" x2="12" y2="10" stroke-width="1.8"/>'),
   rowBefore: svg('<rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="8" y1="2" x2="8" y2="6" stroke-width="1.8"/><line x1="6" y1="4" x2="10" y2="4" stroke-width="1.8"/>'),
@@ -22,6 +24,59 @@ const ICONS = {
   alignRight: svg('<line x1="2" y1="4" x2="14" y2="4"/><line x1="6" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/>'),
   trash: svg('<polyline points="3,4 13,4"/><path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1"/><path d="M4 4l.7 9.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L12 4"/>'),
 };
+
+function tableToMarkdown(tableEl: HTMLElement): string {
+  const rows = tableEl.querySelectorAll('tr');
+  if (rows.length === 0) return '';
+
+  const matrix: string[][] = [];
+  for (const row of rows) {
+    const cells: string[] = [];
+    for (const cell of row.querySelectorAll('th, td')) {
+      cells.push((cell as HTMLElement).textContent?.trim() || '');
+    }
+    matrix.push(cells);
+  }
+
+  const colCount = Math.max(...matrix.map(r => r.length));
+  const colWidths = new Array(colCount).fill(3);
+  for (const row of matrix) {
+    for (let i = 0; i < row.length; i++) {
+      colWidths[i] = Math.max(colWidths[i], row[i].length);
+    }
+  }
+
+  const alignments: (string | null)[] = new Array(colCount).fill(null);
+  const firstRow = rows[0];
+  if (firstRow) {
+    const cells = firstRow.querySelectorAll('th, td');
+    cells.forEach((cell, i) => {
+      const ta = (cell as HTMLElement).style.textAlign;
+      if (ta === 'center' || ta === 'right' || ta === 'left') alignments[i] = ta;
+    });
+  }
+
+  const lines: string[] = [];
+  for (let r = 0; r < matrix.length; r++) {
+    const row = matrix[r];
+    const padded = row.map((cell, i) => cell.padEnd(colWidths[i] || 3));
+    while (padded.length < colCount) padded.push(' '.repeat(colWidths[padded.length] || 3));
+    lines.push('| ' + padded.join(' | ') + ' |');
+
+    if (r === 0) {
+      const sepCells = colWidths.map((w: number, i: number) => {
+        const a = alignments[i];
+        const dashes = '-'.repeat(Math.max(w, 3));
+        if (a === 'center') return ':' + dashes.slice(2) + ':';
+        if (a === 'right') return dashes.slice(1) + ':';
+        return dashes;
+      });
+      lines.push('| ' + sepCells.join(' | ') + ' |');
+    }
+  }
+
+  return lines.join('\n');
+}
 
 function isElementVisibleInEditor(el: HTMLElement, view: EditorView): boolean {
   const ir = el.getBoundingClientRect();
@@ -59,6 +114,8 @@ export const TableControls = Extension.create({
             onScroll = null;
           }
 
+          let scrollRaf: number | null = null;
+
           function attachScroll(view: EditorView) {
             detachScroll();
             const parent = view.dom.parentElement;
@@ -67,13 +124,18 @@ export const TableControls = Extension.create({
             editorViewRef = view;
             onScroll = () => {
               if (!menu || !currentTable || !editorViewRef) return;
-              positionMenu(editorViewRef, currentTable);
+              if (scrollRaf) return;
+              scrollRaf = requestAnimationFrame(() => {
+                scrollRaf = null;
+                if (menu && currentTable && editorViewRef) positionMenu(editorViewRef, currentTable);
+              });
             };
             parent.addEventListener('scroll', onScroll, { passive: true });
           }
 
           function removeMenu() {
             detachScroll();
+            if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
             menu?.remove();
             menu = null;
             currentTable = null;
@@ -114,6 +176,16 @@ export const TableControls = Extension.create({
             menu.setAttribute('aria-label', 'Table controls');
             menu.style.pointerEvents = 'none';
 
+            const copyBtn = btn(ICONS.copy, 'Copy as Markdown', () => {
+              if (!currentTable) return;
+              const md = tableToMarkdown(currentTable);
+              navigator.clipboard.writeText(md).then(() => {
+                copyBtn.innerHTML = ICONS.check;
+                setTimeout(() => { copyBtn.innerHTML = ICONS.copy; }, 1500);
+              });
+            });
+            menu.appendChild(copyBtn);
+            menu.appendChild(sep());
             menu.appendChild(btn(ICONS.rowAfter, 'Add row below', () => editor.chain().focus().addRowAfter().run()));
             menu.appendChild(btn(ICONS.colAfter, 'Add column after', () => editor.chain().focus().addColumnAfter().run()));
             menu.appendChild(sep());
@@ -151,28 +223,23 @@ export const TableControls = Extension.create({
               ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
             const menuH = menu.offsetHeight || 36;
             const menuW = menu.offsetWidth || 400;
+            const gap = 4;
 
-            // Visible top of table (clamped to editor container)
-            const visibleTableTop = Math.max(tableRect.top, containerRect.top);
-            const visibleTableBottom = Math.min(tableRect.bottom, containerRect.bottom);
+            const visibleTop = Math.max(tableRect.top, containerRect.top);
+            const visibleBottom = Math.min(tableRect.bottom, containerRect.bottom);
 
-            // Prefer placing above the visible top of table
-            let top = visibleTableTop - menuH - 4;
+            let top = visibleTop - menuH - gap;
 
-            // If no room above (toolbar would go off screen or above container), place inside table at top
             if (top < containerRect.top) {
-              top = visibleTableTop + 4;
+              top = visibleTop + gap;
             }
 
-            // If table bottom is close and toolbar would overlap outside, clamp
-            if (top + menuH > visibleTableBottom) {
-              top = visibleTableBottom - menuH - 4;
+            if (top + menuH > visibleBottom - gap) {
+              top = visibleBottom - menuH - gap;
             }
 
-            // Final clamp to viewport
-            top = Math.max(4, Math.min(top, window.innerHeight - menuH - 4));
+            top = Math.max(gap, Math.min(top, window.innerHeight - menuH - gap));
 
-            // Center horizontally over table
             let left = tableRect.left + (tableRect.width - menuW) / 2;
             if (left + menuW > window.innerWidth - 8) left = window.innerWidth - menuW - 8;
             if (left < 8) left = 8;

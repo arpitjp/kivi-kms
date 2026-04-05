@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { addDelayedTooltip } from '../tooltip.js';
+import { getHostZoom } from '../zoom.js';
 
 const mediaControlsKey = new PluginKey('kiviMediaControls');
 
@@ -18,33 +19,33 @@ const ICONS = {
   alt: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><text x="5" y="10" font-size="7" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">A</text>'),
 };
 
-type HandlePosition = 'nw' | 'ne' | 'se' | 'sw';
+type HandlePosition = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 interface HandleInfo {
   pos: HandlePosition;
   cursor: string;
   xSign: number;
   ySign: number;
+  edgeOnly?: boolean;
 }
 
 const HANDLE_DEFS: HandleInfo[] = [
   { pos: 'nw', cursor: 'nwse-resize', xSign: -1, ySign: -1 },
+  { pos: 'n',  cursor: 'ns-resize',   xSign:  0, ySign: -1, edgeOnly: true },
   { pos: 'ne', cursor: 'nesw-resize', xSign:  1, ySign: -1 },
+  { pos: 'e',  cursor: 'ew-resize',   xSign:  1, ySign:  0, edgeOnly: true },
   { pos: 'se', cursor: 'nwse-resize', xSign:  1, ySign:  1 },
+  { pos: 's',  cursor: 'ns-resize',   xSign:  0, ySign:  1, edgeOnly: true },
   { pos: 'sw', cursor: 'nesw-resize', xSign: -1, ySign:  1 },
+  { pos: 'w',  cursor: 'ew-resize',   xSign: -1, ySign:  0, edgeOnly: true },
 ];
 
-const SIZE_PRESETS = [
-  { label: 'S',  pct: 25  },
-  { label: 'M',  pct: 50  },
-  { label: 'L',  pct: 75  },
-  { label: 'XL', pct: 100 },
-];
 
 type MediaKind = 'image' | 'video' | 'audio' | 'excalidrawBlock';
 
 function isElementVisibleInEditor(el: HTMLElement, view: EditorView): boolean {
-  const ir = el.getBoundingClientRect();
+  const wrapper = el.closest('.kivi-video-wrapper, .kivi-audio-wrapper');
+  const ir = wrapper ? wrapper.getBoundingClientRect() : el.getBoundingClientRect();
   const container = view.dom.parentElement;
   if (!container) {
     return ir.bottom > 0 && ir.top < window.innerHeight && ir.right > 0 && ir.left < window.innerWidth;
@@ -53,11 +54,6 @@ function isElementVisibleInEditor(el: HTMLElement, view: EditorView): boolean {
   return ir.bottom > cr.top && ir.top < cr.bottom && ir.right > cr.left && ir.left < cr.right;
 }
 
-function getEditorContentWidth(view: EditorView): number {
-  const editorEl = view.dom;
-  const style = getComputedStyle(editorEl);
-  return editorEl.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
-}
 
 const MEDIA_NODE_NAMES = new Set(['image', 'video', 'audio', 'excalidrawBlock']);
 
@@ -104,6 +100,25 @@ function resolveMediaElement(dom: Node | null, typeName: string): HTMLElement | 
   return null;
 }
 
+/**
+ * Compute the offset of `el` relative to `ancestor` by walking the
+ * offsetParent chain. Returns layout-space coordinates (unaffected by
+ * CSS zoom on the ancestor) suitable for position:absolute inside it.
+ */
+function getOffsetRelativeTo(el: HTMLElement, ancestor: HTMLElement): { left: number; top: number; width: number; height: number } {
+  let left = 0;
+  let top = 0;
+  let cur: HTMLElement | null = el;
+  while (cur && cur !== ancestor) {
+    left += cur.offsetLeft;
+    top += cur.offsetTop;
+    const op = cur.offsetParent as HTMLElement | null;
+    if (!op || op === ancestor) break;
+    cur = op;
+  }
+  return { left, top, width: el.offsetWidth, height: el.offsetHeight };
+}
+
 export const ImageControls = Extension.create({
   name: 'kiviImageControls',
 
@@ -123,6 +138,20 @@ export const ImageControls = Extension.create({
           let onScroll: (() => void) | null = null;
           let editRow: HTMLElement | null = null;
           let selectionOutline: HTMLElement | null = null;
+          let overlayHost: HTMLElement | null = null;
+
+          function getOverlayHost(view: EditorView): HTMLElement {
+            if (overlayHost) return overlayHost;
+            const parent = view.dom.parentElement;
+            if (parent) {
+              if (!getComputedStyle(parent).position || getComputedStyle(parent).position === 'static') {
+                parent.style.position = 'relative';
+              }
+              overlayHost = parent;
+              return parent;
+            }
+            return document.body;
+          }
 
           function detachScroll() {
             if (scrollParentEl && onScroll) {
@@ -157,75 +186,103 @@ export const ImageControls = Extension.create({
             for (const h of resizeHandles) h.style.visibility = v;
           }
 
-          function positionHandles(el: HTMLElement) {
-            const rect = el.getBoundingClientRect();
-            const hs = 10; // handle size (square corners)
-            const half = hs / 2;
+          /**
+           * Get the rect of the media element in the overlay host's coordinate
+           * space using offsetLeft/offsetTop chain — these are always in layout
+           * space (unaffected by CSS zoom), which is exactly what position:absolute
+           * inside the host expects.
+           */
+          function getRelativeRect(el: HTMLElement, host: HTMLElement) {
+            const wrapper = el.closest('.kivi-video-wrapper, .kivi-audio-wrapper') as HTMLElement | null;
+            const target = wrapper ?? el;
+            return getOffsetRelativeTo(target, host);
+          }
+
+          function positionHandles(el: HTMLElement, host: HTMLElement) {
+            const rect = getRelativeRect(el, host);
+            const midX = rect.left + rect.width / 2;
+            const midY = rect.top + rect.height / 2;
+
+            const CS = 10; const CH = CS / 2;
+            const EW = 20; const EH = 8;
 
             for (const handle of resizeHandles) {
               const pos = handle.dataset.handlePos as HandlePosition;
               let left: number, top: number;
 
               switch (pos) {
-                case 'nw': left = rect.left - half; top = rect.top - half; break;
-                case 'ne': left = rect.right - half; top = rect.top - half; break;
-                case 'se': left = rect.right - half; top = rect.bottom - half; break;
-                case 'sw': left = rect.left - half; top = rect.bottom - half; break;
+                case 'nw': left = rect.left - CH;       top = rect.top - CH; break;
+                case 'n':  left = midX - EW / 2;        top = rect.top - EH / 2; break;
+                case 'ne': left = rect.left + rect.width - CH; top = rect.top - CH; break;
+                case 'e':  left = rect.left + rect.width - EH / 2; top = midY - EW / 2; break;
+                case 'se': left = rect.left + rect.width - CH; top = rect.top + rect.height - CH; break;
+                case 's':  left = midX - EW / 2;        top = rect.top + rect.height - EH / 2; break;
+                case 'sw': left = rect.left - CH;       top = rect.top + rect.height - CH; break;
+                case 'w':  left = rect.left - EH / 2;   top = midY - EW / 2; break;
                 default: left = 0; top = 0;
               }
 
-              handle.style.left = `${left}px`;
-              handle.style.top = `${top}px`;
+              handle.style.left = `${Math.round(left)}px`;
+              handle.style.top = `${Math.round(top)}px`;
             }
           }
 
-          function positionOutline(el: HTMLElement) {
+          function positionOutline(el: HTMLElement, host: HTMLElement) {
             if (!selectionOutline) return;
-            const rect = el.getBoundingClientRect();
-            selectionOutline.style.left = `${rect.left - 2}px`;
-            selectionOutline.style.top = `${rect.top - 2}px`;
-            selectionOutline.style.width = `${rect.width + 4}px`;
-            selectionOutline.style.height = `${rect.height + 4}px`;
+            const rect = getRelativeRect(el, host);
+            const pad = 3;
+            selectionOutline.style.left = `${Math.round(rect.left - pad)}px`;
+            selectionOutline.style.top = `${Math.round(rect.top - pad)}px`;
+            selectionOutline.style.width = `${Math.round(rect.width + pad * 2)}px`;
+            selectionOutline.style.height = `${Math.round(rect.height + pad * 2)}px`;
           }
 
           function repositionFloating() {
             if (!activeEl || !panel || !activeView) return;
+            const host = getOverlayHost(activeView);
             if (!isElementVisibleInEditor(activeEl, activeView)) {
               setFloatingVisibility(false);
               return;
             }
             setFloatingVisibility(true);
-            const elRect = activeEl.getBoundingClientRect();
-            const container = activeView.dom.parentElement;
-            const containerRect = container?.getBoundingClientRect()
-              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
-            const panelWidth = panel.offsetWidth || 200;
-            const panelHeight = panel.offsetHeight || 48;
+            const rect = getRelativeRect(activeEl, host);
+            const z = getHostZoom(host);
+
+            // Counter-zoom the panel so its visual size stays constant
+            panel.style.transform = z !== 1 ? `scale(${1 / z})` : '';
+            panel.style.transformOrigin = 'top left';
+
+            const rawPW = panel.offsetWidth || 200;
+            const rawPH = panel.offsetHeight || 48;
+            // After scale(1/z), panel occupies rawPW/z × rawPH/z layout pixels
+            const panelFootprintW = rawPW / z;
+            const panelFootprintH = rawPH / z;
+
+            const hostHeight = host.clientHeight;
+            const hostWidth = host.clientWidth;
+            const scrollTop = host.scrollTop;
             const gap = 4;
 
-            const visibleTop = Math.max(elRect.top, containerRect.top);
-            const visibleBottom = Math.min(elRect.bottom, containerRect.bottom);
+            const visibleTop = Math.max(rect.top, scrollTop);
+            const visibleBottom = Math.min(rect.top + rect.height, scrollTop + hostHeight);
 
-            let top = visibleTop - panelHeight - gap;
-
-            if (top < containerRect.top) {
+            let top = visibleTop - panelFootprintH - gap;
+            if (top < scrollTop) {
               top = visibleTop + gap;
             }
-
-            if (top + panelHeight > visibleBottom - gap) {
-              top = visibleBottom - panelHeight - gap;
+            if (top + panelFootprintH > visibleBottom - gap) {
+              top = visibleBottom - panelFootprintH - gap;
             }
+            top = Math.max(scrollTop + gap, Math.min(top, scrollTop + hostHeight - panelFootprintH - gap));
 
-            top = Math.max(gap, Math.min(top, window.innerHeight - panelHeight - gap));
-
-            let left = elRect.left + elRect.width / 2 - panelWidth / 2;
-            if (left + panelWidth > window.innerWidth - 8) left = window.innerWidth - panelWidth - 8;
+            let left = rect.left + rect.width / 2 - panelFootprintW / 2;
+            if (left + panelFootprintW > hostWidth - 8) left = hostWidth - panelFootprintW - 8;
             if (left < 8) left = 8;
 
             panel.style.left = `${left}px`;
             panel.style.top = `${top}px`;
-            positionHandles(activeEl);
-            positionOutline(activeEl);
+            positionHandles(activeEl, host);
+            positionOutline(activeEl, host);
           }
 
           function removeOverlay() {
@@ -335,30 +392,6 @@ export const ImageControls = Extension.create({
             requestAnimationFrame(() => input.focus());
           }
 
-          function buildSizePresetRow(view: EditorView): HTMLElement {
-            const row = document.createElement('div');
-            row.className = 'kivi-img-size-presets';
-            const currentWidth = (getNodeAttr('width') as number | null) ?? 0;
-            const editorWidth = getEditorContentWidth(view);
-
-            for (const preset of SIZE_PRESETS) {
-              const btn = document.createElement('button');
-              btn.className = 'kivi-img-size-preset-btn';
-              btn.textContent = preset.label;
-              btn.title = `${preset.pct}% width`;
-              const targetWidth = Math.round(editorWidth * preset.pct / 100);
-              if (currentWidth > 0 && Math.abs(currentWidth - targetWidth) < 10) btn.classList.add('active');
-              btn.addEventListener('mousedown', (e) => e.preventDefault());
-              btn.addEventListener('click', () => {
-                updateNodeAttr('width', targetWidth);
-                reattachAfterTransaction(view);
-                row.querySelectorAll('.kivi-img-size-preset-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-              });
-              row.appendChild(btn);
-            }
-            return row;
-          }
 
           function showOverlay(view: EditorView, el: HTMLElement, pos: number, kind: MediaKind) {
             if (kind === 'image') {
@@ -385,10 +418,11 @@ export const ImageControls = Extension.create({
             activeView = view;
             activeKind = kind;
 
-            // Selection outline (replaces scattered blue squares with a clean border)
+            const host = getOverlayHost(view);
+
             selectionOutline = document.createElement('div');
             selectionOutline.className = 'kivi-media-outline';
-            document.body.appendChild(selectionOutline);
+            host.appendChild(selectionOutline);
 
             panel = document.createElement('div');
             panel.className = 'kivi-image-controls';
@@ -400,8 +434,7 @@ export const ImageControls = Extension.create({
             const buttonRow = document.createElement('div');
             buttonRow.className = 'kivi-img-ctrl-row';
 
-            // Alignment buttons (for images and videos, not audio or excalidraw)
-            if (kind !== 'audio' && kind !== 'excalidrawBlock') {
+            if (kind !== 'audio') {
               const currentAlign = (getNodeAttr('data-align') as string) || 'left';
               const alignOptions = [
                 { value: 'left', icon: ICONS.alignLeft, title: 'Align left' },
@@ -423,43 +456,39 @@ export const ImageControls = Extension.create({
               buttonRow.appendChild(makeSep());
             }
 
-            // Source URL button (not for excalidraw with src — show file path instead)
+            buttonRow.appendChild(makeBtn(ICONS.link, 'Edit source URL', () => toggleEditRow('src')));
+
+            if (kind === 'image') {
+              buttonRow.appendChild(makeBtn(ICONS.alt, 'Edit alt text', () => toggleEditRow('alt')));
+              const imgSrc = (getNodeAttr('src') as string) || '';
+              if (/\.excalidraw\.(png|svg)$/i.test(imgSrc)) {
+                buttonRow.appendChild(makeSep());
+                buttonRow.appendChild(makeBtn(
+                  svg('<path d="M14.5 1.5l-13 13M1.5 1.5l13 13M8 1v14M1 8h14"/>'),
+                  'Open in Excalidraw',
+                  () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: imgSrc } })),
+                ));
+              }
+            }
+
             if (kind === 'excalidrawBlock') {
               const excSrc = getNodeAttr('src') as string | null;
               if (excSrc) {
-                const label = document.createElement('span');
-                label.className = 'kivi-img-ctrl-label';
-                label.textContent = excSrc.split('/').pop() || 'excalidraw';
-                label.title = excSrc;
-                buttonRow.appendChild(label);
-              }
-            } else {
-              buttonRow.appendChild(makeBtn(ICONS.link, 'Edit source URL', () => toggleEditRow('src')));
-              if (kind === 'image') {
-                buttonRow.appendChild(makeBtn(ICONS.alt, 'Edit alt text', () => toggleEditRow('alt')));
-                const imgSrc = (getNodeAttr('src') as string) || '';
-                if (/\.excalidraw\.(png|svg)$/i.test(imgSrc)) {
-                  buttonRow.appendChild(makeSep());
-                  const excBtn = makeBtn(
-                    svg('<path d="M14.5 1.5l-13 13M1.5 1.5l13 13M8 1v14M1 8h14"/>'),
-                    'Open in Excalidraw',
-                    () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: imgSrc } })),
-                  );
-                  excBtn.title = 'Open in Excalidraw';
-                  buttonRow.appendChild(excBtn);
-                }
+                buttonRow.appendChild(makeBtn(
+                  svg('<path d="M14.5 1.5l-13 13M1.5 1.5l13 13M8 1v14M1 8h14"/>'),
+                  'Open in Excalidraw',
+                  () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: excSrc } })),
+                ));
               }
             }
 
             buttonRow.appendChild(makeSep());
 
-            // Copy source
-            buttonRow.appendChild(makeBtn(ICONS.copy, 'Copy source URL', () => {
+            buttonRow.appendChild(makeBtn(ICONS.copy, 'Copy asset path', () => {
               const src = (getNodeAttr('src') as string) || '';
-              navigator.clipboard.writeText(src).catch(() => {});
+              document.dispatchEvent(new CustomEvent('kivi-copy-asset-path', { detail: { src } }));
             }));
 
-            // Delete
             buttonRow.appendChild(makeBtn(ICONS.trash, `Delete ${kind}`, () => {
               const node = view.state.doc.nodeAt(pos);
               if (node) {
@@ -471,9 +500,7 @@ export const ImageControls = Extension.create({
             }, true));
 
             panel.appendChild(buttonRow);
-            panel.appendChild(buildSizePresetRow(view));
 
-            // 4 corner resize handles
             for (const def of HANDLE_DEFS) {
               const handle = document.createElement('div');
               handle.className = 'kivi-media-resize-handle';
@@ -493,11 +520,19 @@ export const ImageControls = Extension.create({
                 aspectRatio = startWidth / (startHeight || 1);
 
                 const onMove = (ev: MouseEvent) => {
-                  const dx = ev.clientX - startX;
-                  const dy = ev.clientY - startY;
-                  const primaryDelta = def.xSign * dx;
-                  const secondaryDelta = def.ySign * dy * aspectRatio;
-                  const newWidth = Math.max(60, startWidth + (primaryDelta + secondaryDelta) / 2);
+                  const z = getHostZoom(host);
+                  const dx = (ev.clientX - startX) / z;
+                  const dy = (ev.clientY - startY) / z;
+                  let newWidth: number;
+                  if (def.edgeOnly && def.ySign !== 0 && def.xSign === 0) {
+                    newWidth = Math.max(60, startWidth + def.ySign * dy * aspectRatio);
+                  } else if (def.edgeOnly && def.xSign !== 0 && def.ySign === 0) {
+                    newWidth = Math.max(60, startWidth + def.xSign * dx);
+                  } else {
+                    const primaryDelta = def.xSign * dx;
+                    const secondaryDelta = def.ySign * dy * aspectRatio;
+                    newWidth = Math.max(60, startWidth + (primaryDelta + secondaryDelta) / 2);
+                  }
                   el.style.width = `${Math.round(newWidth)}px`;
                   el.style.maxWidth = '100%';
                   repositionFloating();
@@ -517,11 +552,11 @@ export const ImageControls = Extension.create({
                 document.addEventListener('mouseup', onUp);
               });
 
-              document.body.appendChild(handle);
+              host.appendChild(handle);
               resizeHandles.push(handle);
             }
 
-            document.body.appendChild(panel);
+            host.appendChild(panel);
             attachScroll(view);
             repositionFloating();
           }

@@ -31,6 +31,11 @@ export function serializeDocument(kiviDoc: KiviDocument, options?: SerializeOpti
     return options?.trailingNewline !== false ? '\n' : '';
   }
 
+  // Single empty paragraph = empty document
+  if (topLevelNodes.length === 1 && isEmptyParagraph(topLevelNodes[0])) {
+    return options?.trailingNewline !== false ? '\n' : '';
+  }
+
   // If block count changed (user added/removed blocks), the 1:1
   // mapping between blockOrder and topLevelNodes is broken.
   // Fall back to full re-serialization to avoid duplicated/missing content.
@@ -144,5 +149,19 @@ function stringifyMdast(root: Root, styleHints?: StyleHints): string {
   }
 
   const result = processor.stringify(root);
-  return result.replace(/&#x20;/g, ' ').trimEnd();
+  return result
+    .replace(/&#x20;/g, ' ')
+    // remark-stringify escapes [ in some contexts; restore task-list syntax
+    .replace(/^(\s*[-*+]\s)\\\[([xX ])\\\]/gm, '$1[$2]')
+    .replace(/^(\s*[-*+]\s)\\\[([xX ])\]/gm, '$1[$2]')
+    .replace(/^(\s*[-*+]\s)\[([xX ])\\\]/gm, '$1[$2]')
+    // remark-stringify escapes brackets/parens in text that looks like markdown links/images;
+    // restore `[text](url)` and `![alt](url)` patterns.
+    .replace(/(!?)\\\[([^\]]*)\\\]\\\(([^)]*)\)/g, '$1[$2]($3)')
+    .replace(/(!?)\\\[([^\]]*)\]\\\(([^)]*)\)/g, '$1[$2]($3)')
+    .replace(/(!?)\[([^\]]*)\\\]\\\(([^)]*)\)/g, '$1[$2]($3)')
+    .replace(/(!?)\\\[([^\]]*)\\\]\(([^)]*)\)/g, '$1[$2]($3)')
+    .replace(/(!?)\\\[([^\]]*)\]\(([^)]*)\)/g, '$1[$2]($3)')
+    .replace(/(!?)\[([^\]]*)\\\]\(([^)]*)\)/g, '$1[$2]($3)')
+    .trimEnd();
 }

@@ -103,6 +103,21 @@ describe('parseMarkdown', () => {
     expect(doc.content[0].content[1].attrs?.checked).toBe(false);
   });
 
+  it('parses mixed lists: plain bullets and checkboxes in one list', () => {
+    const md = '- plain item\n- [ ] unchecked\n- [x] checked\n- another plain';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content: { type: string; attrs?: { checked: boolean } }[] }[] };
+    const list = doc.content[0];
+    expect(list.type).toBe('bulletList');
+    expect(list.content).toHaveLength(4);
+    expect(list.content[0].type).toBe('listItem');
+    expect(list.content[1].type).toBe('taskItem');
+    expect(list.content[1].attrs?.checked).toBe(false);
+    expect(list.content[2].type).toBe('taskItem');
+    expect(list.content[2].attrs?.checked).toBe(true);
+    expect(list.content[3].type).toBe('listItem');
+  });
+
   it('parses tables (GFM)', () => {
     const md = '| A | B |\n|---|---|\n| 1 | 2 |';
     const result = parseMarkdown(md);
@@ -332,6 +347,35 @@ describe('mermaid and excalidraw fenced blocks', () => {
     };
     expect(doc.content[0].type).toBe('excalidrawBlock');
     expect(doc.content[0].attrs?.data).toContain('foo');
+  });
+
+  it('parses ![alt](file.excalidraw) image syntax as excalidrawBlock', () => {
+    const md = '![diagram](assets/drawing.excalidraw)';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; attrs?: Record<string, unknown> }[] };
+    expect(doc.content[0].type).toBe('excalidrawBlock');
+    expect(doc.content[0].attrs?.src).toBe('assets/drawing.excalidraw');
+    expect(doc.content[0].attrs?.alt).toBe('diagram');
+  });
+
+  it('parses [label](file.excalidraw) link syntax as regular link (not excalidrawBlock)', () => {
+    const md = '[my drawing](assets/drawing.excalidraw)';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; content?: { type: string; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[] }[] }[] };
+    const para = doc.content[0];
+    expect(para.type).toBe('paragraph');
+    const textNode = para.content?.[0];
+    expect(textNode?.text).toBe('my drawing');
+    expect(textNode?.marks?.[0]?.type).toBe('link');
+    expect(textNode?.marks?.[0]?.attrs?.href).toBe('assets/drawing.excalidraw');
+  });
+
+  it('inline excalidraw link mixed with text stays inline', () => {
+    const md = 'See [this diagram](drawing.excalidraw) for details.';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { content: { type: string; content?: { type: string }[] }[] };
+    expect(doc.content[0].type).toBe('paragraph');
+    expect(doc.content[0].content?.length).toBeGreaterThan(1);
   });
 
   // ── HTML <img> tag parsing ──

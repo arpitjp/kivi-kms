@@ -77,17 +77,26 @@ export const DevWatchdog = Extension.create<DevWatchdogOptions, DevWatchdogStora
           },
           apply(_tr, prev): number[] {
             const now = Date.now();
-            const windowStart = now - 1000;
-            const next = prev.filter((t) => t > windowStart);
-            next.push(now);
+            let next = [...prev, now];
+            if (next.length > maxTx * 2) {
+              const windowStart = now - 1000;
+              let cutoff = 0;
+              while (cutoff < next.length && next[cutoff] <= windowStart) cutoff++;
+              if (cutoff > 0) next = next.slice(cutoff);
+            }
             if (next.length > maxTx) {
-              if (now - lastHighTxWarn >= HIGH_TX_WARN_COOLDOWN_MS) {
+              const windowStart = now - 1000;
+              let count = 0;
+              for (let i = next.length - 1; i >= 0; i--) {
+                if (next[i] > windowStart) count++;
+                else break;
+              }
+              if (count > maxTx && now - lastHighTxWarn >= HIGH_TX_WARN_COOLDOWN_MS) {
                 lastHighTxWarn = now;
-                const rate = next.length;
                 console.warn(
-                  `[Kivi DevWatchdog] High transaction rate: ${rate} transactions/sec — possible update loop`,
+                  `[Kivi DevWatchdog] High transaction rate: ${count} transactions/sec — possible update loop`,
                 );
-                onHighTxRate?.(rate);
+                onHighTxRate?.(count);
               }
             }
             return next;

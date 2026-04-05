@@ -21,6 +21,7 @@ export class TagTreeProvider implements vscode.TreeDataProvider<TagNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TagNode | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
   private tagIndex = new Map<string, Set<string>>();
+  private fileIndex = new Map<string, Set<string>>();
   private rootNodes: TagNode[] = [];
 
   refresh(): void {
@@ -29,28 +30,37 @@ export class TagTreeProvider implements vscode.TreeDataProvider<TagNode> {
   }
 
   updateIndex(filePath: string, tags: string[]): void {
-    // Remove old entries for this file
-    for (const [, files] of this.tagIndex) {
-      files.delete(filePath);
+    const oldTags = this.fileIndex.get(filePath);
+    if (oldTags) {
+      for (const tag of oldTags) {
+        const files = this.tagIndex.get(tag);
+        if (files) {
+          files.delete(filePath);
+          if (files.size === 0) this.tagIndex.delete(tag);
+        }
+      }
     }
-    // Add new entries
-    for (const tag of tags) {
+
+    const newTagSet = new Set(tags);
+    this.fileIndex.set(filePath, newTagSet);
+    for (const tag of newTagSet) {
       let set = this.tagIndex.get(tag);
       if (!set) { set = new Set(); this.tagIndex.set(tag, set); }
       set.add(filePath);
     }
-    // Clean up empty tags
-    for (const [tag, files] of this.tagIndex) {
-      if (files.size === 0) this.tagIndex.delete(tag);
-    }
   }
 
   removeFile(filePath: string): void {
-    for (const [, files] of this.tagIndex) {
-      files.delete(filePath);
-    }
-    for (const [tag, files] of this.tagIndex) {
-      if (files.size === 0) this.tagIndex.delete(tag);
+    const oldTags = this.fileIndex.get(filePath);
+    if (oldTags) {
+      for (const tag of oldTags) {
+        const files = this.tagIndex.get(tag);
+        if (files) {
+          files.delete(filePath);
+          if (files.size === 0) this.tagIndex.delete(tag);
+        }
+      }
+      this.fileIndex.delete(filePath);
     }
   }
 

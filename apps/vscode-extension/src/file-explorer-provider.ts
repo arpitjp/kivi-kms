@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { posix } from 'path';
 
 type TreeNode = FileNode | FolderNode;
 
@@ -7,12 +8,14 @@ interface FileNode {
   kind: 'file';
   uri: vscode.Uri;
   label: string;
+  parent?: FolderNode;
 }
 
 interface FolderNode {
   kind: 'folder';
   uri: vscode.Uri;
   label: string;
+  parent?: FolderNode;
 }
 
 export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
@@ -20,11 +23,57 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
   private mdCache = new Map<string, boolean>();
 
+  /** Map from file URI string → TreeNode for quick lookup / reveal */
+  private nodesByUri = new Map<string, TreeNode>();
+
   refresh(): void {
     this.mdCache.clear();
     this.mdDirSet = null;
     this.mdDirSetPromise = null;
+    this.nodesByUri.clear();
     this._onDidChangeTreeData.fire();
+  }
+
+  findNodeByUri(uri: vscode.Uri): TreeNode | undefined {
+    return this.nodesByUri.get(uri.toString());
+  }
+
+  /**
+   * Walk from workspace root down to the target URI, loading each tree level
+   * along the way so parent folders get expanded and the node enters the cache.
+   */
+  async resolveNodeByPath(uri: vscode.Uri): Promise<TreeNode | undefined> {
+    const cached = this.nodesByUri.get(uri.toString());
+    if (cached) return cached;
+
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!wsRoot) return undefined;
+
+    const rel = posix.relative(wsRoot.path, uri.path);
+    if (!rel || rel.startsWith('..')) return undefined;
+
+    const segments = rel.split('/');
+
+    // Load root level first, then walk each directory segment
+    await this.getChildren(undefined);
+
+    let parentNode: TreeNode | undefined;
+    for (let i = 0; i < segments.length; i++) {
+      const segUri = vscode.Uri.joinPath(wsRoot, ...segments.slice(0, i + 1));
+      const node = this.nodesByUri.get(segUri.toString());
+      if (!node) return undefined;
+
+      if (i < segments.length - 1 && node.kind === 'folder') {
+        await this.getChildren(node);
+      }
+      parentNode = node;
+    }
+
+    return parentNode;
+  }
+
+  getParent(element: TreeNode): TreeNode | undefined {
+    return element.parent;
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -35,20 +84,17 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
         : vscode.TreeItemCollapsibleState.None,
     );
 
+    item.resourceUri = element.uri;
+
     if (element.kind === 'file') {
       item.command = {
         command: 'vscode.openWith',
         title: 'Open in Kivi',
         arguments: [element.uri, 'kivi.markdownEditor'],
       };
-      item.iconPath = new vscode.ThemeIcon('file-text');
       item.contextValue = 'kiviFile';
-      item.description = '.md';
-      item.resourceUri = element.uri;
     } else {
-      item.iconPath = vscode.ThemeIcon.Folder;
       item.contextValue = 'kiviFolder';
-      item.resourceUri = element.uri;
     }
 
     return item;
@@ -57,9 +103,8 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
   async getChildren(element?: TreeNode): Promise<TreeNode[]> {
     if (!vscode.workspace.workspaceFolders?.length) return [];
 
-    const searchDir = element?.kind === 'folder'
-      ? element.uri
-      : vscode.workspace.workspaceFolders[0].uri;
+    const parentFolder = element?.kind === 'folder' ? element : undefined;
+    const searchDir = parentFolder?.uri ?? vscode.workspace.workspaceFolders[0].uri;
 
     try {
       const entries = await vscode.workspace.fs.readDirectory(searchDir);
@@ -78,10 +123,18 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
         if (type === vscode.FileType.Directory) {
           const hasMarkdown = await this.containsMarkdown(uri);
           if (hasMarkdown) {
-            nodes.push({ kind: 'folder', uri, label: name });
+            const node: FolderNode = { kind: 'folder', uri, label: name, parent: parentFolder };
+            nodes.push(node);
+            this.nodesByUri.set(uri.toString(), node);
           }
         } else if (name.endsWith('.md') || name.endsWith('.markdown')) {
-          nodes.push({ kind: 'file', uri, label: name.replace(/\.(md|markdown)$/, '') });
+          const node: FileNode = {
+            kind: 'file', uri,
+            label: name.replace(/\.(md|markdown)$/, ''),
+            parent: parentFolder,
+          };
+          nodes.push(node);
+          this.nodesByUri.set(uri.toString(), node);
         }
       }
 

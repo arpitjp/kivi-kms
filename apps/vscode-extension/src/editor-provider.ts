@@ -61,14 +61,58 @@ function readKiviSettings(): KiviSettings {
   };
 }
 
+/**
+ * Search the workspace for a file matching any of the given basenames.
+ * Returns the relative path from the document's directory, or null.
+ */
+async function findInWorkspace(
+  wsFolder: vscode.WorkspaceFolder,
+  docUri: vscode.Uri,
+  names: (string | undefined)[],
+): Promise<string | null> {
+  for (const name of names) {
+    if (!name) continue;
+    const hits = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(wsFolder, `**/${name}`), '**/node_modules/**', 1,
+    );
+    if (hits.length > 0) {
+      return computeRelativePathFromDoc(docUri, hits[0]);
+    }
+  }
+  return null;
+}
+
 export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'kivi.markdownEditor';
 
   /** Tracks all active webview panels keyed by document URI, for commands/focus. */
   private static activePanels = new Map<string, vscode.WebviewPanel>();
 
+  /** Pending heading scrolls: URI string → heading slug. Set by navigateToLink
+   *  when the target has a #fragment; consumed when the target panel sends 'ready'. */
+  private static pendingHeadingScroll = new Map<string, string>();
+
   /** Workspace-wide tag set, populated by indexWorkspace in extension.ts */
   static workspaceTags = new Set<string>();
+
+
+  /** In-memory note index: lowercase basename (no ext) → URI.
+   *  Populated by indexWorkspace, kept current by the file watcher.
+   *  Enables instant, case-insensitive Obsidian-style wiki-link resolution. */
+  static noteIndex = new Map<string, vscode.Uri>();
+
+  static updateNoteIndex(uri: vscode.Uri) {
+    const base = uri.path.split('/').pop()?.replace(/\.md$/i, '').toLowerCase() ?? '';
+    if (base) KiviEditorProvider.noteIndex.set(base, uri);
+  }
+
+  static removeFromNoteIndex(uri: vscode.Uri) {
+    const base = uri.path.split('/').pop()?.replace(/\.md$/i, '').toLowerCase() ?? '';
+    const existing = KiviEditorProvider.noteIndex.get(base);
+    if (existing && existing.toString() === uri.toString()) {
+      KiviEditorProvider.noteIndex.delete(base);
+    }
+  }
 
   /** Fires when the webview reports the user scrolled to a new heading */
   static readonly _onActiveHeading = new vscode.EventEmitter<string>();
@@ -98,6 +142,24 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   /** Get the panel for a document URI (if any). Used by commands. */
   static getPanelForUri(uri: string): vscode.WebviewPanel | undefined {
     return KiviEditorProvider.activePanels.get(uri);
+  }
+
+  /** Get the currently active Kivi editor panel (if any). */
+  static getActivePanel(): vscode.WebviewPanel | undefined {
+    const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const input = activeTab?.input as { uri?: vscode.Uri; viewType?: string } | undefined;
+    if (input?.viewType === KiviEditorProvider.viewType && input.uri) {
+      return KiviEditorProvider.activePanels.get(input.uri.toString());
+    }
+    return undefined;
+  }
+
+  /** Get the document URI associated with a panel. */
+  static getDocumentUriForPanel(panel: vscode.WebviewPanel): vscode.Uri | undefined {
+    for (const [uriStr, p] of KiviEditorProvider.activePanels) {
+      if (p === panel) return vscode.Uri.parse(uriStr);
+    }
+    return undefined;
   }
 
   constructor(private readonly context: vscode.ExtensionContext) {}
@@ -262,7 +324,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
     // ── Message handler ──
 
-    webviewPanel.webview.onDidReceiveMessage(async (msg) => {
+    disposables.push(webviewPanel.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
         case 'ready': {
           isWebviewReady = true;
@@ -273,12 +335,18 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const relPath = vscode.workspace.asRelativePath(document.uri, false);
           const docDirUri = vscode.Uri.joinPath(document.uri, '..');
           const docBaseUrl = webviewPanel.webview.asWebviewUri(docDirUri).toString();
+          let wsBaseUrl = '';
+          if (wsFolder) {
+            const wbu = webviewPanel.webview.asWebviewUri(wsFolder.uri).toString();
+            wsBaseUrl = wbu.endsWith('/') ? wbu : wbu + '/';
+          }
           postMessage({
             type: 'init',
             filePath: relPath,
             fileName: relPath.split('/').pop()?.replace(/\.md$/, '') || '',
             isReadonly: document.isUntitled,
             docBaseUrl: docBaseUrl.endsWith('/') ? docBaseUrl : docBaseUrl + '/',
+            workspaceBaseUrl: wsBaseUrl,
           });
 
           sendSettings();
@@ -298,6 +366,27 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             this.sendGitBase(document, postMessage);
             if (KiviEditorProvider.workspaceTags.size > 0) {
               postMessage({ type: 'tagIndex', tags: Array.from(KiviEditorProvider.workspaceTags).sort() });
+            }
+            // Cross-file heading navigation: scroll to #fragment if pending
+            const docKey = document.uri.toString();
+            const pendingHeading = KiviEditorProvider.pendingHeadingScroll.get(docKey);
+            if (pendingHeading) {
+              KiviEditorProvider.pendingHeadingScroll.delete(docKey);
+              const headingSlug = pendingHeading.toLowerCase();
+              const docContent = document.getText();
+              const lines = docContent.split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                const hm = /^#{1,6}\s+(.+)/.exec(lines[i]);
+                if (hm) {
+                  const rawText = hm[1].trim();
+                  const slug = rawText.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+                  const plainSlug = rawText.replace(/`([^`]*)`/g, '$1').toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+                  if (slug === headingSlug || plainSlug === headingSlug || rawText.toLowerCase() === headingSlug) {
+                    postMessage({ type: 'scrollToHeading', heading: rawText, line: i });
+                    break;
+                  }
+                }
+              }
             }
           }, 100);
           break;
@@ -346,6 +435,24 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           break;
         }
 
+        case 'stageChange': {
+          try {
+            const gitExt = vscode.extensions.getExtension('vscode.git');
+            if (!gitExt) break;
+            const git = gitExt.isActive ? gitExt.exports : await gitExt.activate();
+            const api = git.getAPI(1);
+            const repo = api.repositories.find((r: any) =>
+              document.uri.fsPath.startsWith(r.rootUri.fsPath),
+            );
+            if (repo) {
+              await repo.add([document.uri.fsPath]);
+            }
+          } catch {
+            vscode.window.showWarningMessage('Failed to stage change. Make sure the file is saved.');
+          }
+          break;
+        }
+
         case 'requestFullBlame': {
           this.getFullBlameInfo(document, postMessage);
           break;
@@ -386,8 +493,8 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const reqId = msg.reqId as string | undefined;
           if (excSrc && reqId) {
             try {
-              const docDir = vscode.Uri.joinPath(document.uri, '..');
-              const fileUri = vscode.Uri.joinPath(docDir, excSrc);
+              const fileUri = this.resolveUnifiedPath(excSrc, document);
+              if (!fileUri) throw new Error(`Cannot resolve path: ${excSrc}`);
               const data = await vscode.workspace.fs.readFile(fileUri);
               const content = new TextDecoder().decode(data);
               postMessage({ type: 'excalidrawFileContent', reqId, content });
@@ -398,16 +505,49 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           break;
         }
 
+        case 'createExcalidrawFile': {
+          const excName = msg.name as string | undefined;
+          const excReqId = msg.reqId as string | undefined;
+          if (excName && excReqId) {
+            try {
+              const wsFolder = vscode.workspace.workspaceFolders?.[0];
+              if (!wsFolder) throw new Error('No workspace folder');
+              const fileName = excName.endsWith('.excalidraw') ? excName : `${excName}.excalidraw`;
+              const assetsDir = vscode.Uri.joinPath(wsFolder.uri, 'assets');
+              try { await vscode.workspace.fs.createDirectory(assetsDir); } catch { /* exists */ }
+              const fileUri = vscode.Uri.joinPath(assetsDir, fileName);
+              const emptyScene = JSON.stringify({
+                type: 'excalidraw', version: 2, source: 'kivi',
+                elements: [],
+                appState: { gridSize: null, viewBackgroundColor: '#ffffff' },
+                files: {},
+              }, null, 2);
+              await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(emptyScene));
+              const relPath = computeRelativePathFromDoc(document.uri, fileUri);
+              postMessage({ type: 'excalidrawFileCreated', reqId: excReqId, relPath });
+            } catch (e) {
+              console.error('[kivi] createExcalidrawFile failed:', e);
+              postMessage({ type: 'excalidrawFileCreated', reqId: excReqId, relPath: null });
+            }
+          }
+          break;
+        }
+
         case 'openExcalidraw': {
           const excSrc = msg.src as string | undefined;
           if (excSrc) {
-            const docDir = vscode.Uri.joinPath(document.uri, '..');
-            const fileUri = vscode.Uri.joinPath(docDir, excSrc);
-            // Try to open with excalidraw extension, fall back to default editor
-            try {
-              await vscode.commands.executeCommand('vscode.openWith', fileUri, 'excalidraw-editor.editor');
-            } catch {
-              await vscode.commands.executeCommand('vscode.open', fileUri);
+            const fileUri = this.resolveUnifiedPath(excSrc, document);
+            if (fileUri) {
+              // Use vscode.openWith with the registered viewType for the
+              // excalidraw editor extension. Fall back to vscode.open which
+              // uses the default editor for the file type.
+              try {
+                await vscode.commands.executeCommand(
+                  'vscode.openWith', fileUri, 'editor.excalidraw',
+                );
+              } catch {
+                await vscode.commands.executeCommand('vscode.open', fileUri);
+              }
             }
           }
           break;
@@ -419,6 +559,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           postMessage({ type: 'excalidrawExtensionStatus', installed: !!ext });
           break;
         }
+
 
         case 'command': {
           const cmd = msg.command as string | undefined;
@@ -546,16 +687,37 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
         case 'listWorkspaceFiles': {
           if (!wsFolder) break;
-          const mdUris = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 500);
+          const IMAGE_EXTS_WS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'];
+          const VIDEO_EXTS_WS = ['.mp4', '.webm', '.mov', '.avi', '.mkv'];
+          const AUDIO_EXTS_WS = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'];
+          const USEFUL_EXTS = ['.md', '.excalidraw', ...IMAGE_EXTS_WS, ...VIDEO_EXTS_WS, ...AUDIO_EXTS_WS,
+            '.pdf', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.html', '.css', '.js', '.ts',
+            '.py', '.go', '.rs', '.c', '.cpp', '.h', '.java', '.sh', '.bash', '.zsh'];
+          const globPattern = `**/*{${USEFUL_EXTS.join(',')}}`;
+          const allUris = await vscode.workspace.findFiles(globPattern, '{**/node_modules/**,**/.git/**}', 1000);
           const docDir = path.dirname(document.uri.fsPath);
           const wsRoot = wsFolder.uri.fsPath;
-          const files = mdUris.map(u => {
+          const currentRel = path.relative(wsRoot, document.uri.fsPath).replace(/\\/g, '/');
+          const files = allUris.map(u => {
             const rel = path.relative(wsRoot, u.fsPath).replace(/\\/g, '/');
-            const name = path.basename(u.fsPath, '.md');
+            const ext = path.extname(u.fsPath).toLowerCase();
+            const baseName = path.basename(u.fsPath);
+            const name = ext === '.md' ? path.basename(u.fsPath, '.md') : baseName;
             const relToDoc = path.relative(docDir, u.fsPath).replace(/\\/g, '/');
-            return { rel, name, relToDoc };
-          }).filter(f => f.rel !== path.relative(wsRoot, document.uri.fsPath).replace(/\\/g, '/'));
-          files.sort((a, b) => a.name.localeCompare(b.name));
+            let fileType = 'file';
+            if (ext === '.md') fileType = 'note';
+            else if (IMAGE_EXTS_WS.includes(ext)) fileType = 'image';
+            else if (VIDEO_EXTS_WS.includes(ext)) fileType = 'video';
+            else if (AUDIO_EXTS_WS.includes(ext)) fileType = 'audio';
+            else if (ext === '.excalidraw') fileType = 'excalidraw';
+            else if (ext === '.pdf') fileType = 'pdf';
+            return { rel, name, relToDoc, fileType, ext };
+          }).filter(f => f.rel !== currentRel);
+          files.sort((a, b) => {
+            if (a.fileType === 'note' && b.fileType !== 'note') return -1;
+            if (a.fileType !== 'note' && b.fileType === 'note') return 1;
+            return a.name.localeCompare(b.name);
+          });
           postMessage({ type: 'workspaceFiles', files });
           break;
         }
@@ -604,7 +766,21 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
         case 'storeImage': {
           const imageData = msg.data as string | undefined;
           const imageName = msg.name as string | undefined;
+          const imageOriginalName = msg.originalName as string | undefined;
           if (!imageData || !imageName) break;
+
+          const safeName = imageName.replace(/[<>:"/\\|?*]/g, '').trim();
+          const safeOriginal = imageOriginalName?.replace(/[<>:"/\\|?*]/g, '').trim();
+
+          // Try the original filename first (before timestamp was added) so
+          // workspace assets copied via Cmd+C/Cmd+V are reused without duplication.
+          const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+          const existingImage = wsFolder ? await findInWorkspace(wsFolder, document.uri, [safeOriginal, safeName]) : null;
+          if (existingImage) {
+            DevPanel.log('info', 'editor', `Image exists in workspace, using: ${existingImage}`);
+            postMessage({ type: 'imageStored', path: existingImage, name: safeName });
+            break;
+          }
 
           const cfg = vscode.workspace.getConfiguration('kivi');
           const assetsFolder = cfg.get<string>('folders.assets', 'assets');
@@ -614,9 +790,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             await vscode.workspace.fs.createDirectory(folderUri);
           }
 
-          const safeName = imageName.replace(/[<>:"/\\|?*]/g, '').trim();
           const fileUri = vscode.Uri.joinPath(folderUri, safeName);
-
           const base64 = imageData.replace(/^data:[^;]+;base64,/, '');
           const bytes = Buffer.from(base64, 'base64');
           await vscode.workspace.fs.writeFile(fileUri, bytes);
@@ -630,8 +804,20 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
         case 'storeFile': {
           const fileData = msg.data as string | undefined;
           const fileName = msg.name as string | undefined;
+          const fileOriginalName = msg.originalName as string | undefined;
           const storeId = msg.storeId as string | undefined;
           if (!fileData || !fileName || !storeId) break;
+
+          const safeName = fileName.replace(/[<>:"/\\|?*]/g, '').trim();
+          const safeOriginal = fileOriginalName?.replace(/[<>:"/\\|?*]/g, '').trim();
+
+          const wsFolderF = vscode.workspace.getWorkspaceFolder(document.uri);
+          const existingFile = wsFolderF ? await findInWorkspace(wsFolderF, document.uri, [safeOriginal, safeName]) : null;
+          if (existingFile) {
+            DevPanel.log('info', 'editor', `File exists in workspace, using: ${existingFile}`);
+            postMessage({ type: 'fileStored', path: existingFile, name: safeName, storeId });
+            break;
+          }
 
           const cfg = vscode.workspace.getConfiguration('kivi');
           const assetsFolder = cfg.get<string>('folders.assets', 'assets');
@@ -641,9 +827,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             await vscode.workspace.fs.createDirectory(folderUri);
           }
 
-          const safeName = fileName.replace(/[<>:"/\\|?*]/g, '').trim();
           const fileUri = vscode.Uri.joinPath(folderUri, safeName);
-
           const base64 = fileData.replace(/^data:[^;]+;base64,/, '');
           const bytes = Buffer.from(base64, 'base64');
           await vscode.workspace.fs.writeFile(fileUri, bytes);
@@ -705,8 +889,22 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           }
           break;
         }
+
+
+
+        case 'copyAssetPath': {
+          const src = msg.src as string | undefined;
+          if (!src) break;
+          if (src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://')) {
+            vscode.env.clipboard.writeText(src);
+            break;
+          }
+          const resolved = this.resolveUnifiedPath(src, document);
+          if (resolved) vscode.env.clipboard.writeText(resolved.fsPath);
+          break;
+        }
       }
-    });
+    }));
   }
 
   // ── Link resolution ──
@@ -917,12 +1115,19 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       return;
     }
 
+    // Extract #fragment for cross-file heading navigation
+    const fragmentMatch = link.target.match(/#(.+)$/);
+    const headingFragment = fragmentMatch ? fragmentMatch[1] : null;
+
     // Resolve to file
     const resolvedUri = await this.resolveNoteLink(link.target, currentDoc, folder);
     const openCol = beside ? vscode.ViewColumn.Beside : undefined;
     if (resolvedUri) {
       try {
         await vscode.workspace.fs.stat(resolvedUri);
+        if (headingFragment) {
+          KiviEditorProvider.pendingHeadingScroll.set(resolvedUri.toString(), headingFragment);
+        }
         vscode.commands.executeCommand('vscode.openWith', resolvedUri, KiviEditorProvider.viewType, openCol);
       } catch {
         const answer = await vscode.window.showInformationMessage(
@@ -937,7 +1142,15 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     } else {
       const assetUri = this.resolveRelativePath(link.target, currentDoc);
       if (assetUri) {
-        vscode.commands.executeCommand('vscode.open', assetUri, openCol);
+        if (/\.excalidraw$/i.test(link.target)) {
+          try {
+            await vscode.commands.executeCommand('vscode.openWith', assetUri, 'editor.excalidraw', openCol);
+          } catch {
+            vscode.commands.executeCommand('vscode.open', assetUri, openCol);
+          }
+        } else {
+          vscode.commands.executeCommand('vscode.open', assetUri, openCol);
+        }
       } else {
         vscode.window.showInformationMessage(`Could not resolve: ${link.target}`);
       }
@@ -947,7 +1160,13 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   // ── Path resolution ──
 
   /** Resolve a wiki-link or markdown-link target to a .md file URI.
-   *  Tries: workspace-root exact, case-insensitive search, relative path.
+   *  Resolution order (mirrors Obsidian):
+   *    1. Relative to current document directory
+   *    2. Workspace root
+   *    3. In-memory note index (case-insensitive basename)
+   *    4. findFiles fallback (for files not yet indexed)
+   *  Returns { uri, exists } — callers use `exists` to decide between
+   *  opening vs. offering to create the note.
    */
   private async resolveNoteLink(
     target: string,
@@ -959,14 +1178,18 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
     const name = cleaned.endsWith('.md') ? cleaned : `${cleaned}.md`;
 
-    // Try workspace root
-    const rootUri = vscode.Uri.joinPath(folder.uri, name);
-    try {
-      await vscode.workspace.fs.stat(rootUri);
-      return rootUri;
-    } catch { /* continue */ }
+    // Explicit /workspace-root or ~/home paths — resolve directly
+    if (cleaned.startsWith('/') || cleaned.startsWith('~/')) {
+      const resolved = this.resolveUnifiedPath(name, currentDoc);
+      if (resolved) {
+        try {
+          await vscode.workspace.fs.stat(resolved);
+          return resolved;
+        } catch { /* continue to fallbacks */ }
+      }
+    }
 
-    // Try relative to current file
+    // 1. Relative to current file (Obsidian's "shortest path first" heuristic)
     const currentDir = vscode.Uri.joinPath(currentDoc.uri, '..');
     const relUri = vscode.Uri.joinPath(currentDir, name);
     try {
@@ -974,19 +1197,61 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       return relUri;
     } catch { /* continue */ }
 
-    // Case-insensitive: search for matching file name
+    // 2. Workspace root
+    const rootUri = vscode.Uri.joinPath(folder.uri, name);
+    try {
+      await vscode.workspace.fs.stat(rootUri);
+      return rootUri;
+    } catch { /* continue */ }
+
+    // 3. In-memory note index — case-insensitive, O(1) lookup
+    const lookupKey = cleaned.split('/').pop()?.toLowerCase().replace(/\.md$/i, '') ?? '';
+    const indexed = KiviEditorProvider.noteIndex.get(lookupKey);
+    if (indexed) {
+      try {
+        await vscode.workspace.fs.stat(indexed);
+        return indexed;
+      } catch { /* stale entry — continue */ }
+    }
+
+    // 4. Glob fallback (covers files created after index was built)
     const baseName = name.split('/').pop() || name;
     const results = await vscode.workspace.findFiles(`**/${baseName}`, '**/node_modules/**', 1);
     if (results.length > 0) return results[0];
 
-    // Fall back to workspace root (for creating new files)
-    return rootUri;
+    // Nothing found — return a creation URI relative to the current doc
+    return relUri;
+  }
+
+  /**
+   * Resolve a path target to a URI using the unified path scheme:
+   *  - `/path`  → workspace root
+   *  - `~/path` → user home directory
+   *  - otherwise → relative to current document directory
+   */
+  private resolveUnifiedPath(target: string, currentDoc: vscode.TextDocument): vscode.Uri | null {
+    if (!target) return null;
+    const cleaned = target.replace(/#.*$/, '');
+    if (!cleaned) return null;
+
+    if (cleaned.startsWith('/')) {
+      const wsFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!wsFolder) return null;
+      return vscode.Uri.joinPath(wsFolder.uri, cleaned.slice(1));
+    }
+
+    if (cleaned.startsWith('~/')) {
+      const home = process.env.HOME || process.env.USERPROFILE || '';
+      if (!home) return null;
+      return vscode.Uri.file(path.join(home, cleaned.slice(2)));
+    }
+
+    const currentDir = vscode.Uri.joinPath(currentDoc.uri, '..');
+    return vscode.Uri.joinPath(currentDir, cleaned);
   }
 
   private resolveRelativePath(target: string, currentDoc: vscode.TextDocument): vscode.Uri | null {
-    if (!target) return null;
-    const currentDir = vscode.Uri.joinPath(currentDoc.uri, '..');
-    return vscode.Uri.joinPath(currentDir, target);
+    return this.resolveUnifiedPath(target, currentDoc);
   }
 
   // ── Git base content for gutter indicators ──
@@ -1128,6 +1393,12 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'webview.js'),
     );
+    const excalidrawScriptUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'excalidraw-renderer.js'),
+    );
+    const monacoWorkerUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'editor.worker.js'),
+    );
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'webview.css'),
     );
@@ -1143,7 +1414,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; img-src ${webview.cspSource} data: https:; media-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource};" />
+    content="default-src 'none'; img-src ${webview.cspSource} data: https:; media-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource} data:; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource}; worker-src ${webview.cspSource} blob:;" />
   <link href="${styleUri}" rel="stylesheet" />
   <title>Kivi</title>
   <style nonce="${nonce}">
@@ -1156,8 +1427,13 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     .kivi-skeleton-line.full { width: 95%; }
     @keyframes kivi-pulse { 0%,100% { opacity: 0.15; } 50% { opacity: 0.35; } }
   </style>
+  <script nonce="${nonce}">
+    self.MonacoEnvironment = {
+      getWorkerUrl: function() { return '${monacoWorkerUri}'; }
+    };
+  </script>
 </head>
-<body>
+<body class="kivi-loading">
   <div id="editor">
     <div class="kivi-skeleton" id="kivi-skeleton">
       <div class="kivi-skeleton-line h1"></div>
@@ -1172,6 +1448,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     </div>
   </div>
   ${dataTag}
+  <script nonce="${nonce}" src="${excalidrawScriptUri}" async></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

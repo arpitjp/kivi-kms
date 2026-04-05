@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { KiviEditorProvider } from './editor-provider.js';
 import { BacklinksProvider } from './backlinks-provider.js';
 import { FileExplorerProvider } from './file-explorer-provider.js';
@@ -9,7 +10,7 @@ import { IssuesProvider } from './issues-provider.js';
 import { AssetsProvider } from './assets-provider.js';
 import { GraphPanel } from './graph-panel.js';
 import { DevPanel } from './dev-panel.js';
-import { getActiveMarkdownUri } from './utils.js';
+import { getActiveMarkdownUri, computeRelativePathFromDoc } from './utils.js';
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(KiviEditorProvider.register(context));
@@ -129,6 +130,74 @@ export function activate(context: vscode.ExtensionContext) {
       if (uri) vscode.commands.executeCommand('revealInExplorer', uri);
     }),
 
+    vscode.commands.registerCommand('kivi.copyAsReference', async (contextUri: vscode.Uri, allUris: vscode.Uri[]) => {
+      const uris = allUris?.length ? allUris : contextUri ? [contextUri] : [];
+      if (uris.length === 0) return;
+
+      // Resolve relative paths from the active Kivi editor's document.
+      // Falls back to workspace-relative if no editor is open.
+      const panel = KiviEditorProvider.getActivePanel();
+      const docUri = panel ? KiviEditorProvider.getDocumentUriForPanel(panel) : undefined;
+
+      const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico']);
+      const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogg']);
+      const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.weba']);
+
+      const parts: string[] = [];
+      for (const uri of uris) {
+        try { await vscode.workspace.fs.stat(uri); } catch { continue; }
+
+        const ext = path.extname(uri.fsPath).toLowerCase();
+        let fileType = 'file';
+        if (IMAGE_EXTS.has(ext)) fileType = 'image';
+        else if (VIDEO_EXTS.has(ext)) fileType = 'video';
+        else if (AUDIO_EXTS.has(ext)) fileType = 'audio';
+        else if (/\.excalidraw$/i.test(uri.fsPath)) fileType = 'excalidraw';
+
+        // Workspace file → ref only. External → copy into workspace first.
+        let targetUri = uri;
+        const wsFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!wsFolder) {
+          const rootFolder = vscode.workspace.workspaceFolders?.[0];
+          if (rootFolder) {
+            const destDir = (fileType === 'file' && /\.md$/i.test(ext)) ? 'pages' : 'assets';
+            const destFolder = vscode.Uri.joinPath(rootFolder.uri, destDir);
+            try { await vscode.workspace.fs.createDirectory(destFolder); } catch { /* exists */ }
+            targetUri = vscode.Uri.joinPath(destFolder, path.basename(uri.fsPath));
+            await vscode.workspace.fs.copy(uri, targetUri, { overwrite: false });
+          }
+        }
+
+        const relPath = docUri
+          ? computeRelativePathFromDoc(docUri, targetUri)
+          : vscode.workspace.asRelativePath(targetUri, false);
+        const name = relPath.split('/').pop()?.replace(/\.[^.]+$/, '') || relPath;
+
+        switch (fileType) {
+          case 'image':
+            parts.push(`![${name}](${relPath})`);
+            break;
+          case 'excalidraw':
+            parts.push(`![${name}](${relPath})`);
+            break;
+          case 'video':
+            parts.push(`<video src="${relPath}" controls style="max-width:100%"></video>`);
+            break;
+          case 'audio':
+            parts.push(`<audio src="${relPath}" controls></audio>`);
+            break;
+          default:
+            parts.push(`[${name}](${relPath})`);
+            break;
+        }
+      }
+
+      if (parts.length > 0) {
+        await vscode.env.clipboard.writeText(parts.join('\n\n'));
+        vscode.window.showInformationMessage(`Copied ${parts.length} reference(s) — paste with ⌘V`);
+      }
+    }),
+
     vscode.commands.registerCommand('kivi.openGraph', () => {
       DevPanel.log('debug', 'cmd', 'openGraph');
       GraphPanel.open(context);
@@ -149,36 +218,23 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('kivi.createExcalidraw', async () => {
-      const excExt = vscode.extensions.getExtension('pomdtr.excalidraw-editor')
-        || vscode.extensions.getExtension('nicolo-ribaudo.excalidraw-editor');
-      if (!excExt) {
-        const choice = await vscode.window.showWarningMessage(
-          'Excalidraw editor extension is not installed. Install it to create and edit Excalidraw diagrams.',
-          'Install Extension',
-        );
-        if (choice === 'Install Extension') {
-          vscode.commands.executeCommand('workbench.extensions.search', 'excalidraw editor');
-        }
-        return;
-      }
-      const mdUri = getActiveMarkdownUri();
-      const baseDir = mdUri ? vscode.Uri.joinPath(mdUri, '..') : vscode.workspace.workspaceFolders?.[0]?.uri;
-      if (!baseDir) {
+      const wsFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!wsFolder) {
         vscode.window.showErrorMessage('No workspace folder open.');
         return;
       }
       const name = await vscode.window.showInputBox({
         prompt: 'Excalidraw file name',
-        value: 'diagram.excalidraw',
+        value: 'diagram',
         validateInput: (v) => v.trim() ? null : 'Name is required',
       });
       if (!name) return;
       const fileName = name.endsWith('.excalidraw') ? name : `${name}.excalidraw`;
-      const fileUri = vscode.Uri.joinPath(baseDir, fileName);
+      const assetsDir = vscode.Uri.joinPath(wsFolder.uri, 'assets');
+      try { await vscode.workspace.fs.createDirectory(assetsDir); } catch { /* exists */ }
+      const fileUri = vscode.Uri.joinPath(assetsDir, fileName);
       const emptyScene = JSON.stringify({
-        type: 'excalidraw',
-        version: 2,
-        source: 'kivi',
+        type: 'excalidraw', version: 2, source: 'kivi',
         elements: [],
         appState: { gridSize: null, viewBackgroundColor: '#ffffff' },
         files: {},
@@ -190,19 +246,16 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       try {
-        await vscode.commands.executeCommand('vscode.openWith', fileUri, 'excalidraw-editor.editor');
+        await vscode.commands.executeCommand('vscode.openWith', fileUri, 'editor.excalidraw');
       } catch {
         await vscode.commands.executeCommand('vscode.open', fileUri);
       }
-      // Insert reference into the active markdown editor
+      const mdUri = getActiveMarkdownUri();
       if (mdUri) {
         const panel = KiviEditorProvider.getPanelForUri(mdUri.toString());
         if (panel) {
-          const relPath = vscode.workspace.asRelativePath(fileUri, false);
-          const mdRelPath = vscode.workspace.asRelativePath(mdUri, false);
-          const mdDir = mdRelPath.substring(0, mdRelPath.lastIndexOf('/') + 1);
-          const ref = relPath.startsWith(mdDir) ? relPath.slice(mdDir.length) : relPath;
-          panel.webview.postMessage({ type: 'insertExcalidraw', src: ref });
+          const relPath = computeRelativePathFromDoc(mdUri, fileUri);
+          panel.webview.postMessage({ type: 'insertExcalidraw', src: relPath });
         }
       }
     }),
@@ -234,13 +287,31 @@ export function activate(context: vscode.ExtensionContext) {
   // ── File explorer sidebar ──
 
   const fileExplorerProvider = new FileExplorerProvider();
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('kivi.files', fileExplorerProvider),
-  );
+  const filesView = vscode.window.createTreeView('kivi.files', {
+    treeDataProvider: fileExplorerProvider,
+  });
+  context.subscriptions.push(filesView);
+
+  let filesRevealTimer: ReturnType<typeof setTimeout> | undefined;
+  const revealActiveFileInTree = () => {
+    if (filesRevealTimer) clearTimeout(filesRevealTimer);
+    filesRevealTimer = setTimeout(async () => {
+      if (!filesView.visible) return;
+      const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      const input = activeTab?.input as { uri?: vscode.Uri; viewType?: string } | undefined;
+      if (input?.viewType !== KiviEditorProvider.viewType || !input.uri) return;
+
+      const node = fileExplorerProvider.findNodeByUri(input.uri)
+        ?? await fileExplorerProvider.resolveNodeByPath(input.uri);
+      if (node) {
+        filesView.reveal(node, { select: true, focus: false, expand: true });
+      }
+    }, 150);
+  };
 
   // ── Outline view ──
 
-  const outlineProvider = new OutlineProvider();
+  const outlineProvider = new OutlineProvider(context);
   const outlineView = vscode.window.createTreeView('kivi.outline', {
     treeDataProvider: outlineProvider,
   });
@@ -367,6 +438,7 @@ export function activate(context: vscode.ExtensionContext) {
       const batch = files.slice(i, i + CONCURRENCY);
       await Promise.all(batch.map(async (uri) => {
         try {
+          KiviEditorProvider.updateNoteIndex(uri);
           const bytes = await vscode.workspace.fs.readFile(uri);
           const content = decoder.decode(bytes);
           backlinksProvider.updateIndex(uri.fsPath, content, true);
@@ -577,6 +649,7 @@ export function activate(context: vscode.ExtensionContext) {
     watcher.onDidCreate(async (uri) => {
       const name = uri.fsPath.split('/').pop();
       DevPanel.log('debug', 'watcher', `File created: ${name}`);
+      KiviEditorProvider.updateNoteIndex(uri);
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
         const content = decoder.decode(bytes);
@@ -610,6 +683,7 @@ export function activate(context: vscode.ExtensionContext) {
       const pending = changeTimers.get(key);
       if (pending) { clearTimeout(pending); changeTimers.delete(key); }
       DevPanel.log('debug', 'watcher', `File deleted: ${uri.fsPath.split('/').pop()}`);
+      KiviEditorProvider.removeFromNoteIndex(uri);
       backlinksProvider.removeFromIndex(uri.fsPath);
       tagTreeProvider.removeFile(uri.fsPath);
       scheduleWatcherRefresh({ fileExplorer: true, backlinks: true });
@@ -626,6 +700,7 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('kivi.refreshOutline', () => outlineProvider.refresh()),
     vscode.commands.registerCommand('kivi.collapseOutline', () => outlineProvider.collapseAll()),
+    vscode.commands.registerCommand('kivi.expandOutline', () => outlineProvider.expandAll()),
     vscode.commands.registerCommand('kivi.copyOutlineLink', (item: OutlineItem) => {
       if (!item) return;
       const slug = makeHeadingSlug(item.label);
@@ -658,24 +733,26 @@ export function activate(context: vscode.ExtensionContext) {
     }, 500);
   };
 
+  // Consolidate tab/editor change listeners to avoid duplicate event handling
+  let lastKiviFocused: boolean | undefined;
+  const handleTabOrEditorChange = () => {
+    debouncedRefreshSidebars();
+    revealActiveFileInTree();
+    const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const isKivi = !!activeTab && (activeTab.input as any)?.viewType === KiviEditorProvider.viewType;
+    if (isKivi !== lastKiviFocused) {
+      lastKiviFocused = isKivi;
+      vscode.commands.executeCommand('setContext', 'kivi.editorFocused', isKivi);
+    }
+  };
+
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(() => debouncedRefreshSidebars()),
-    vscode.window.tabGroups.onDidChangeTabGroups(() => debouncedRefreshSidebars()),
-    vscode.window.tabGroups.onDidChangeTabs(() => debouncedRefreshSidebars()),
+    vscode.window.onDidChangeActiveTextEditor(() => handleTabOrEditorChange()),
+    vscode.window.tabGroups.onDidChangeTabs(() => handleTabOrEditorChange()),
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document === vscode.window.activeTextEditor?.document) {
         debouncedRefreshOutline();
       }
-    }),
-  );
-
-  // ── Set context when webview is active ──
-
-  context.subscriptions.push(
-    vscode.window.tabGroups.onDidChangeTabs(() => {
-      const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      const isKivi = activeTab && (activeTab.input as any)?.viewType === KiviEditorProvider.viewType;
-      vscode.commands.executeCommand('setContext', 'kivi.editorFocused', !!isKivi);
     }),
   );
 }

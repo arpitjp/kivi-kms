@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { addDelayedTooltip } from '../tooltip.js';
+import { positionFixedPopup } from '../zoom.js';
 
 const blockCopyKey = new PluginKey('kiviBlockCopyControls');
 
@@ -113,33 +114,19 @@ export const BlockCopyControls = Extension.create({
             panel.style.visibility = 'visible';
             const rect = dom.getBoundingClientRect();
             const container = view.dom.parentElement;
-            const containerRect = container?.getBoundingClientRect()
-              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+            const cr = container?.getBoundingClientRect() ?? null;
+
             const pw = panel.offsetWidth || 80;
-            const ph = panel.offsetHeight || 28;
-            const gap = 4;
-
-            const visibleTop = Math.max(rect.top, containerRect.top);
-            const visibleBottom = Math.min(rect.bottom, containerRect.bottom);
-
-            let top = visibleTop - ph - gap;
-
-            if (top < containerRect.top) {
-              top = visibleTop + gap;
-            }
-
-            if (top + ph > visibleBottom - gap) {
-              top = visibleBottom - ph - gap;
-            }
-
-            top = Math.max(gap, Math.min(top, window.innerHeight - ph - gap));
-
-            let left = rect.right - pw - gap;
-            if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
-            if (left < 8) left = 8;
-
-            panel.style.left = `${left}px`;
-            panel.style.top = `${top}px`;
+            const anchorRight = rect.right - pw - 4;
+            positionFixedPopup({
+              anchorRect: { top: rect.top, bottom: rect.top, left: Math.max(8, anchorRight), right: rect.right },
+              popup: panel,
+              containerRect: cr,
+              gap: 4,
+              pad: 8,
+              preferY: 'above',
+              anchorEl: dom,
+            });
           }
 
           function show(view: EditorView, hit: BlockHit) {
@@ -178,7 +165,7 @@ export const BlockCopyControls = Extension.create({
               navigator.clipboard.writeText(text).then(() => {
                 copyBtn.innerHTML = SVG_CHECK;
                 setTimeout(() => { copyBtn.innerHTML = SVG_COPY; }, 1500);
-              });
+              }).catch(() => {});
             });
             panel.appendChild(copyBtn);
 

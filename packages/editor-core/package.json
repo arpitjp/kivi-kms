@@ -26,6 +26,7 @@
     "@kivi/markdown-serializer": "workspace:*",
     "@kivi/shared-types": "workspace:*",
     "@tiptap/core": "^2",
+    "@tiptap/extension-bullet-list": "^2",
     "@tiptap/extension-code": "^2",
     "@tiptap/extension-highlight": "^2",
     "@tiptap/extension-image": "^2",

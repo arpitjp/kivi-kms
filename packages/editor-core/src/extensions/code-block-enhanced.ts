@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { addDelayedTooltip } from '../tooltip.js';
+import { getHostZoom, getBodyZoom, getRectZoomCorrection, isScrollZoomed } from '../zoom.js';
 
 const codeBlockEnhancedKey = new PluginKey('kiviCodeBlockEnhanced');
 
@@ -349,8 +350,10 @@ export const CodeBlockEnhanced = Extension.create({
 
         function positionLangDropdown() {
           const btnRect = langBtn.getBoundingClientRect();
-          langDropdown.style.left = `${btnRect.left}px`;
-          langDropdown.style.top = `${btnRect.bottom + 4}px`;
+          const bz = getBodyZoom();
+          const zc = getRectZoomCorrection(langBtn);
+          langDropdown.style.left = `${(btnRect.left * zc) / bz}px`;
+          langDropdown.style.top = `${((btnRect.bottom + 4) * zc) / bz}px`;
         }
 
         function openLangDropdown() {
@@ -466,9 +469,17 @@ export const CodeBlockEnhanced = Extension.create({
 
         function toContentCoords(viewportRect: DOMRect) {
           const pr = scrollParent.getBoundingClientRect();
+          const z = getHostZoom(scrollParent);
+          const scrollZ = isScrollZoomed(scrollParent);
+          if (scrollZ) {
+            return {
+              top: (viewportRect.top - pr.top + scrollParent.scrollTop) / z,
+              left: (viewportRect.left - pr.left + scrollParent.scrollLeft) / z,
+            };
+          }
           return {
-            top: viewportRect.top - pr.top + scrollParent.scrollTop,
-            left: viewportRect.left - pr.left + scrollParent.scrollLeft,
+            top: (viewportRect.top - pr.top) / z + scrollParent.scrollTop,
+            left: (viewportRect.left - pr.left) / z + scrollParent.scrollLeft,
           };
         }
 
@@ -476,20 +487,33 @@ export const CodeBlockEnhanced = Extension.create({
           if (!activePre) return;
           const preRect = activePre.getBoundingClientRect();
           const containerRect = scrollParent.getBoundingClientRect();
+          const z = getHostZoom(scrollParent);
+          const scrollZ = isScrollZoomed(scrollParent);
+          const lz = (v: number) => scrollZ ? v / z : v;
           const pos = toContentCoords(preRect);
+          const preW = preRect.width / z;
+
+          // Counter-zoom the panel so it stays the same visual size
+          panel.style.transform = z !== 1 ? `scale(${1 / z})` : '';
+          panel.style.transformOrigin = 'top left';
 
           panel.style.display = 'flex';
-          const panelW = panel.offsetWidth || 260;
-          const panelH = panel.offsetHeight || 32;
+          const panelW = lz(panel.offsetWidth || 260);
+          const panelH = lz(panel.offsetHeight || 32);
+          const scaledW = panelW / z;
+          const scaledH = panelH / z;
           const gap = 4;
-          const centerX = pos.left + (preRect.width - panelW) / 2;
+          const centerX = pos.left + (preW - scaledW) / 2;
           panel.style.left = `${Math.max(pos.left + gap, centerX)}px`;
 
-          const aboveTop = pos.top - panelH - gap;
+          const aboveTop = pos.top - scaledH - gap;
+          const scrollTopL = lz(scrollParent.scrollTop);
           const visiblePreTop = Math.max(preRect.top, containerRect.top);
-          const insideTop = toContentCoords({ top: visiblePreTop + gap } as DOMRect).top;
+          const insideTop = scrollZ
+            ? (visiblePreTop - containerRect.top + scrollParent.scrollTop) / z + gap
+            : (visiblePreTop - containerRect.top) / z + scrollParent.scrollTop + gap;
 
-          if (aboveTop > scrollParent.scrollTop) {
+          if (aboveTop > scrollTopL) {
             panel.style.top = `${aboveTop}px`;
           } else {
             panel.style.top = `${insideTop}px`;
@@ -574,16 +598,19 @@ export const CodeBlockEnhanced = Extension.create({
         const expandBars = new WeakMap<HTMLElement, HTMLElement>();
 
         function repositionCollapseBars() {
+          const z = getHostZoom(scrollParent);
           editorView.dom.querySelectorAll<HTMLElement>('pre').forEach((preEl) => {
             const bar = expandBars.get(preEl);
             if (!bar) return;
             const preRect = preEl.getBoundingClientRect();
             const pos = toContentCoords(preRect);
+            const preH = preRect.height / z;
+            const preW = preRect.width / z;
             bar.style.display = '';
             bar.style.position = 'absolute';
             bar.style.left = `${pos.left}px`;
-            bar.style.top = `${pos.top + preRect.height - 30}px`;
-            bar.style.width = `${preRect.width}px`;
+            bar.style.top = `${pos.top + preH - 30}px`;
+            bar.style.width = `${preW}px`;
           });
         }
 

@@ -24,4 +24,7 @@ export default defineConfig({
       '@kivi/shared-types': path.resolve(__dirname, '../../packages/shared-types/src/index.ts'),
     },
   },
+  optimizeDeps: {
+    include: ['monaco-editor/esm/vs/editor/editor.api.js'],
+  },
 });

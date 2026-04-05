@@ -74,6 +74,47 @@ describe('serializeDocument', () => {
     expect(result).toBe(md);
   });
 
+  it('round-trips a standalone file link', () => {
+    const md = '[d](stl-containers.excalidraw)';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips a standalone file link (dirty block path)', () => {
+    const md = '[my-doc](docs/my-doc.pdf)';
+    const kiviDoc = parseMarkdown(md);
+    const blockId = kiviDoc.blockOrder[0];
+    const block = kiviDoc.sourceMap.blocks.get(blockId);
+    if (block) block.dirty = true;
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('excalidraw link stays as regular link (not promoted to excalidrawBlock)', () => {
+    const md = '[d](stl-containers.excalidraw)';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips excalidraw image syntax ![alt](file.excalidraw)', () => {
+    const md = '![diagram](assets/drawing.excalidraw)';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips excalidraw image syntax through dirty block path', () => {
+    const md = '![diagram](assets/drawing.excalidraw)';
+    const kiviDoc = parseMarkdown(md);
+    const blockId = kiviDoc.blockOrder[0];
+    const block = kiviDoc.sourceMap.blocks.get(blockId);
+    if (block) block.dirty = true;
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
   it('round-trips horizontal rules', () => {
     const md = 'Above\n\n---\n\nBelow';
     const kiviDoc = parseMarkdown(md);
@@ -104,6 +145,13 @@ describe('serializeDocument', () => {
 
   it('round-trips task lists', () => {
     const md = '- [x] Done\n- [ ] Not done';
+    const kiviDoc = parseMarkdown(md);
+    const result = serializeDocument(kiviDoc);
+    expect(result).toBe(md);
+  });
+
+  it('round-trips mixed lists (plain + checkbox items)', () => {
+    const md = '- plain item\n- [ ] unchecked\n- [x] checked\n- another plain';
     const kiviDoc = parseMarkdown(md);
     const result = serializeDocument(kiviDoc);
     expect(result).toBe(md);
@@ -282,6 +330,21 @@ describe('serializeNode wiki-link, hashtag, TOC, mermaid, excalidraw', () => {
     expect(serializeNode(node)).toBe('```excalidraw\n{}\n```');
   });
 
+  it('serializes excalidrawBlock with src as image syntax', () => {
+    const node = { type: 'excalidrawBlock', attrs: { src: 'assets/drawing.excalidraw', alt: 'diagram', data: '{}' } };
+    expect(serializeNode(node)).toBe('![diagram](assets/drawing.excalidraw)');
+  });
+
+  it('serializes excalidrawBlock with src and width as HTML img', () => {
+    const node = { type: 'excalidrawBlock', attrs: { src: 'assets/drawing.excalidraw', alt: 'diagram', data: '{}', width: 400 } };
+    expect(serializeNode(node)).toBe('<img src="assets/drawing.excalidraw" alt="diagram" width="400" />');
+  });
+
+  it('serializes excalidrawBlock with src derives alt from filename when no alt attr', () => {
+    const node = { type: 'excalidrawBlock', attrs: { src: 'assets/my-drawing.excalidraw', data: '{}' } };
+    expect(serializeNode(node)).toBe('![my-drawing](assets/my-drawing.excalidraw)');
+  });
+
   it('serializes a hashTag mark (remark-stringify escapes leading # in paragraph)', () => {
     const node = {
       type: 'paragraph',
@@ -330,5 +393,45 @@ describe('serializeNode wiki-link, hashtag, TOC, mermaid, excalidraw', () => {
       attrs: { src: 'test.png', alt: 'Test', title: null, width: null, 'data-align': null },
     };
     expect(serializeNode(node)).toBe('![Test](test.png)');
+  });
+
+  it('serializes a link mark as [text](url)', () => {
+    const node = {
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        text: 'd',
+        marks: [{ type: 'link', attrs: { href: 'stl-containers.excalidraw', target: '_blank' } }],
+      }],
+    };
+    expect(serializeNode(node)).toBe('[d](stl-containers.excalidraw)');
+  });
+
+  it('serializes a file link with display name', () => {
+    const node = {
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        text: 'my-document',
+        marks: [{ type: 'link', attrs: { href: 'assets/my-document.pdf' } }],
+      }],
+    };
+    expect(serializeNode(node)).toBe('[my-document](assets/my-document.pdf)');
+  });
+
+  it('un-escapes brackets in plain text that looks like a markdown link', () => {
+    const node = {
+      type: 'paragraph',
+      content: [{ type: 'text', text: '[d](stl-containers.excalidraw)' }],
+    };
+    expect(serializeNode(node)).toBe('[d](stl-containers.excalidraw)');
+  });
+
+  it('un-escapes brackets in plain text that looks like an image', () => {
+    const node = {
+      type: 'paragraph',
+      content: [{ type: 'text', text: '![alt](image.png)' }],
+    };
+    expect(serializeNode(node)).toBe('![alt](image.png)');
   });
 });

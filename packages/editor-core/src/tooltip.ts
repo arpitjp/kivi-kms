@@ -1,3 +1,5 @@
+import { getBodyZoom, getRectZoomCorrection } from './zoom.js';
+
 let tooltipEl: HTMLDivElement | null = null;
 let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
 let cssInjected = false;
@@ -59,8 +61,10 @@ export function addDelayedTooltip(el: HTMLElement): void {
       const tip = ensure();
       tip.textContent = text;
       const rect = el.getBoundingClientRect();
-      tip.style.left = `${rect.left + rect.width / 2}px`;
-      tip.style.top = `${rect.bottom + 6}px`;
+      const bz = getBodyZoom();
+      const zc = getRectZoomCorrection(el);
+      tip.style.left = `${(rect.left * zc + rect.width * zc / 2) / bz}px`;
+      tip.style.top = `${(rect.bottom * zc + 6) / bz}px`;
       tip.style.transform = 'translateX(-50%)';
       tip.classList.add('visible');
     }, DELAY);

@@ -1,78 +1,61 @@
 import { Extension } from '@tiptap/core';
-import { Plugin, PluginKey, TextSelection, Transaction } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
-import type { EditorState } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import type { EditorState, Transaction } from '@tiptap/pm/state';
+import { Fragment, Slice } from '@tiptap/pm/model';
+import type { NodeType, Node as PmNode } from '@tiptap/pm/model';
+import { ReplaceAroundStep } from '@tiptap/pm/transform';
 
 const smartTypoKey = new PluginKey('kiviSmartTypography');
 
 /**
  * Smart typography extension for the Kivi editor.
  *
- * Inline mark conversion (Slack / Markdown):
- *   `text`    → inline code
- *   **text**  → bold
- *   *text*    → italic
- *   _text_    → italic
- *   ~~text~~  → strikethrough
- *   ==text==  → highlight
- *
- *   Works when:
- *   a) The closing delimiter is typed (e.g. type `hello then `)
- *   b) Content is typed between pre-placed delimiters → converts on first char
- *   c) ArrowRight past closing delimiter
- *
- * Selection wrapping:
- *   Select text, then type ` → toggles inline code mark
- *   Select text, then type " ' ( [ { → wraps selection with pair
- *   Select text, then type * → toggles bold
- *   Select text, then type _ → toggles italic
- *   Select text, then type ~ → toggles strikethrough
- *
- * Auto-close (empty selection):
- *   Type ( [ { → inserts pair, cursor between
- *
- * Skip-close:
- *   When cursor is right before a matching closing char, typing it skips over.
- *
- * Smart delete:
- *   Backspace between matching empty pair (e.g. cursor between () ) deletes both.
+ * Features:
+ *   - Auto-close brackets: ( [ { → inserts matching pair, cursor between
+ *   - Skip-close: typing a closing bracket skips over an existing one
+ *   - Smart delete: backspace between empty matching pair deletes both
+ *   - Selection wrapping: select text then type " ' ( [ { → wraps
+ *   - Markdown link: [text](url) → link mark
+ *   - Tab / Shift+Tab: indent / outdent list items
  */
 
-// ── Delimiter definitions (longest first for precedence) ──
+const SMART_TYPO_META = 'kiviSmartTypoHandled';
+const CONTINUE_META = 'smartTypoContinue';
 
-interface MarkDelimiter {
-  chars: string;
-  mark: string;
+// ── Plugin state: tracks mark-continuation sessions ──
+
+interface ContinueSession {
+  markName: string;
+  delimiter: string;
+  startPos: number;
+  endPos: number;
 }
 
-const MARK_DELIMITERS: MarkDelimiter[] = [
-  { chars: '**', mark: 'bold' },
-  { chars: '~~', mark: 'strike' },
-  { chars: '==', mark: 'highlight' },
-  { chars: '`',  mark: 'code' },
-  { chars: '*',  mark: 'italic' },
-  { chars: '_',  mark: 'italic' },
+interface SmartTypoState {
+  session: ContinueSession | null;
+}
+
+// ── Inline mark delimiters ──
+// Each entry maps a delimiter string to its ProseMirror mark name.
+// "trigger" is the single character typed; "full" is the delimiter that must
+// precede the cursor for a double-tap to activate mark mode.
+
+interface InlineMarkDef {
+  delimiter: string;
+  markName: string;
+}
+
+const INLINE_MARKS: InlineMarkDef[] = [
+  { delimiter: '`',  markName: 'code' },
+  { delimiter: '**', markName: 'bold' },
+  { delimiter: '*',  markName: 'italic' },
+  { delimiter: '~~', markName: 'strike' },
+  { delimiter: '==', markName: 'highlight' },
 ];
 
 // ── Pair / wrap definitions ──
-
-interface PairDef {
-  open: string;
-  close: string;
-  mark?: string;
-}
-
-const WRAP_PAIRS: Record<string, PairDef> = {
-  '`':  { open: '`', close: '`', mark: 'code' },
-  '"':  { open: '"', close: '"' },
-  "'":  { open: "'", close: "'" },
-  '(':  { open: '(', close: ')' },
-  '[':  { open: '[', close: ']' },
-  '{':  { open: '{', close: '}' },
-  '*':  { open: '*', close: '*', mark: 'bold' },
-  '_':  { open: '_', close: '_', mark: 'italic' },
-  '~':  { open: '~', close: '~', mark: 'strike' },
-};
 
 const AUTO_CLOSE: Record<string, string> = {
   '(': ')',
@@ -86,19 +69,21 @@ const CLOSE_TO_OPEN: Record<string, string> = {
   '}': '{',
 };
 
-const SMART_TYPO_META = 'kiviSmartTypoHandled';
-const CONTINUE_META = 'smartTypoContinue';
-
-// ── Plugin state: tracks mark-continuation sessions ──
-
-interface ContinueSession {
-  markName: string;
-  endPos: number;
+interface WrapPairDef {
+  open: string;
+  close: string;
+  mark?: string;
 }
 
-interface SmartTypoState {
-  session: ContinueSession | null;
-}
+const WRAP_PAIRS: Record<string, WrapPairDef> = {
+  '`':  { open: '`', close: '`', mark: 'code' },
+  '*':  { open: '*', close: '*', mark: 'italic' },
+  '"':  { open: '"', close: '"' },
+  "'":  { open: "'", close: "'" },
+  '(':  { open: '(', close: ')' },
+  '[':  { open: '[', close: ']' },
+  '{':  { open: '{', close: '}' },
+};
 
 // ── Utility helpers ──
 
@@ -132,6 +117,13 @@ function wrapSelection(view: EditorView, open: string, close: string): boolean {
   return true;
 }
 
+function cursorHasMark(state: EditorState, markName: string): boolean {
+  const markType = state.schema.marks[markName];
+  if (!markType) return false;
+  const { $from } = state.selection;
+  return markType.isInSet($from.marks()) !== undefined;
+}
+
 function charAfterCursor(view: EditorView): string {
   const { state } = view;
   const { from } = state.selection;
@@ -152,8 +144,7 @@ function isInsideCodeBlockView(view: EditorView): boolean {
   const { state } = view;
   const { $from } = state.selection;
   for (let d = $from.depth; d >= 0; d--) {
-    const node = $from.node(d);
-    if (node.type.name === 'codeBlock') return true;
+    if ($from.node(d).type.name === 'codeBlock') return true;
   }
   return false;
 }
@@ -166,333 +157,7 @@ function isInsideCodeBlockState(state: EditorState): boolean {
   return false;
 }
 
-function cursorHasMark(state: EditorState, markName: string): boolean {
-  const markType = state.schema.marks[markName];
-  if (!markType) return false;
-  const { $from } = state.selection;
-  return markType.isInSet($from.marks()) !== undefined;
-}
-
-function hasLongerDelim(dlen: number, firstChar: string): boolean {
-  return MARK_DELIMITERS.some(dd => dd.chars.length > dlen && dd.chars[0] === firstChar);
-}
-
-// ── Closing-delimiter-typed detection (handleTextInput path) ──
-
-function tryClosingDelimiter(view: EditorView, from: number, typedChar: string): boolean {
-  const { state } = view;
-  const $pos = state.doc.resolve(from);
-  const parentText = $pos.parent.textContent;
-  const offset = $pos.parentOffset;
-  const parentStart = from - offset;
-
-  for (const d of MARK_DELIMITERS) {
-    const dlen = d.chars.length;
-    if (typedChar !== d.chars[dlen - 1]) continue;
-
-    const alreadyInText = dlen - 1;
-    if (offset < alreadyInText) continue;
-
-    if (alreadyInText > 0) {
-      const prev = parentText.slice(offset - alreadyInText, offset);
-      if (prev !== d.chars.slice(0, alreadyInText)) continue;
-    }
-
-    if (dlen === 1 && alreadyInText === 0 && offset > 0 && parentText[offset - 1] === typedChar) {
-      if (MARK_DELIMITERS.some(dd => dd.chars === typedChar + typedChar)) continue;
-    }
-
-    if (cursorHasMark(state, d.mark)) continue;
-
-    const closeStart = offset - alreadyInText;
-
-    for (let i = closeStart - 1; i >= dlen - 1; i--) {
-      const oStart = i - dlen + 1;
-      if (oStart < 0) break;
-      if (parentText.slice(oStart, oStart + dlen) !== d.chars) continue;
-
-      if (oStart > 0 && parentText[oStart - 1] === d.chars[0] && hasLongerDelim(dlen, d.chars[0])) continue;
-
-      const content = parentText.slice(oStart + dlen, closeStart);
-      if (!content || !content.trim()) continue;
-
-      if (d.mark === 'code' && content.includes('`')) continue;
-      if (d.mark !== 'code' && content.includes(d.chars)) continue;
-
-      const markType = state.schema.marks[d.mark];
-      if (!markType) continue;
-
-      const absOpenStart = parentStart + oStart;
-      const absCloseStart = parentStart + closeStart;
-
-      const tr = state.tr;
-      if (alreadyInText > 0) {
-        tr.delete(absCloseStart, absCloseStart + alreadyInText);
-      }
-      tr.delete(absOpenStart, absOpenStart + dlen);
-
-      const markFrom = absOpenStart;
-      const markTo = absOpenStart + content.length;
-      tr.addMark(markFrom, markTo, markType.create());
-      tr.removeStoredMark(markType);
-      tr.setSelection(TextSelection.create(tr.doc, markTo));
-      tr.setMeta(SMART_TYPO_META, true);
-      tr.setMeta(CONTINUE_META, null);
-      view.dispatch(tr.scrollIntoView());
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// ── Between-delimiters detection ──
-//
-// Check if the cursor sits between a matching opening/closing delimiter
-// pair.  Strip both delimiters, apply the mark, and start a continuation
-// session so subsequent typed chars inherit the mark.
-
-function tryBetweenDelimiters(state: EditorState): Transaction | null {
-  const { selection } = state;
-  if (!selection.empty) return null;
-
-  const pos = selection.from;
-  const $pos = state.doc.resolve(pos);
-  const parentText = $pos.parent.textContent;
-  const offset = $pos.parentOffset;
-  const parentStart = pos - offset;
-
-  for (const d of MARK_DELIMITERS) {
-    const dlen = d.chars.length;
-
-    if (offset + dlen > parentText.length) continue;
-    if (parentText.slice(offset, offset + dlen) !== d.chars) continue;
-
-    if (offset + dlen < parentText.length && parentText[offset + dlen] === d.chars[0]) {
-      if (MARK_DELIMITERS.some(dd => dd.chars.length > dlen && dd.chars.startsWith(d.chars))) continue;
-    }
-
-    if (offset < dlen + 1) continue;
-
-    for (let i = offset - 1; i >= dlen - 1; i--) {
-      const oStart = i - dlen + 1;
-      if (oStart < 0) break;
-      if (parentText.slice(oStart, oStart + dlen) !== d.chars) continue;
-
-      if (oStart > 0 && parentText[oStart - 1] === d.chars[0]) {
-        if (MARK_DELIMITERS.some(dd => dd.chars.length > dlen && dd.chars.startsWith(d.chars))) continue;
-      }
-
-      const content = parentText.slice(oStart + dlen, offset);
-      if (!content.trim()) continue;
-
-      if (d.mark === 'code' && content.includes('`')) continue;
-      if (d.mark !== 'code' && content.includes(d.chars)) continue;
-
-      if (cursorHasMark(state, d.mark)) return null;
-
-      const markType = state.schema.marks[d.mark];
-      if (!markType) continue;
-
-      const absOpenStart = parentStart + oStart;
-      const absCloseStart = parentStart + offset;
-
-      const tr = state.tr;
-      tr.delete(absCloseStart, absCloseStart + dlen);
-      tr.delete(absOpenStart, absOpenStart + dlen);
-
-      const markFrom = absOpenStart;
-      const markTo = absOpenStart + content.length;
-      tr.addMark(markFrom, markTo, markType.create());
-      tr.setStoredMarks([markType.create()]);
-      tr.setSelection(TextSelection.create(tr.doc, markTo));
-      tr.setMeta(CONTINUE_META, { markName: d.mark, endPos: markTo } as ContinueSession);
-      return tr;
-    }
-  }
-
-  return null;
-}
-
-// ── Mark continuation ──
-//
-// When a between-delimiter conversion just happened, extend the mark
-// to cover each subsequently typed character.
-
-function tryContinueMark(
-  session: ContinueSession,
-  oldState: EditorState,
-  newState: EditorState,
-): Transaction | null {
-  const sizeDiff = newState.doc.content.size - oldState.doc.content.size;
-  if (sizeDiff !== 1) return null;
-
-  const newPos = newState.selection.from;
-  if (!newState.selection.empty) return null;
-
-  if (newPos !== session.endPos + 1) return null;
-
-  // If the typed character is a delimiter char for the active mark,
-  // end the session and strip the mark from the delimiter so it stays
-  // as plain text (avoids backtick-inside-code and similar artifacts).
-  const $pos = newState.doc.resolve(newPos);
-  const typedChar = $pos.parent.textContent.charAt($pos.parentOffset - 1);
-  const delim = MARK_DELIMITERS.find(d => d.mark === session.markName);
-  if (delim && delim.chars.includes(typedChar)) {
-    const markType = newState.schema.marks[session.markName];
-    if (markType) {
-      const tr = newState.tr;
-      tr.removeMark(newPos - 1, newPos, markType);
-      tr.removeStoredMark(markType);
-      tr.setMeta(CONTINUE_META, null);
-      return tr;
-    }
-    return null;
-  }
-
-  const markType = newState.schema.marks[session.markName];
-  if (!markType) return null;
-
-  const tr = newState.tr;
-  tr.addMark(session.endPos, newPos, markType.create());
-  tr.setStoredMarks([markType.create()]);
-  tr.setMeta(CONTINUE_META, { markName: session.markName, endPos: newPos } as ContinueSession);
-  return tr;
-}
-
-// ── ArrowRight exit detection (handleKeyDown path) ──
-
-function tryExitRightDelimiter(view: EditorView): boolean {
-  const { state } = view;
-  const { selection } = state;
-  if (!selection.empty) return false;
-
-  const pos = selection.from;
-  const $pos = state.doc.resolve(pos);
-  const parentText = $pos.parent.textContent;
-  const offset = $pos.parentOffset;
-  const parentStart = pos - offset;
-
-  for (const d of MARK_DELIMITERS) {
-    const dlen = d.chars.length;
-
-    if (offset + dlen > parentText.length) continue;
-    if (parentText.slice(offset, offset + dlen) !== d.chars) continue;
-
-    if (offset + dlen < parentText.length && parentText[offset + dlen] === d.chars[0]) {
-      if (MARK_DELIMITERS.some(dd => dd.chars.length > dlen && dd.chars.startsWith(d.chars))) continue;
-    }
-
-    if (offset < dlen + 1) continue;
-
-    for (let i = offset - 1; i >= dlen - 1; i--) {
-      const oStart = i - dlen + 1;
-      if (oStart < 0) break;
-      if (parentText.slice(oStart, oStart + dlen) !== d.chars) continue;
-
-      if (oStart > 0 && parentText[oStart - 1] === d.chars[0]) {
-        if (MARK_DELIMITERS.some(dd => dd.chars.length > dlen && dd.chars.startsWith(d.chars))) continue;
-      }
-
-      const content = parentText.slice(oStart + dlen, offset);
-      if (!content.trim()) continue;
-
-      if (d.mark === 'code' && content.includes('`')) continue;
-      if (d.mark !== 'code' && content.includes(d.chars)) continue;
-
-      if (cursorHasMark(state, d.mark)) continue;
-
-      const markType = state.schema.marks[d.mark];
-      if (!markType) continue;
-
-      const absOpenStart = parentStart + oStart;
-      const absCloseStart = parentStart + offset;
-
-      const tr = state.tr;
-      tr.delete(absCloseStart, absCloseStart + dlen);
-      tr.delete(absOpenStart, absOpenStart + dlen);
-
-      const markFrom = absOpenStart;
-      const markTo = absOpenStart + content.length;
-      tr.addMark(markFrom, markTo, markType.create());
-      tr.removeStoredMark(markType);
-      tr.setSelection(TextSelection.create(tr.doc, markTo));
-      tr.setMeta(SMART_TYPO_META, true);
-      tr.setMeta(CONTINUE_META, null);
-      view.dispatch(tr.scrollIntoView());
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// ── Closing-delimiter on-state fallback (appendTransaction) ──
-
-function tryClosingDelimiterOnState(state: EditorState): Transaction | null {
-  const { selection } = state;
-  if (!selection.empty) return null;
-
-  const pos = selection.from;
-  const $pos = state.doc.resolve(pos);
-  const parentText = $pos.parent.textContent;
-  const offset = $pos.parentOffset;
-  const parentStart = pos - offset;
-
-  for (const d of MARK_DELIMITERS) {
-    const dlen = d.chars.length;
-
-    if (offset < dlen) continue;
-    if (parentText.slice(offset - dlen, offset) !== d.chars) continue;
-
-    if (offset < parentText.length && parentText[offset] === d.chars[d.chars.length - 1]) continue;
-
-    if (dlen === 1 && offset >= 2 && parentText[offset - 2] === d.chars[0]) {
-      if (MARK_DELIMITERS.some(dd => dd.chars === d.chars + d.chars)) continue;
-    }
-
-    const closeStart = offset - dlen;
-
-    for (let i = closeStart - 1; i >= dlen - 1; i--) {
-      const oStart = i - dlen + 1;
-      if (oStart < 0) break;
-      if (parentText.slice(oStart, oStart + dlen) !== d.chars) continue;
-
-      if (oStart > 0 && parentText[oStart - 1] === d.chars[0] && hasLongerDelim(dlen, d.chars[0])) continue;
-
-      const content = parentText.slice(oStart + dlen, closeStart);
-      if (!content || !content.trim()) continue;
-
-      if (d.mark === 'code' && content.includes('`')) continue;
-      if (d.mark !== 'code' && content.includes(d.chars)) continue;
-
-      const markType = state.schema.marks[d.mark];
-      if (!markType) continue;
-
-      const absOpenStart = parentStart + oStart;
-      const absCloseStart = parentStart + closeStart;
-
-      const tr = state.tr;
-      tr.delete(absCloseStart, absCloseStart + dlen);
-      tr.delete(absOpenStart, absOpenStart + dlen);
-
-      const markFrom = absOpenStart;
-      const markTo = absOpenStart + content.length;
-      tr.addMark(markFrom, markTo, markType.create());
-      tr.removeStoredMark(markType);
-      tr.setSelection(TextSelection.create(tr.doc, markTo));
-      tr.setMeta(CONTINUE_META, null);
-      return tr;
-    }
-  }
-
-  return null;
-}
-
 // ── Markdown link [text](url) detection (handleTextInput) ──
-//
-// When `)` is typed (or skip-closed), check if the text forms
-// [linkText](url) and convert to a link mark.
 
 function tryMarkdownLink(view: EditorView): boolean {
   const { state } = view;
@@ -505,7 +170,6 @@ function tryMarkdownLink(view: EditorView): boolean {
   const offset = $pos.parentOffset;
   const parentStart = pos - offset;
 
-  // The `)` is at `offset` (char right after cursor, about to skip past)
   if (offset >= parentText.length || parentText[offset] !== ')') return false;
 
   const closeParenIdx = offset;
@@ -524,7 +188,7 @@ function tryMarkdownLink(view: EditorView): boolean {
   let openBracketIdx = -1;
   for (let i = closeBracketIdx - 1; i >= 0; i--) {
     if (parentText[i] === '[') {
-      if (i > 0 && parentText[i - 1] === '[') return false; // wiki link
+      if (i > 0 && parentText[i - 1] === '[') return false;
       openBracketIdx = i;
       break;
     }
@@ -532,29 +196,37 @@ function tryMarkdownLink(view: EditorView): boolean {
   }
   if (openBracketIdx < 0) return false;
 
-  const linkText = parentText.slice(openBracketIdx + 1, closeBracketIdx);
+  const altText = parentText.slice(openBracketIdx + 1, closeBracketIdx);
   const url = parentText.slice(openParenIdx + 1, closeParenIdx);
-  if (!linkText) return false;
+  if (!altText) return false;
 
-  const linkMark = state.schema.marks.link;
-  if (!linkMark) return false;
-
-  const absStart = parentStart + openBracketIdx;
+  const isImage = openBracketIdx > 0 && parentText[openBracketIdx - 1] === '!';
+  const absStart = parentStart + (isImage ? openBracketIdx - 1 : openBracketIdx);
   const absEnd = parentStart + closeParenIdx + 1;
 
   const tr = state.tr;
-  tr.delete(absStart, absEnd);
-  tr.insertText(linkText, absStart);
-  tr.addMark(absStart, absStart + linkText.length, linkMark.create({ href: url, target: '_blank' }));
-  tr.setSelection(TextSelection.create(tr.doc, absStart + linkText.length));
+
+  if (isImage) {
+    const imageType = state.schema.nodes.image;
+    if (!imageType) return false;
+    tr.delete(absStart, absEnd);
+    tr.insert(absStart, imageType.create({ src: url, alt: altText }));
+    tr.setSelection(TextSelection.create(tr.doc, absStart + 1));
+  } else {
+    const linkMark = state.schema.marks.link;
+    if (!linkMark) return false;
+    tr.delete(absStart, absEnd);
+    tr.insertText(altText, absStart);
+    tr.addMark(absStart, absStart + altText.length, linkMark.create({ href: url, target: '_blank' }));
+    tr.setSelection(TextSelection.create(tr.doc, absStart + altText.length));
+  }
+
   tr.setMeta(SMART_TYPO_META, true);
-  tr.setMeta(CONTINUE_META, null);
   view.dispatch(tr.scrollIntoView());
   return true;
 }
 
-// State-based variant for appendTransaction fallback (cursor right after `)`)
-function tryMarkdownLinkOnState(state: EditorState): Transaction | null {
+function tryMarkdownLinkOnState(state: EditorState): import('@tiptap/pm/state').Transaction | null {
   const { selection } = state;
   if (!selection.empty) return null;
 
@@ -590,103 +262,234 @@ function tryMarkdownLinkOnState(state: EditorState): Transaction | null {
   }
   if (openBracketIdx < 0) return null;
 
-  const linkText = parentText.slice(openBracketIdx + 1, closeBracketIdx);
+  const altText = parentText.slice(openBracketIdx + 1, closeBracketIdx);
   const url = parentText.slice(openParenIdx + 1, closeParenIdx);
-  if (!linkText) return null;
+  if (!altText) return null;
 
-  const linkMark = state.schema.marks.link;
-  if (!linkMark) return null;
-
-  const absStart = parentStart + openBracketIdx;
+  const isImage = openBracketIdx > 0 && parentText[openBracketIdx - 1] === '!';
+  const absStart = parentStart + (isImage ? openBracketIdx - 1 : openBracketIdx);
   const absEnd = parentStart + closeParenIdx + 1;
 
   const tr = state.tr;
-  tr.delete(absStart, absEnd);
-  tr.insertText(linkText, absStart);
-  tr.addMark(absStart, absStart + linkText.length, linkMark.create({ href: url, target: '_blank' }));
-  tr.setSelection(TextSelection.create(tr.doc, absStart + linkText.length));
-  tr.setMeta(CONTINUE_META, null);
+
+  if (isImage) {
+    const imageType = state.schema.nodes.image;
+    if (!imageType) return null;
+    tr.delete(absStart, absEnd);
+    tr.insert(absStart, imageType.create({ src: url, alt: altText }));
+    tr.setSelection(TextSelection.create(tr.doc, absStart + 1));
+  } else {
+    const linkMark = state.schema.marks.link;
+    if (!linkMark) return null;
+    tr.delete(absStart, absEnd);
+    tr.insertText(altText, absStart);
+    tr.addMark(absStart, absStart + altText.length, linkMark.create({ href: url, target: '_blank' }));
+    tr.setSelection(TextSelection.create(tr.doc, absStart + altText.length));
+  }
+
   return tr;
 }
 
-// ── Bullet/Paragraph → Task conversion ──
-// Detects `[ ] ` or `[x] ` typed at the start of a bullet list item
-// or a plain paragraph and converts to a task list checkbox.
+const MD_LINK_RE = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g;
+const MD_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
 
-function tryBulletToTaskOnInput(view: EditorView, from: number): boolean {
-  const { state } = view;
-  const { schema } = state;
-  const $pos = state.doc.resolve(from);
-  const paragraph = $pos.parent;
-  if (paragraph.type.name !== 'paragraph') return false;
+function tryConvertPastedLinks(state: EditorState): Transaction | null {
+  const linkMark = state.schema.marks.link;
+  const imageType = state.schema.nodes.image;
 
-  const textBefore = paragraph.textContent.slice(0, $pos.parentOffset);
-  // Match `[ ]` or `[x]` at start of paragraph (inside bullet list)
-  // or `- [ ]` / `- [x]` at start of plain paragraph (will wrap in task list)
-  const match = /^(?:-\s)?\[([xX ])\]$/.exec(textBefore);
-  if (!match) return false;
+  if (!linkMark && !imageType) return null;
 
-  const checked = match[1].toLowerCase() === 'x';
+  type LinkHit = { kind: 'link'; from: number; to: number; text: string; url: string };
+  type ImageHit = { kind: 'image'; from: number; to: number; alt: string; url: string };
+  type Hit = LinkHit | ImageHit;
+  const hits: Hit[] = [];
 
-  const taskListType = schema.nodes.taskList;
-  const taskItemType = schema.nodes.taskItem;
-  if (!taskListType || !taskItemType) return false;
+  state.doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true;
+    const fullText = node.textContent;
+    if (!fullText.includes('[')) return false;
 
-  // Case 1: Inside a bullet list item → convert bullet to task
-  let listItemDepth = -1;
-  for (let d = $pos.depth; d >= 1; d--) {
-    if ($pos.node(d).type.name === 'listItem') {
-      listItemDepth = d;
-      break;
+    if (imageType) {
+      MD_IMAGE_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = MD_IMAGE_RE.exec(fullText)) !== null) {
+        const absFrom = pos + 1 + m.index;
+        const absTo = absFrom + m[0].length;
+        hits.push({ kind: 'image', from: absFrom, to: absTo, alt: m[1], url: m[2] });
+      }
+    }
+
+    if (linkMark) {
+      MD_LINK_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = MD_LINK_RE.exec(fullText)) !== null) {
+        const absFrom = pos + 1 + m.index;
+        const absTo = absFrom + m[0].length;
+        if (hits.some(h => h.from <= absFrom && h.to >= absTo)) continue;
+        const existingMarks = state.doc.resolve(absFrom + 1).marks();
+        if (existingMarks.some(mk => mk.type === linkMark)) continue;
+        hits.push({ kind: 'link', from: absFrom, to: absTo, text: m[1], url: m[2] });
+      }
+    }
+
+    return false;
+  });
+
+  if (hits.length === 0) return null;
+
+  hits.sort((a, b) => a.from - b.from);
+
+  const tr = state.tr;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const h = hits[i];
+    if (h.kind === 'image') {
+      tr.delete(h.from, h.to);
+      tr.insert(h.from, imageType!.create({ src: h.url, alt: h.alt }));
+    } else {
+      tr.delete(h.from, h.to);
+      tr.insertText(h.text, h.from);
+      tr.addMark(h.from, h.from + h.text.length, linkMark!.create({ href: h.url, target: '_blank' }));
     }
   }
+  return tr;
+}
 
-  if (listItemDepth >= 1) {
-    const bulletList = $pos.node(listItemDepth - 1);
-    if (bulletList.type.name !== 'bulletList') return false;
+// ── Closing delimiter detection (e.g. `text` → code, *text* → italic) ──
 
-    // Convert just this list item to a task item (works for any childCount)
-    const listItemNode = $pos.node(listItemDepth);
-    const listItemPos = $pos.before(listItemDepth);
-    const listItemEnd = listItemPos + listItemNode.nodeSize;
+function tryClosingDelimiter(view: EditorView, from: number, delimiter: string, markName: string): boolean {
+  const { state } = view;
+  const $pos = state.doc.resolve(from);
+  const parentText = $pos.parent.textContent;
+  const offset = $pos.parentOffset;
+  const parentStart = from - offset;
+  const dLen = delimiter.length;
 
-    // If this is the only item, replace the whole bullet list
-    if (bulletList.childCount === 1) {
-      const listPos = $pos.before(listItemDepth - 1);
-      const listEnd = listPos + bulletList.nodeSize;
-      const emptyParagraph = schema.nodes.paragraph.create();
-      const taskItem = taskItemType.create({ checked }, emptyParagraph);
-      const taskList = taskListType.create(null, taskItem);
-      const tr = state.tr;
-      tr.replaceWith(listPos, listEnd, taskList);
-      tr.setSelection(TextSelection.create(tr.doc, listPos + 3));
-      view.dispatch(tr.scrollIntoView());
-      return true;
-    }
+  if (cursorHasMark(state, markName)) return false;
 
-    // Multiple items: split this item out, convert it, insert task list after
-    const emptyParagraph = schema.nodes.paragraph.create();
-    const taskItem = taskItemType.create({ checked }, emptyParagraph);
-    const taskList = taskListType.create(null, taskItem);
+  for (let i = offset - 1; i >= dLen - 1; i--) {
+    const candidate = parentText.slice(i - dLen + 1, i + 1);
+    if (candidate !== delimiter) continue;
+    const content = parentText.slice(i + 1, offset);
+    if (!content || !content.trim()) continue;
+    if (content.includes(delimiter)) continue;
+
+    const markType = state.schema.marks[markName];
+    if (!markType) continue;
+
+    const absOpenStart = parentStart + i - dLen + 1;
     const tr = state.tr;
-    tr.replaceWith(listItemPos, listItemEnd, taskList);
-    const newCursorPos = listItemPos + 3;
-    tr.setSelection(TextSelection.create(tr.doc, newCursorPos));
+    tr.delete(absOpenStart, absOpenStart + dLen);
+    const markFrom = absOpenStart;
+    const markTo = absOpenStart + content.length;
+    tr.addMark(markFrom, markTo, markType.create());
+    tr.removeStoredMark(markType);
+    tr.setSelection(TextSelection.create(tr.doc, markTo));
+    tr.setMeta(SMART_TYPO_META, true);
+    tr.setMeta(CONTINUE_META, null);
     view.dispatch(tr.scrollIntoView());
     return true;
   }
+  return false;
+}
 
-  // Case 2: Plain paragraph (not inside a list) → wrap in task list
-  const paragraphPos = $pos.before($pos.depth);
-  const paragraphEnd = paragraphPos + paragraph.nodeSize;
-  const emptyParagraph = schema.nodes.paragraph.create();
-  const taskItem = taskItemType.create({ checked }, emptyParagraph);
-  const taskList = taskListType.create(null, taskItem);
-  const tr = state.tr;
-  tr.replaceWith(paragraphPos, paragraphEnd, taskList);
-  tr.setSelection(TextSelection.create(tr.doc, paragraphPos + 3));
-  view.dispatch(tr.scrollIntoView());
-  return true;
+// ── Mark continuation ──
+
+function tryContinueMark(
+  session: ContinueSession,
+  oldState: EditorState,
+  newState: EditorState,
+): import('@tiptap/pm/state').Transaction | null {
+  const sizeDiff = newState.doc.content.size - oldState.doc.content.size;
+  if (sizeDiff !== 1) return null;
+
+  const newPos = newState.selection.from;
+  if (!newState.selection.empty) return null;
+  if (newPos !== session.endPos + 1) return null;
+
+  const markType = newState.schema.marks[session.markName];
+  if (!markType) return null;
+
+  const tr = newState.tr;
+  tr.addMark(session.endPos, newPos, markType.create());
+  tr.setStoredMarks([markType.create()]);
+  tr.setMeta(CONTINUE_META, { ...session, endPos: newPos } as ContinueSession);
+  return tr;
+}
+
+// ── Bullet → task item conversion ──
+
+const CHECKBOX_RE = /^\[([ xX])\]\s/;
+
+/**
+ * Scan for listItem nodes whose text starts with [ ], [x], [X].
+ * Convert them to taskItem, strip the checkbox text prefix, and
+ * change the parent bulletList → taskList (converting sibling
+ * listItems to unchecked taskItems so the schema stays valid).
+ */
+function tryBulletToTask(newState: EditorState): import('@tiptap/pm/state').Transaction | null {
+  const taskItemType = newState.schema.nodes.taskItem;
+  const taskListType = newState.schema.nodes.taskList;
+  if (!taskItemType || !taskListType) return null;
+
+  const { $from } = newState.selection;
+
+  for (let d = $from.depth; d >= 1; d--) {
+    const node = $from.node(d);
+    if (node.type.name !== 'listItem') continue;
+    if (!node.firstChild || node.firstChild.type.name !== 'paragraph') return null;
+
+    const text = node.firstChild.textContent;
+    const m = CHECKBOX_RE.exec(text);
+    if (!m) return null;
+
+    const listDepth = d - 1;
+    if (listDepth < 0) return null;
+    const listNode = $from.node(listDepth);
+    if (listNode.type.name !== 'bulletList') return null;
+
+    const curItemIndex = $from.index(listDepth);
+    const tr = newState.tr;
+
+    // Build the replacement taskList atomically: convert all children
+    // up-front so that the resulting node is schema-valid in one step.
+    const newChildren: PmNode[] = [];
+    listNode.forEach((child, _offset, idx) => {
+      if (idx === curItemIndex) {
+        // Strip the checkbox text prefix from the first paragraph
+        const para = child.firstChild!;
+        const strippedText = para.textContent.slice(m[0].length);
+        const newParaContent: PmNode[] = [];
+        if (strippedText) {
+          newParaContent.push(newState.schema.text(strippedText));
+        }
+        const newPara = para.type.create(para.attrs, newParaContent.length ? Fragment.from(newParaContent) : undefined);
+        // Rebuild remaining content blocks (everything after the first paragraph)
+        const restContent: PmNode[] = [];
+        child.forEach((c, _o, i) => { if (i > 0) restContent.push(c); });
+        newChildren.push(
+          taskItemType.create({ checked: m[1] !== ' ' }, Fragment.from([newPara, ...restContent])),
+        );
+      } else if (child.type.name === 'listItem') {
+        newChildren.push(taskItemType.create({ checked: false }, child.content));
+      } else {
+        newChildren.push(child);
+      }
+    });
+
+    const newTaskList = taskListType.create(null, Fragment.from(newChildren));
+    const listStart = $from.before(listDepth);
+    const listEnd = $from.after(listDepth);
+    tr.replaceWith(listStart, listEnd, newTaskList);
+
+    // Restore cursor near its original relative position
+    const cursorTarget = tr.mapping.map($from.pos);
+    try {
+      tr.setSelection(TextSelection.near(tr.doc.resolve(cursorTarget)));
+    } catch { /* position out of bounds — let ProseMirror pick a default */ }
+
+    return tr;
+  }
+  return null;
 }
 
 // ── Input handler ──
@@ -697,28 +500,91 @@ function handleTextInput(view: EditorView, from: number, to: number, text: strin
   const { state } = view;
   const { selection } = state;
 
-  // ── Selection wrapping (non-empty selection) ──
+  // Selection wrapping (non-empty selection)
   if (!selection.empty) {
     const pair = WRAP_PAIRS[text];
     if (!pair) return false;
-
-    if (pair.mark) {
-      return toggleMark(view, pair.mark);
-    }
-
+    if (pair.mark) return toggleMark(view, pair.mark);
     return wrapSelection(view, pair.open, pair.close);
   }
 
-  // ── Empty selection: try closing delimiter for any mark ──
-  const isDelimChar = MARK_DELIMITERS.some(d => d.chars.includes(text));
-  if (isDelimChar) {
-    if (tryClosingDelimiter(view, from, text)) return true;
+  // Active mark session: typing the delimiter's last char exits the mark
+  const pluginState = smartTypoKey.getState(state) as SmartTypoState | undefined;
+  if (pluginState?.session) {
+    const sess = pluginState.session;
+    const delim = sess.delimiter;
+    if (delim.length === 1 && text === delim) {
+      // If no content was typed since session started (cursor still at
+      // endPos), the user likely wants the raw delimiters (e.g. ``` for
+      // code block). Undo the session and re-insert all delimiter chars.
+      if (from === sess.endPos) {
+        const markType = state.schema.marks[sess.markName];
+        const tr = state.tr;
+        if (markType) tr.removeStoredMark(markType);
+        tr.insertText(delim + delim + text, from);
+        tr.setMeta(CONTINUE_META, null);
+        tr.setMeta(SMART_TYPO_META, true);
+        view.dispatch(tr.scrollIntoView());
+        return true;
+      }
+      return exitMarkSession(view, sess);
+    }
+    if (delim.length === 2 && text === delim[0]) {
+      // Empty session bailout: no content typed yet, user is probably
+      // reverting to raw delimiter chars.
+      if (from === sess.endPos) {
+        const markType = state.schema.marks[sess.markName];
+        const tr = state.tr;
+        if (markType) tr.removeStoredMark(markType);
+        tr.insertText(delim + text, from);
+        tr.setMeta(CONTINUE_META, null);
+        tr.setMeta(SMART_TYPO_META, true);
+        view.dispatch(tr.scrollIntoView());
+        return true;
+      }
+    }
+    if (delim.length === 2 && text === delim[1]) {
+      const $f = state.doc.resolve(from);
+      const off = $f.parentOffset;
+      if (off > 0 && $f.parent.textContent.charAt(off - 1) === delim[0]) {
+        const markType = state.schema.marks[sess.markName];
+        if (markType) {
+          const tr = state.tr;
+          tr.delete(from - 1, from);
+          tr.removeStoredMark(markType);
+          tr.setMeta(CONTINUE_META, null);
+          tr.setMeta(SMART_TYPO_META, true);
+          view.dispatch(tr.scrollIntoView());
+          return true;
+        }
+      }
+    }
   }
 
-  // ── Skip-close: if typing a closing bracket and it's right after cursor, skip ──
+  // Closing delimiter: `text` → code, *text* → italic, **text** → bold, etc.
+  if (selection.empty) {
+    for (const def of INLINE_MARKS) {
+      const delim = def.delimiter;
+      if (delim.length === 1 && text === delim) {
+        if (tryClosingDelimiter(view, from, delim, def.markName)) return true;
+      }
+      if (delim.length === 2 && text === delim[1]) {
+        const $f = state.doc.resolve(from);
+        const off = $f.parentOffset;
+        if (off > 0 && $f.parent.textContent.charAt(off - 1) === delim[0]) {
+          if (tryClosingDelimiter(view, from - 1, delim, def.markName)) return true;
+        }
+      }
+    }
+  }
+
+  // Double-delimiter → start mark session (e.g. `` → code, ** twice → bold)
+  if (selection.empty) {
+    if (tryStartMarkSession(view, from, text)) return true;
+  }
+
+  // Skip-close: if typing a closing bracket and it's right after cursor, skip
   if (CLOSE_TO_OPEN[text]) {
-    // Use `from` (the actual insert position) rather than selection.from
-    // to avoid stale-state issues when keystrokes arrive in rapid succession
     const $from = state.doc.resolve(from);
     const charAtFrom = $from.parent.textContent.charAt($from.parentOffset) || '';
     if (charAtFrom === text) {
@@ -730,24 +596,8 @@ function handleTextInput(view: EditorView, from: number, to: number, text: strin
     }
   }
 
-  // ── Bullet → task conversion on space after [ ] or [x] ──
-  if (text === ' ') {
-    const result = tryBulletToTaskOnInput(view, from);
-    if (result) return true;
-  }
-
-  // ── Auto-close brackets ──
+  // Auto-close brackets
   if (AUTO_CLOSE[text]) {
-    // Don't auto-close `[` when it's the first non-whitespace character
-    // in the paragraph — allows TipTap's TaskItem input rule to convert
-    // `[ ] ` into a checkbox, both in list items and plain paragraphs.
-    if (text === '[') {
-      const $pos = state.doc.resolve(from);
-      const parentNode = $pos.parent;
-      const textBefore = parentNode.textBetween(0, $pos.parentOffset, undefined, '\ufffc');
-      if (/^\s*$/.test(textBefore)) return false;
-    }
-
     const closing = AUTO_CLOSE[text];
     const tr = state.tr.insertText(text + closing, from, to);
     tr.setSelection(TextSelection.create(tr.doc, from + 1));
@@ -758,13 +608,326 @@ function handleTextInput(view: EditorView, from: number, to: number, text: strin
   return false;
 }
 
+function exitMarkSession(view: EditorView, sess: ContinueSession): boolean {
+  const { state } = view;
+  const markType = state.schema.marks[sess.markName];
+  if (!markType) return false;
+  const tr = state.tr;
+  tr.removeStoredMark(markType);
+  tr.setMeta(CONTINUE_META, null);
+  tr.setMeta(SMART_TYPO_META, true);
+  view.dispatch(tr);
+  return true;
+}
+
+/**
+ * Detects delimiter completion to start a mark session.
+ *
+ * For 1-char delimiters (e.g. `): typing the char when the previous char
+ * is the same → delete both, activate mark mode.
+ *
+ * For 2-char delimiters (** ~~ ==): typing the 2nd char when the previous
+ * char is the 1st char of the delimiter → delete both, activate mark mode.
+ *
+ * 2-char delimiters are checked first so `**` activates bold, not italic.
+ */
+function tryStartMarkSession(view: EditorView, from: number, text: string): boolean {
+  const { state } = view;
+  const $f = state.doc.resolve(from);
+  const off = $f.parentOffset;
+  if (off === 0) return false;
+
+  const parent = $f.parent;
+  const parentText = parent.textContent;
+
+  // Try 2-char delimiters first (longer match wins): **, ~~, ==
+  // Activation: user typed first char already (e.g. `*`), now typing the
+  // 2nd char (another `*`). Text before cursor is `<d0>`, typing `<d1>`.
+  for (const def of INLINE_MARKS) {
+    if (def.delimiter.length !== 2) continue;
+    if (text !== def.delimiter[1]) continue;
+    if (off < 1) continue;
+
+    if (parentText.charAt(off - 1) !== def.delimiter[0]) continue;
+
+    // Reject if preceded by yet another delimiter char (e.g. `***` — don't re-enter)
+    if (off >= 2 && parentText.charAt(off - 2) === def.delimiter[0]) continue;
+
+    const markType = state.schema.marks[def.markName];
+    if (!markType) continue;
+
+    const { node: leftNode } = parent.childBefore(off);
+    if (leftNode && markType.isInSet(leftNode.marks)) continue;
+
+    const tr = state.tr;
+    tr.delete(from - 1, from);
+    const newPos = from - 1;
+    tr.setSelection(TextSelection.create(tr.doc, newPos));
+    tr.setStoredMarks([markType.create()]);
+    tr.setMeta(SMART_TYPO_META, true);
+    tr.setMeta(CONTINUE_META, { markName: def.markName, delimiter: def.delimiter, startPos: newPos, endPos: newPos } as ContinueSession);
+    view.dispatch(tr.scrollIntoView());
+    return true;
+  }
+
+  // Try 1-char delimiters: `
+  // Activation: the delimiter typed twice (e.g. `` for code)
+  for (const def of INLINE_MARKS) {
+    if (def.delimiter.length !== 1) continue;
+    if (text !== def.delimiter) continue;
+    if (parentText.charAt(off - 1) !== def.delimiter) continue;
+
+    // Reject if preceded by another same char (e.g. 3+ backticks)
+    if (off >= 2 && parentText.charAt(off - 2) === def.delimiter) continue;
+
+    // Skip if a 2-char delimiter shares the same char pair (e.g. `*` italic
+    // is shadowed by `**` bold — bold wins above).
+    const shadowedBy2Char = INLINE_MARKS.some(
+      d2 => d2.delimiter.length === 2 && d2.delimiter[0] === def.delimiter && d2.delimiter[1] === def.delimiter,
+    );
+    if (shadowedBy2Char) continue;
+
+    const markType = state.schema.marks[def.markName];
+    if (!markType) continue;
+
+    const { node: leftNode } = parent.childBefore(off);
+    if (leftNode && markType.isInSet(leftNode.marks)) continue;
+
+    const tr = state.tr;
+    tr.delete(from - 1, from);
+    const newPos = from - 1;
+    tr.setSelection(TextSelection.create(tr.doc, newPos));
+    tr.setStoredMarks([markType.create()]);
+    tr.setMeta(SMART_TYPO_META, true);
+    tr.setMeta(CONTINUE_META, { markName: def.markName, delimiter: def.delimiter, startPos: newPos, endPos: newPos } as ContinueSession);
+    view.dispatch(tr.scrollIntoView());
+    return true;
+  }
+
+  return false;
+}
+
+// ── List indent / outdent that only affects the single item at cursor ──
+
+const LIST_ITEM_TYPES = new Set(['listItem', 'taskItem']);
+
+interface ListItemInfo {
+  itemPos: number;
+  itemNode: PmNode;
+  itemType: NodeType;
+  itemDepth: number;
+  listType: NodeType;
+  listDepth: number;
+}
+
+function findListItem(state: EditorState): ListItemInfo | null {
+  const { $from } = state.selection;
+  for (let d = $from.depth; d >= 1; d--) {
+    const node = $from.node(d);
+    if (LIST_ITEM_TYPES.has(node.type.name)) {
+      const listNode = $from.node(d - 1);
+      return {
+        itemPos: $from.before(d),
+        itemNode: node,
+        itemType: node.type,
+        itemDepth: d,
+        listType: listNode.type,
+        listDepth: d - 1,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Indent: move only the current item into the previous sibling's sub-list.
+ * Children of the current item stay attached (move with their parent).
+ * Siblings are not affected.
+ */
+function indentListItem(state: EditorState, dispatch?: (tr: Transaction) => void): boolean {
+  const info = findListItem(state);
+  if (!info) return false;
+
+  const { $from } = state.selection;
+  const listNode = $from.node(info.listDepth);
+  const indexInList = $from.index(info.listDepth);
+
+  if (indexInList === 0) return false;
+
+  const prevSibling = listNode.child(indexInList - 1);
+  if (!LIST_ITEM_TYPES.has(prevSibling.type.name)) return false;
+
+  if (!dispatch) return true;
+
+  const itemStart = $from.before(info.itemDepth);
+  const itemEnd = $from.after(info.itemDepth);
+
+  const nestedBefore = prevSibling.lastChild && prevSibling.lastChild.type === info.listType;
+  const inner = Fragment.from(nestedBefore ? info.itemType.create() : null);
+  const slice = new Slice(
+    Fragment.from(info.itemType.create(null, Fragment.from(info.listType.create(null, inner)))),
+    nestedBefore ? 3 : 1,
+    0,
+  );
+
+  dispatch(
+    state.tr
+      .step(new ReplaceAroundStep(
+        itemStart - (nestedBefore ? 3 : 1),
+        itemEnd,
+        itemStart,
+        itemEnd,
+        slice,
+        1,
+        true,
+      ))
+      .scrollIntoView(),
+  );
+  return true;
+}
+
+/**
+ * Outdent: move only the current list item one level up.
+ * Siblings after it stay in the original sub-list (are NOT re-parented
+ * under the lifted item, unlike ProseMirror's default liftListItem).
+ */
+function outdentListItem(state: EditorState, dispatch?: (tr: Transaction) => void): boolean {
+  const info = findListItem(state);
+  if (!info) return false;
+
+  const { $from } = state.selection;
+
+  const isNestedInsideItem = info.listDepth >= 2 && LIST_ITEM_TYPES.has($from.node(info.listDepth - 1).type.name);
+
+  if (!isNestedInsideItem) {
+    return false;
+  }
+
+  if (!dispatch) return true;
+
+  const listNode = $from.node(info.listDepth);
+  const itemStart = $from.before(info.itemDepth);
+  const itemEnd = $from.after(info.itemDepth);
+  const listStart = $from.before(info.listDepth);
+  const listEnd = $from.after(info.listDepth);
+  const parentItemEnd = $from.after(info.listDepth - 1);
+
+  const tr = state.tr;
+
+  if (listNode.childCount === 1) {
+    tr.delete(listStart, listEnd);
+  } else {
+    tr.delete(itemStart, itemEnd);
+  }
+
+  const insertAt = tr.mapping.map(parentItemEnd);
+  tr.insert(insertAt, info.itemNode);
+
+  const cursorTarget = tr.mapping.map(itemStart);
+  tr.setSelection(TextSelection.near(tr.doc.resolve(cursorTarget)));
+
+  dispatch(tr.scrollIntoView());
+  return true;
+}
+
 // ── KeyDown handler ──
 
 function handleKeyDown(view: EditorView, event: KeyboardEvent): boolean {
   if (isInsideCodeBlockView(view)) return false;
 
-  if (event.key === 'ArrowRight' && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
-    if (tryExitRightDelimiter(view)) return true;
+  // ArrowRight at the trailing edge of any inline mark: exit the mark
+  // and insert a space if at end-of-line (Slack-like UX).
+  // Works both during an active mark session and when the cursor is
+  // simply sitting at the right boundary of existing marked text.
+  if (event.key === 'ArrowRight') {
+    const { state } = view;
+    if (!state.selection.empty) return false;
+
+    const { $from } = state.selection;
+    const pluginState = smartTypoKey.getState(state) as SmartTypoState | undefined;
+
+    // Active mark session: check the session's mark specifically
+    if (pluginState?.session) {
+      const sess = pluginState.session;
+      const markType = state.schema.marks[sess.markName];
+      if (markType) {
+        const afterHasMark = $from.nodeAfter?.marks.some(m => m.type === markType) ?? false;
+        if (!afterHasMark) {
+          event.preventDefault();
+          const tr = state.tr;
+          tr.removeStoredMark(markType);
+
+          const after = $from.parent.textContent.charAt($from.parentOffset);
+          if (!after) {
+            tr.insertText(' ', $from.pos);
+            tr.setSelection(TextSelection.create(tr.doc, $from.pos + 1));
+          } else {
+            tr.setSelection(TextSelection.create(state.doc, $from.pos + 1));
+          }
+
+          tr.setMeta(CONTINUE_META, null);
+          tr.setMeta(SMART_TYPO_META, true);
+          view.dispatch(tr.scrollIntoView());
+          return true;
+        }
+      }
+    }
+
+    // No active session: check if cursor is at the trailing edge of
+    // any inline formatting mark (bold, italic, strike, highlight).
+    // Code is handled by Code.extend in editor.ts.
+    if (!pluginState?.session) {
+      for (const def of INLINE_MARKS) {
+        if (def.markName === 'code') continue;
+        const markType = state.schema.marks[def.markName];
+        if (!markType) continue;
+        if (!markType.isInSet($from.marks())) continue;
+
+        const afterHasMark = $from.nodeAfter?.marks.some(m => m.type === markType) ?? false;
+        if (afterHasMark) continue;
+
+        event.preventDefault();
+        const tr = state.tr;
+        const after = $from.parent.textContent.charAt($from.parentOffset);
+        if (!after) {
+          tr.insertText(' ', $from.pos);
+          tr.setSelection(TextSelection.create(tr.doc, $from.pos + 1));
+        } else {
+          const newPos = $from.pos + 1;
+          if (newPos <= state.doc.content.size) {
+            tr.setSelection(TextSelection.create(state.doc, newPos));
+          }
+        }
+        tr.setStoredMarks(
+          $from.marks().filter(m => m.type !== markType),
+        );
+        tr.setMeta(SMART_TYPO_META, true);
+        view.dispatch(tr.scrollIntoView());
+        return true;
+      }
+    }
+  }
+
+  // Escape exits an active mark session without adding anything
+  if (event.key === 'Escape') {
+    const { state } = view;
+    const pluginState = smartTypoKey.getState(state) as SmartTypoState | undefined;
+    if (pluginState?.session) {
+      event.preventDefault();
+      return exitMarkSession(view, pluginState.session);
+    }
+  }
+
+  // Tab / Shift+Tab: indent / outdent list items
+  if (event.key === 'Tab') {
+    const { state } = view;
+    const info = findListItem(state);
+    if (info) {
+      event.preventDefault();
+      const command = event.shiftKey ? outdentListItem : indentListItem;
+      command(state, view.dispatch);
+      return true;
+    }
   }
 
   if (event.key === 'Backspace') {
@@ -809,11 +972,16 @@ export const SmartTypography = Extension.create({
             if (cont !== undefined) {
               return { session: cont };
             }
-            // Keep session alive across normal typing transactions
+            // Preserve session across normal doc changes so appendTransaction
+            // can evaluate and either continue or clear it.  Clear immediately
+            // on undo/redo, paste, or any non-history transaction since the
+            // session is no longer meaningful.
             if (tr.docChanged && value.session) {
+              if (tr.getMeta('addToHistory') === false || tr.getMeta('paste')) {
+                return { session: null };
+              }
               return value;
             }
-            // Clear on anything else (selection-only, undo, etc.)
             return { session: null };
           },
         },
@@ -821,79 +989,69 @@ export const SmartTypography = Extension.create({
         props: {
           handleTextInput,
           handleKeyDown,
+          decorations(state) {
+            const ps = smartTypoKey.getState(state) as SmartTypoState | undefined;
+            if (!ps?.session) return DecorationSet.empty;
+            if (!state.selection.empty) return DecorationSet.empty;
+
+            const pos = state.selection.from;
+            // Only show the indicator pill when no content has been
+            // typed yet (cursor still at session start). Once the user
+            // starts typing, the mark's own styling (e.g. <code>
+            // background) provides sufficient visual feedback.
+            if (pos !== ps.session.startPos) return DecorationSet.empty;
+
+            const markName = ps.session.markName;
+            const widget = document.createElement('span');
+            widget.className = `kivi-mark-indicator kivi-mark-indicator-${markName}`;
+            widget.setAttribute('aria-hidden', 'true');
+            widget.contentEditable = 'false';
+            return DecorationSet.create(state.doc, [
+              Decoration.widget(pos, widget, { side: 0, key: `mark-ind-${markName}`, marks: [] }),
+            ]);
+          },
+        },
+
+        view(editorView) {
+          let currentMarkClass = '';
+          function syncClass(view: EditorView) {
+            const ps = smartTypoKey.getState(view.state) as SmartTypoState | undefined;
+            const markName = ps?.session?.markName || '';
+            const cls = markName ? `kivi-mark-mode-${markName}` : '';
+            if (cls !== currentMarkClass) {
+              if (currentMarkClass) view.dom.classList.remove(currentMarkClass);
+              if (cls) view.dom.classList.add(cls);
+              currentMarkClass = cls;
+            }
+          }
+          syncClass(editorView);
+          return {
+            update(view) { syncClass(view); },
+            destroy() {
+              if (currentMarkClass) editorView.dom.classList.remove(currentMarkClass);
+            },
+          };
         },
 
         appendTransaction(transactions, oldState, newState) {
-          for (const tr of transactions) {
-            if (tr.getMeta(SMART_TYPO_META)) return null;
-            if (tr.getMeta('paste')) return null;
-            if (tr.getMeta('addToHistory') === false) return null;
-          }
+          const isSelfMeta = transactions.some(tr => tr.getMeta(SMART_TYPO_META));
+          if (isSelfMeta) return null;
 
-          if (isInsideCodeBlockState(newState)) return null;
+          const isPaste = transactions.some(tr => tr.getMeta('paste'));
+          const isNoHistory = transactions.some(tr => tr.getMeta('addToHistory') === false);
 
-          const docChanged = transactions.some(tr => tr.docChanged);
-          const pluginState = smartTypoKey.getState(newState) as SmartTypoState | undefined;
-
-          if (docChanged) {
-            const sizeDiff = newState.doc.content.size - oldState.doc.content.size;
-            if (sizeDiff < 0 || sizeDiff > 2) return null;
-
+          if (isPaste && !isInsideCodeBlockState(newState)) {
             try {
-              // 1. Continue an active mark session (subsequent chars)
-              if (pluginState?.session) {
-                const cont = tryContinueMark(pluginState.session, oldState, newState);
-                if (cont) {
-                  cont.setMeta(SMART_TYPO_META, true);
-                  return cont;
-                }
-                // Continuation didn't match — clear session
-                const clearTr = newState.tr;
-                clearTr.setMeta(CONTINUE_META, null);
-                clearTr.setMeta(SMART_TYPO_META, true);
-                return clearTr;
+              const linkTr = tryConvertPastedLinks(newState);
+              if (linkTr) {
+                linkTr.setMeta(SMART_TYPO_META, true);
+                return linkTr;
               }
-
-              // 2. Check between-delimiters (first char typed between delimiters)
-              if (sizeDiff === 1) {
-                const between = tryBetweenDelimiters(newState);
-                if (between) {
-                  between.setMeta(SMART_TYPO_META, true);
-                  return between;
-                }
+              const taskConvert = tryBulletToTask(newState);
+              if (taskConvert) {
+                taskConvert.setMeta(SMART_TYPO_META, true);
+                return taskConvert;
               }
-
-              // 3. Check closing delimiter pattern (DOM-mutation fallback)
-              const closing = tryClosingDelimiterOnState(newState);
-              if (closing) {
-                closing.setMeta(SMART_TYPO_META, true);
-                return closing;
-              }
-
-              // 4. Check markdown link [text](url) (when `)` was inserted)
-              const mdLink = tryMarkdownLinkOnState(newState);
-              if (mdLink) {
-                mdLink.setMeta(SMART_TYPO_META, true);
-                return mdLink;
-              }
-            } catch {
-              // Safety: never crash the editor
-            }
-          } else {
-            // Selection-only change (ArrowRight fallback, skip-close)
-            const oldPos = oldState.selection.from;
-            const newPos = newState.selection.from;
-            if (!oldState.selection.empty || !newState.selection.empty) return null;
-            if (newPos !== oldPos + 1) return null;
-
-            try {
-              const between = tryBetweenDelimiters(newState);
-              if (between) {
-                between.setMeta(SMART_TYPO_META, true);
-                return between;
-              }
-
-              // Check markdown link after cursor moves past `)`
               const mdLink = tryMarkdownLinkOnState(newState);
               if (mdLink) {
                 mdLink.setMeta(SMART_TYPO_META, true);
@@ -901,6 +1059,75 @@ export const SmartTypography = Extension.create({
               }
             } catch {
               // Safety
+            }
+            return null;
+          }
+
+          if (isNoHistory) return null;
+          if (isInsideCodeBlockState(newState)) return null;
+
+          const docChanged = transactions.some(tr => tr.docChanged);
+          const pluginState = smartTypoKey.getState(newState) as SmartTypoState | undefined;
+
+          if (docChanged) {
+            const sizeDiff = newState.doc.content.size - oldState.doc.content.size;
+
+            // Clear stale session on deletions, large inserts, etc.
+            if (sizeDiff < 0 || sizeDiff > 2) {
+              if (pluginState?.session) {
+                const clearTr = newState.tr;
+                clearTr.setMeta(CONTINUE_META, null);
+                clearTr.setMeta(SMART_TYPO_META, true);
+                return clearTr;
+              }
+              return null;
+            }
+
+            try {
+              if (pluginState?.session) {
+                const cont = tryContinueMark(pluginState.session, oldState, newState);
+                if (cont) {
+                  cont.setMeta(SMART_TYPO_META, true);
+                  return cont;
+                }
+                const clearTr = newState.tr;
+                clearTr.setMeta(CONTINUE_META, null);
+                clearTr.setMeta(SMART_TYPO_META, true);
+                return clearTr;
+              }
+
+              const mdLink = tryMarkdownLinkOnState(newState);
+              if (mdLink) {
+                mdLink.setMeta(SMART_TYPO_META, true);
+                return mdLink;
+              }
+
+              const taskConvert = tryBulletToTask(newState);
+              if (taskConvert) {
+                taskConvert.setMeta(SMART_TYPO_META, true);
+                return taskConvert;
+              }
+            } catch {
+              // Safety: never crash the editor
+            }
+          } else if (newState.selection.empty) {
+            // Cursor-only change (no doc edit): check if cursor just
+            // landed right after ')' — the skip-close for ')' advances
+            // the cursor without inserting, so the link detection in
+            // the docChanged branch never fires. This is cheap: one
+            // char check + bail if not ')'.
+            const $pos = newState.doc.resolve(newState.selection.from);
+            const off = $pos.parentOffset;
+            if (off > 0 && $pos.parent.textContent.charAt(off - 1) === ')') {
+              try {
+                const mdLink = tryMarkdownLinkOnState(newState);
+                if (mdLink) {
+                  mdLink.setMeta(SMART_TYPO_META, true);
+                  return mdLink;
+                }
+              } catch {
+                // Safety
+              }
             }
           }
 

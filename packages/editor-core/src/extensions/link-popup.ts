@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { addDelayedTooltip } from '../tooltip.js';
+import { positionFixedPopup } from '../zoom.js';
 
 const linkPopupKey = new PluginKey('kiviLinkPopup');
 
@@ -161,41 +162,17 @@ export const LinkPopup = Extension.create({
             popup.style.visibility = 'visible';
             const rect = linkEl.getBoundingClientRect();
             const container = editorViewRef.dom.parentElement;
-            const cr = container?.getBoundingClientRect()
-              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+            const cr = container?.getBoundingClientRect() ?? null;
 
-            const pw = popup.offsetWidth || 200;
-            const ph = popup.offsetHeight || 32;
-            const gap = 4;
-            const pad = 8;
-
-            const spaceBelow = Math.min(cr.bottom, window.innerHeight) - rect.bottom;
-            const spaceAbove = rect.top - Math.max(cr.top, 0);
-
-            let top: number;
-            if (spaceBelow >= ph + gap) {
-              top = rect.bottom + gap;
-            } else if (spaceAbove >= ph + gap) {
-              top = rect.top - ph - gap;
-            } else {
-              top = spaceBelow >= spaceAbove
-                ? rect.bottom + gap
-                : rect.top - ph - gap;
-            }
-            const maxTop = Math.min(cr.bottom, window.innerHeight) - ph - pad;
-            const minTop = Math.max(cr.top, 0) + pad;
-            top = Math.max(minTop, Math.min(top, maxTop));
-
-            let left = rect.left;
-            if (left + pw > Math.min(cr.right, window.innerWidth) - pad) {
-              left = Math.min(cr.right, window.innerWidth) - pw - pad;
-            }
-            if (left < Math.max(cr.left, 0) + pad) {
-              left = Math.max(cr.left, 0) + pad;
-            }
-
-            popup.style.left = `${left}px`;
-            popup.style.top = `${top}px`;
+            positionFixedPopup({
+              anchorRect: rect,
+              popup,
+              containerRect: cr,
+              gap: 4,
+              pad: 8,
+              preferY: 'below',
+              anchorEl: linkEl,
+            });
           }
 
           return {

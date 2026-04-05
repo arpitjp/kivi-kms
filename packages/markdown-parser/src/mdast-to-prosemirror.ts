@@ -158,6 +158,17 @@ function convertNode(
 const TOC_RE = /^\[toc\]$|^\[\[toc\]\]$/i;
 
 function convertParagraph(node: Paragraph): PMNodeJSON | PMNodeJSON[] {
+  // remark-parse doesn't treat <video>/<audio> as block HTML on a single line;
+  // it splits them into inline html children. Concatenate and detect the pattern.
+  if (node.children.length > 0 && node.children.every(c => c.type === 'html' || c.type === 'text')) {
+    const combined = node.children.map(c =>
+      c.type === 'html' ? (c as Html).value : (c as Text).value,
+    ).join('').trim();
+    const videoInline = combined.match(/^<video\s+([^>]*?)(?:\/>|>\s*<\/video>)$/is);
+    if (videoInline) return convertVideoHtml(videoInline[1]);
+    const audioInline = combined.match(/^<audio\s+([^>]*?)(?:\/>|>\s*<\/audio>)$/is);
+    if (audioInline) return convertAudioHtml(audioInline[1]);
+  }
   // Detect [TOC] or [[toc]] marker (plain text form)
   if (node.children.length === 1 && node.children[0].type === 'text') {
     const text = (node.children[0] as Text).value.trim();
@@ -179,19 +190,17 @@ function convertParagraph(node: Paragraph): PMNodeJSON | PMNodeJSON[] {
     }
   }
 
-  // Block nodes (images, excalidraw links) cannot live inside paragraphs.
+  // Block nodes (images) cannot live inside paragraphs.
   // If the paragraph is just a single block-producing child, lift it.
+  // Note: [text](file.excalidraw) links stay inline; only ![](file.excalidraw)
+  // image syntax is promoted to excalidrawBlock (handled by convertImage).
   if (node.children.length === 1) {
     const only = node.children[0];
     if (only.type === 'image') return convertImage(only);
-    if (only.type === 'link' && isExcalidrawUrl((only as Link).url)) {
-      return { type: 'excalidrawBlock', attrs: { src: (only as Link).url, data: '{}' } };
-    }
   }
 
   // Mixed content: split into runs of inline content vs block-producing nodes.
-  const isBlockChild = (c: PhrasingContent) =>
-    c.type === 'image' || (c.type === 'link' && isExcalidrawUrl((c as Link).url));
+  const isBlockChild = (c: PhrasingContent) => c.type === 'image';
 
   const hasBlockChild = node.children.some(isBlockChild);
   if (hasBlockChild) {
@@ -209,9 +218,6 @@ function convertParagraph(node: Paragraph): PMNodeJSON | PMNodeJSON[] {
       if (child.type === 'image') {
         flushInline();
         blocks.push(convertImage(child));
-      } else if (child.type === 'link' && isExcalidrawUrl((child as Link).url)) {
-        flushInline();
-        blocks.push({ type: 'excalidrawBlock', attrs: { src: (child as Link).url, data: '{}' } });
       } else {
         inlineBuf.push(child);
       }
@@ -252,24 +258,37 @@ function convertCode(node: Code): PMNodeJSON {
 }
 
 function convertList(node: List): PMNodeJSON {
-  const isTaskList = node.children.some(
+  if (node.ordered) {
+    const items = node.children.map((child) => convertListItem(child));
+    return orderedListNode(node.start ?? 1, items);
+  }
+
+  const hasAnyTask = node.children.some(
+    (child) => typeof child.checked === 'boolean',
+  );
+  const allTasks = hasAnyTask && node.children.every(
     (child) => typeof child.checked === 'boolean',
   );
 
-  if (isTaskList) {
-    const items = node.children.map((child) => {
-      const checked = child.checked === true;
+  if (!hasAnyTask) {
+    return bulletListNode(node.children.map((child) => convertListItem(child)));
+  }
+
+  if (allTasks) {
+    return taskListNode(node.children.map((child) => {
       const content = convertChildren(child.children as RootContent[], []);
-      return taskItemNode(checked, content);
-    });
-    return taskListNode(items);
+      return taskItemNode(child.checked === true, content);
+    }));
   }
 
-  const items = node.children.map((child) => convertListItem(child));
-
-  if (node.ordered) {
-    return orderedListNode(node.start ?? 1, items);
-  }
+  // Mixed list: preserve each item's type inside a single bulletList.
+  const items = node.children.map((child) => {
+    if (typeof child.checked === 'boolean') {
+      const content = convertChildren(child.children as RootContent[], []);
+      return taskItemNode(child.checked === true, content);
+    }
+    return convertListItem(child);
+  });
   return bulletListNode(items);
 }
 
@@ -320,7 +339,7 @@ function isExcalidrawUrl(url: string): boolean {
 
 function convertImage(node: Image): PMNodeJSON {
   if (isExcalidrawUrl(node.url)) {
-    return { type: 'excalidrawBlock', attrs: { src: node.url, data: '{}' } };
+    return { type: 'excalidrawBlock', attrs: { src: node.url, data: '{}', alt: node.alt || null } };
   }
   return imageNode(node.url, node.alt ?? undefined, node.title ?? undefined);
 }
@@ -405,8 +424,6 @@ function convertInlineCode(node: InlineCode, parentMarks: PMMarkJSON[]): PMNodeJ
 }
 
 function convertLink(node: Link, parentMarks: PMMarkJSON[]): PMNodeJSON[] {
-  // Excalidraw links are promoted to block nodes in convertParagraph.
-  // In other inline contexts (headings, list items), keep as a regular link.
   const mark = linkMark(node.url, node.title ?? undefined);
   return convertPhrasingContent(node.children, [...parentMarks, mark]);
 }
@@ -493,7 +510,7 @@ function convertImgHtml(attrStr: string): PMNodeJSON {
   const align = extractHtmlAttr(attrStr, 'data-align');
   const width = widthStr ? parseInt(widthStr, 10) || null : null;
   if (isExcalidrawUrl(src)) {
-    return { type: 'excalidrawBlock', attrs: { src, data: '{}', width } };
+    return { type: 'excalidrawBlock', attrs: { src, data: '{}', alt: alt || null, width, 'data-align': align || null } };
   }
   return imageNode(src, alt, undefined, {
     width: width,

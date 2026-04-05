@@ -1,4 +1,4 @@
-import { Editor, Extension } from '@tiptap/core';
+import { Editor, Extension, InputRule } from '@tiptap/core';
 import { Plugin, TextSelection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import StarterKit from '@tiptap/starter-kit';
@@ -23,7 +23,7 @@ import { parseMarkdownAsync } from './worker/index.js';
 import { Frontmatter } from './extensions/frontmatter.js';
 import { MathBlock, MathInline } from './extensions/math.js';
 import { FootnoteRef, FootnoteDef } from './extensions/footnote.js';
-import { KiviSearch } from './extensions/search.js';
+import { KiviSearch, searchPluginKey } from './extensions/search.js';
 import { KiviClipboard } from './extensions/clipboard.js';
 import { DirtyTracker, getDirtyBlockIndices, applyDirtyFlags, resetDirtyTracking } from './extensions/dirty-tracker.js';
 import { WikiLink } from './extensions/wiki-link.js';
@@ -42,9 +42,10 @@ import { LinkPreviewExtension } from './extensions/link-preview.js';
 import type { DetectedLink, LinkPreviewData } from './extensions/link-preview.js';
 import { SmartTypography } from './extensions/smart-typography.js';
 import { Video, Audio } from './extensions/video.js';
-import { HeadingFold } from './extensions/heading-fold.js';
+
 import { CursorFix } from './extensions/cursor-fix.js';
 import { BlockCopyControls } from './extensions/block-copy-controls.js';
+import { LinkSuggest } from './extensions/link-suggest.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -88,10 +89,16 @@ export class KiviEditor {
                 ) ?? false;
                 if (afterHasCode) return false;
 
-                const newPos = $from.pos + 1;
                 const tr = state.tr;
-                if (newPos <= state.doc.content.size) {
-                  tr.setSelection(TextSelection.create(state.doc, newPos));
+                const after = $from.parent.textContent.charAt($from.parentOffset);
+                if (!after) {
+                  tr.insertText(' ', $from.pos);
+                  tr.setSelection(TextSelection.create(tr.doc, $from.pos + 1));
+                } else {
+                  const newPos = $from.pos + 1;
+                  if (newPos <= state.doc.content.size) {
+                    tr.setSelection(TextSelection.create(state.doc, newPos));
+                  }
                 }
                 tr.setStoredMarks(
                   $from.marks().filter((m: any) => m.type !== codeType),
@@ -204,7 +211,36 @@ export class KiviEditor {
           HTMLAttributes: { class: 'kivi-image' },
         }),
         TaskList,
-        TaskItem.configure({ nested: true }),
+        TaskItem.extend({
+          addInputRules() {
+            return [
+              new InputRule({
+                find: /^\s*-?\s*\[([( |x])?\]\s$/,
+                handler: ({ state, range, match }) => {
+                  const checked = match[1] === 'x';
+                  const { schema, tr } = state;
+                  const taskItemType = schema.nodes.taskItem;
+                  const taskListType = schema.nodes.taskList;
+                  if (!taskItemType || !taskListType) return;
+
+                  // Resolve the block boundaries BEFORE any mutations
+                  const $start = state.doc.resolve(range.from);
+                  const blockFrom = $start.before($start.depth);
+                  const blockTo = $start.after($start.depth);
+
+                  const paragraph = schema.nodes.paragraph.createAndFill()!;
+                  const taskItem = taskItemType.create({ checked }, paragraph);
+                  const taskList = taskListType.create(null, taskItem);
+
+                  tr.replaceWith(blockFrom, blockTo, taskList);
+                  // After replace: taskList(+1) > taskItem(+1) > paragraph(+1) > cursor
+                  tr.setSelection(TextSelection.create(tr.doc, blockFrom + 3));
+                  tr.scrollIntoView();
+                },
+              }),
+            ];
+          },
+        }).configure({ nested: true }),
         Table.configure({ resizable: false }),
         TableRow,
         TableCell.extend({
@@ -263,6 +299,7 @@ export class KiviEditor {
         SlashCommands.configure({
           onCreatePage: options.onCreatePage,
           promptInput: options.promptInput,
+          createExcalidrawFile: options.createExcalidrawFile,
         }),
         MermaidBlock,
         ExcalidrawBlock,
@@ -275,9 +312,16 @@ export class KiviEditor {
         Audio,
         DevWatchdog,
         SmartTypography,
-        HeadingFold,
+
         CursorFix,
         BlockCopyControls,
+        ...(options.linkSuggest ? (() => {
+          try {
+            return [LinkSuggest.configure({
+              getFiles: options.linkSuggest!.getFiles,
+            })];
+          } catch { return []; }
+        })() : []),
         LinkPreviewExtension.configure({
           onResolveLink: options.onResolveLink
             ? async (link: DetectedLink) => {
@@ -417,6 +461,7 @@ export class KiviEditor {
   search(options: SearchOptions): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this.editor.commands as any).setSearchQuery(options);
+    this.scrollToActiveSearchResult();
   }
 
   /** Clear active search. */
@@ -429,12 +474,44 @@ export class KiviEditor {
   nextSearchResult(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this.editor.commands as any).nextSearchResult();
+    this.scrollToActiveSearchResult();
   }
 
   /** Move to the previous search result. */
   previousSearchResult(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this.editor.commands as any).previousSearchResult();
+    this.scrollToActiveSearchResult();
+  }
+
+  /** Get info about the current search state (total matches, active index). */
+  getSearchInfo(): { total: number; activeIndex: number } {
+    const state = this.editor.state;
+    const searchState = searchPluginKey.getState(state) as
+      | { results: Array<{ from: number; to: number }>; activeIndex: number }
+      | undefined;
+    if (!searchState) return { total: 0, activeIndex: -1 };
+    return { total: searchState.results.length, activeIndex: searchState.activeIndex };
+  }
+
+  /** Scroll the view so the active search match is visible. */
+  private scrollToActiveSearchResult(): void {
+    requestAnimationFrame(() => {
+      const state = this.editor.state;
+      const searchState = searchPluginKey.getState(state) as
+        | { results: Array<{ from: number; to: number }>; activeIndex: number }
+        | undefined;
+      if (!searchState || searchState.activeIndex < 0 || searchState.activeIndex >= searchState.results.length) return;
+      const match = searchState.results[searchState.activeIndex];
+      const view = this.editor.view;
+      const dom = view.domAtPos(match.from);
+      if (dom.node) {
+        const el = dom.node instanceof HTMLElement ? dom.node : dom.node.parentElement;
+        if (el) {
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+      }
+    });
   }
 
   /** Get the underlying Tiptap editor instance. */

@@ -3,6 +3,7 @@ import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { InputRule } from '@tiptap/core';
 import type { EditorView } from '@tiptap/pm/view';
+import { getHostZoom, isScrollZoomed } from '../zoom.js';
 import type { EditorState } from '@tiptap/pm/state';
 
 export interface HashTagOptions {
@@ -161,10 +162,10 @@ export const HashTag = Mark.create<HashTagOptions>({
         key: new PluginKey('hashTagTypingDecoration'),
         state: {
           init() { return DecorationSet.empty; },
-          apply(_tr, _old, _oldState, newState) {
+          apply(tr, old, _oldState, newState) {
+            if (!tr.docChanged && !tr.selectionSet) return old;
             const trigger = detectHashTrigger(newState);
             if (!trigger) return DecorationSet.empty;
-            // Don't decorate if the range already has a hashTag mark
             const $from = newState.doc.resolve(trigger.from + 1);
             if ($from.marks().some(m => m.type.name === 'hashTag')) {
               return DecorationSet.empty;
@@ -234,31 +235,31 @@ function createSuggestionPlugin(
   let popupEl: HTMLElement | null = null;
   let items: string[] = [];
   let selectedIndex = 0;
-  let activeRange: { from: number; to: number } | null = null;
-  let fetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeRange: { from: number; to: number; query: string } | null = null;
   let lastFetchedQuery: string | null = null;
   let active = false;
   let editorView: EditorView | null = null;
+  let lastRenderedItems: string[] | null = null;
+  let lastRenderedSelected = -1;
+  let lastRenderedQuery = '';
 
   function destroy() {
     if (popupEl) { popupEl.remove(); popupEl = null; }
-    if (fetchTimer) { clearTimeout(fetchTimer); fetchTimer = null; }
     items = [];
     selectedIndex = 0;
     activeRange = null;
     active = false;
     lastFetchedQuery = null;
+    lastRenderedItems = null;
+    lastRenderedSelected = -1;
+    lastRenderedQuery = '';
   }
 
-  function confirmTypedTag(view: EditorView) {
-    if (!activeRange) return;
+  function applyTag(view: EditorView, tag: string) {
     const trigger = detectHashTrigger(view.state);
-    if (!trigger || !trigger.query) { destroy(); return; }
+    if (!trigger) { destroy(); return; }
 
-    const { from } = trigger;
-    const to = trigger.to;
-    const tag = trigger.query;
-
+    const { from, to } = trigger;
     const text = `#${tag} `;
     const tr = view.state.tr;
     tr.delete(from, to);
@@ -273,110 +274,143 @@ function createSuggestionPlugin(
     view.focus();
   }
 
-  function selectItem(view: EditorView, index: number) {
-    const tag = items[index];
-    if (!tag || !activeRange) return;
-
-    const { from, to } = activeRange;
-    const text = `#${tag} `;
-    const tr = view.state.tr;
-    tr.delete(from, to);
-    tr.insertText(text, from);
-    const tagMark = view.state.schema.marks.hashTag;
-    if (tagMark) {
-      tr.addMark(from, from + text.length - 1, tagMark.create({ tag }));
+  function updateSelectedHighlight() {
+    if (!popupEl) return;
+    const children = popupEl.children;
+    for (let i = 0; i < children.length; i++) {
+      children[i].classList.toggle('kivi-tag-suggest-active', i === selectedIndex);
     }
-    tr.setSelection(TextSelection.create(tr.doc, from + text.length));
-    view.dispatch(tr.scrollIntoView());
-    destroy();
-    view.focus();
+    const active = children[selectedIndex] as HTMLElement | undefined;
+    if (active) active.scrollIntoView({ block: 'nearest' });
+    lastRenderedSelected = selectedIndex;
   }
 
   function renderPopup(view: EditorView) {
     if (!active || items.length === 0 || !activeRange) {
       if (popupEl) { popupEl.remove(); popupEl = null; }
+      lastRenderedItems = null;
       return;
     }
+
+    const query = activeRange.query;
+    const itemsChanged = !lastRenderedItems
+      || items.length !== lastRenderedItems.length
+      || items.some((t, i) => t !== lastRenderedItems![i])
+      || query !== lastRenderedQuery;
 
     if (!popupEl) {
       popupEl = document.createElement('div');
       popupEl.className = 'kivi-tag-suggest';
-      document.body.appendChild(popupEl);
+      popupEl.style.position = 'absolute';
+      popupEl.style.zIndex = '10000';
+      popupEl.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const target = (e.target as HTMLElement).closest('.kivi-tag-suggest-item') as HTMLElement | null;
+        if (target) {
+          const idx = parseInt(target.dataset.idx ?? '0', 10);
+          applyTag(view, items[idx]);
+        }
+      });
+      popupEl.addEventListener('mouseover', (e) => {
+        const target = (e.target as HTMLElement).closest('.kivi-tag-suggest-item') as HTMLElement | null;
+        if (target) {
+          const idx = parseInt(target.dataset.idx ?? '0', 10);
+          if (idx !== selectedIndex) {
+            selectedIndex = idx;
+            updateSelectedHighlight();
+          }
+        }
+      });
+      view.dom.parentElement?.appendChild(popupEl);
+    }
+
+    if (itemsChanged) {
+      popupEl.innerHTML = items.map((item, i) => {
+        const cls = i === selectedIndex ? ' kivi-tag-suggest-active' : '';
+        return `<div class="kivi-tag-suggest-item${cls}" data-idx="${i}">#${highlightTagMatch(item, query)}</div>`;
+      }).join('');
+      lastRenderedItems = items.slice();
+      lastRenderedSelected = selectedIndex;
+      lastRenderedQuery = query;
+    } else if (selectedIndex !== lastRenderedSelected) {
+      updateSelectedHighlight();
     }
 
     const coords = view.coordsAtPos(activeRange.from);
     const container = view.dom.parentElement;
-    const cr = container?.getBoundingClientRect()
-      ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
-    popupEl.style.position = 'fixed';
-    popupEl.style.zIndex = '10000';
+    if (!container) return;
+    const cr = container.getBoundingClientRect();
+    const z = getHostZoom(container);
 
-    const query = activeRange ? detectHashTrigger(view.state)?.query ?? '' : '';
-    popupEl.innerHTML = items.map((item, i) => {
-      const cls = i === selectedIndex ? ' kivi-tag-suggest-active' : '';
-      const highlighted = highlightTagMatch(item, query);
-      return `<div class="kivi-tag-suggest-item${cls}" data-idx="${i}">#${highlighted}</div>`;
-    }).join('');
-
-    popupEl.querySelectorAll('.kivi-tag-suggest-item').forEach((el) => {
-      el.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        selectItem(view, parseInt((el as HTMLElement).dataset.idx ?? '0', 10));
-      });
-      el.addEventListener('mouseenter', () => {
-        const idx = parseInt((el as HTMLElement).dataset.idx ?? '0', 10);
-        selectedIndex = idx;
-        renderPopup(view);
-      });
-    });
+    // Counter-zoom the popup so it stays the same visual size
+    popupEl.style.transform = z !== 1 ? `scale(${1 / z})` : '';
+    popupEl.style.transformOrigin = 'top left';
 
     const gap = 4;
     const pad = 8;
-    const ph = popupEl.offsetHeight || 120;
-    const pw = popupEl.offsetWidth || 160;
-    const viewBottom = Math.min(cr.bottom, window.innerHeight);
-    const viewTop = Math.max(cr.top, 0);
-    const spaceBelow = viewBottom - coords.bottom;
-    const spaceAbove = coords.top - viewTop;
+    const scrollZ = isScrollZoomed(container);
+    const rawPH = popupEl.offsetHeight || 120;
+    const rawPW = popupEl.offsetWidth || 160;
+    const ph = scrollZ ? rawPH / z : rawPH;
+    const pw = scrollZ ? rawPW / z : rawPW;
+    const scaledH = ph / z;
+    const scaledW = pw / z;
+    const lz = (v: number) => scrollZ ? v / z : v;
+    const coordTop = scrollZ
+      ? (coords.top - cr.top + container.scrollTop) / z
+      : (coords.top - cr.top) / z + container.scrollTop;
+    const coordBottom = scrollZ
+      ? (coords.bottom - cr.top + container.scrollTop) / z
+      : (coords.bottom - cr.top) / z + container.scrollTop;
+    const coordLeft = scrollZ
+      ? (coords.left - cr.left + container.scrollLeft) / z
+      : (coords.left - cr.left) / z + container.scrollLeft;
 
-    // Prefer above so the dropdown doesn't cover the text being typed below
+    const viewH = lz(container.clientHeight);
+    const scrollTop = lz(container.scrollTop);
+    const spaceBelow = (scrollTop + viewH) - coordBottom;
+    const spaceAbove = coordTop - scrollTop;
+
     let top: number;
-    if (spaceAbove >= ph + gap) {
-      top = coords.top - ph - gap;
-    } else if (spaceBelow >= ph + gap) {
-      top = coords.bottom + gap;
+    if (spaceAbove >= scaledH + gap) {
+      top = coordTop - scaledH - gap;
+    } else if (spaceBelow >= scaledH + gap) {
+      top = coordBottom + gap;
     } else {
       top = spaceAbove >= spaceBelow
-        ? coords.top - ph - gap
-        : coords.bottom + gap;
+        ? coordTop - scaledH - gap
+        : coordBottom + gap;
     }
-    top = Math.max(viewTop + pad, Math.min(top, viewBottom - ph - pad));
+    top = Math.max(scrollTop + pad, Math.min(top, scrollTop + viewH - scaledH - pad));
 
-    let left = coords.left;
-    const maxLeft = Math.min(cr.right, window.innerWidth) - pw - pad;
-    if (left > maxLeft) left = maxLeft;
-    if (left < Math.max(cr.left, 0) + pad) left = Math.max(cr.left, 0) + pad;
+    let left = coordLeft;
+    const scrollW = lz(container.scrollWidth);
+    if (left + scaledW + pad > scrollW) left = scrollW - scaledW - pad;
+    if (left < pad) left = pad;
 
     popupEl.style.left = `${left}px`;
     popupEl.style.top = `${top}px`;
   }
 
-  async function fetchItems(query: string, view: EditorView) {
+  function fetchItems(query: string, view: EditorView) {
     if (query === lastFetchedQuery) return;
     lastFetchedQuery = query;
 
-    try {
-      const result = await suggestion.items(query);
-      // Verify trigger is still valid
-      if (!active || editorView !== view) return;
-      const trigger = detectHashTrigger(view.state);
-      if (!trigger || trigger.query !== query) return;
-
+    const result = suggestion.items(query);
+    if (result instanceof Promise) {
+      result.then((res) => {
+        if (!active || editorView !== view) return;
+        if (lastFetchedQuery !== query) return;
+        items = res.slice(0, 12);
+        selectedIndex = 0;
+        renderPopup(view);
+      }).catch(() => {});
+    } else {
       items = result.slice(0, 12);
       selectedIndex = 0;
       renderPopup(view);
-    } catch { /* ignore */ }
+    }
   }
 
   return new Plugin({
@@ -395,9 +429,7 @@ function createSuggestionPlugin(
 
           active = true;
           activeRange = trigger;
-
-          if (fetchTimer) clearTimeout(fetchTimer);
-          fetchTimer = setTimeout(() => fetchItems(trigger.query, view), 50);
+          fetchItems(trigger.query, view);
         },
         destroy() {
           destroy();
@@ -416,12 +448,13 @@ function createSuggestionPlugin(
           return true;
         }
 
-        // Auto-confirm typed tag on Enter/Space even when no suggestions
         if (items.length === 0) {
           if (event.key === 'Enter' || event.key === ' ') {
             if (activeRange) {
               event.preventDefault();
-              confirmTypedTag(view);
+              const trigger = detectHashTrigger(view.state);
+              if (trigger?.query) applyTag(view, trigger.query);
+              else destroy();
             }
             return true;
           }
@@ -431,28 +464,24 @@ function createSuggestionPlugin(
         if (event.key === 'ArrowDown') {
           event.preventDefault();
           selectedIndex = (selectedIndex + 1) % items.length;
-          renderPopup(view);
+          updateSelectedHighlight();
           return true;
         }
         if (event.key === 'ArrowUp') {
           event.preventDefault();
           selectedIndex = (selectedIndex - 1 + items.length) % items.length;
-          renderPopup(view);
+          updateSelectedHighlight();
           return true;
         }
-        if (event.key === 'Tab') {
+        if (event.key === 'Tab' || event.key === 'Enter') {
           event.preventDefault();
-          selectItem(view, selectedIndex);
-          return true;
-        }
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          selectItem(view, selectedIndex);
+          applyTag(view, items[selectedIndex]);
           return true;
         }
         if (event.key === ' ') {
           event.preventDefault();
-          confirmTypedTag(view);
+          const trigger = detectHashTrigger(view.state);
+          applyTag(view, trigger?.query || items[selectedIndex]);
           return true;
         }
         return false;

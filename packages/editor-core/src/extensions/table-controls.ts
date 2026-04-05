@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { addDelayedTooltip } from '../tooltip.js';
+import { positionFixedPopup } from '../zoom.js';
 
 const tableControlsKey = new PluginKey('kiviTableControls');
 
@@ -219,33 +220,18 @@ export const TableControls = Extension.create({
             menu.style.visibility = 'visible';
             const tableRect = tableEl.getBoundingClientRect();
             const container = view.dom.parentElement;
-            const containerRect = container?.getBoundingClientRect()
-              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
-            const menuH = menu.offsetHeight || 36;
-            const menuW = menu.offsetWidth || 400;
-            const gap = 4;
+            const cr = container?.getBoundingClientRect() ?? null;
 
-            const visibleTop = Math.max(tableRect.top, containerRect.top);
-            const visibleBottom = Math.min(tableRect.bottom, containerRect.bottom);
-
-            let top = visibleTop - menuH - gap;
-
-            if (top < containerRect.top) {
-              top = visibleTop + gap;
-            }
-
-            if (top + menuH > visibleBottom - gap) {
-              top = visibleBottom - menuH - gap;
-            }
-
-            top = Math.max(gap, Math.min(top, window.innerHeight - menuH - gap));
-
-            let left = tableRect.left + (tableRect.width - menuW) / 2;
-            if (left + menuW > window.innerWidth - 8) left = window.innerWidth - menuW - 8;
-            if (left < 8) left = 8;
-
-            menu.style.left = `${left}px`;
-            menu.style.top = `${top}px`;
+            positionFixedPopup({
+              anchorRect: tableRect,
+              popup: menu,
+              containerRect: cr,
+              gap: 4,
+              pad: 8,
+              alignX: 'center',
+              preferY: 'above',
+              anchorEl: tableEl,
+            });
           }
 
           return {

@@ -6,7 +6,7 @@ import { parseMarkdown } from '@kivi/markdown-parser';
 const clipboardPluginKey = new PluginKey('kiviClipboard');
 
 export interface ImageStorageAdapter {
-  store(blob: Blob, filename: string): Promise<string>;
+  store(blob: Blob, filename: string, originalName?: string): Promise<string>;
 }
 
 const VIDEO_MIME_PREFIXES = ['video/'];
@@ -85,7 +85,7 @@ export function looksLikeMarkdown(text: string): boolean {
 }
 
 export interface FileStorageAdapter {
-  store(blob: Blob, filename: string): Promise<string>;
+  store(blob: Blob, filename: string, originalName?: string): Promise<string>;
 }
 
 export interface KiviClipboardOptions {
@@ -115,16 +115,18 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
 
             const items = Array.from(clipboardData.items || []);
 
-            // Handle image paste
+            // Handle image paste (actual binary blobs, e.g. screenshot)
             const imageItem = items.find((i) => i.type.startsWith('image/'));
             if (imageItem) {
               event.preventDefault();
               const blob = imageItem.getAsFile();
               if (blob) {
                 const ext = imageItem.type.split('/')[1] || 'png';
+                const originalName = blob.name || undefined;
                 const filename = buildPasteFilename(blob, ext);
-                imageAdapter.store(blob, filename).then((url) => {
-                  editor.commands.setImage({ src: url, alt: filename.replace(/\.[^.]+$/, '') });
+                imageAdapter.store(blob, filename, originalName).then((url) => {
+                  if (editor.isDestroyed) return;
+                  editor.commands.setImage({ src: url, alt: (originalName || filename).replace(/\.[^.]+$/, '') });
                 }).catch(() => {});
               }
               return true;
@@ -137,8 +139,10 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
               const blob = videoItem.getAsFile();
               if (blob) {
                 const ext = VIDEO_EXT_MAP[videoItem.type] || videoItem.type.split('/')[1] || 'mp4';
+                const originalName = blob.name || undefined;
                 const filename = buildPasteFilename(blob, ext);
-                imageAdapter.store(blob, filename).then((url) => {
+                imageAdapter.store(blob, filename, originalName).then((url) => {
+                  if (editor.isDestroyed) return;
                   editor.commands.insertContent(
                     `<video src="${url}" controls style="max-width:100%"></video>`,
                   );
@@ -154,8 +158,10 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
               const blob = audioItem.getAsFile();
               if (blob) {
                 const ext = AUDIO_EXT_MAP[audioItem.type] || audioItem.type.split('/')[1] || 'mp3';
+                const originalName = blob.name || undefined;
                 const filename = buildPasteFilename(blob, ext);
-                imageAdapter.store(blob, filename).then((url) => {
+                imageAdapter.store(blob, filename, originalName).then((url) => {
+                  if (editor.isDestroyed) return;
                   editor.commands.insertContent(
                     `<audio src="${url}" controls></audio>`,
                   );
@@ -171,16 +177,19 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
                 const blob = fileItem.getAsFile();
                 if (blob) {
                   event.preventDefault();
+                  const originalName = blob.name || undefined;
                   const name = buildPasteFilename(blob, 'bin');
                   const isExcalidraw = /\.excalidraw$/i.test(blob.name || name);
-                  fileAdapter.store(blob, name).then((relPath) => {
+                  fileAdapter.store(blob, name, originalName).then((relPath) => {
+                    if (editor.isDestroyed) return;
                     if (isExcalidraw) {
+                      const excAlt = relPath.split('/').pop()?.replace(/\.excalidraw$/i, '') || 'excalidraw';
                       editor.commands.insertContent({
                         type: 'excalidrawBlock',
-                        attrs: { src: relPath, data: '{}' },
+                        attrs: { src: relPath, data: '{}', alt: excAlt },
                       });
                     } else {
-                      const displayName = name.replace(/\.[^.]+$/, '');
+                      const displayName = (originalName || name).replace(/\.[^.]+$/, '');
                       editor.commands.insertContent({
                         type: 'text',
                         text: displayName,
@@ -196,9 +205,21 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
             const plainText = clipboardData.getData('text/plain');
             const htmlText = clipboardData.getData('text/html');
 
+            if (!plainText && !htmlText) return false;
             if (!plainText) return false;
 
             const isMarkdown = looksLikeMarkdown(plainText);
+
+            // Single-line plain text that isn't markdown: insert inline.
+            // VS Code wraps copied text in HTML (<div style=...>) which
+            // ProseMirror's default handler turns into a block — wrong for
+            // simple text like file paths or short strings.
+            if (!isMarkdown && !plainText.includes('\n')) {
+              event.preventDefault();
+              const tr = _view.state.tr.insertText(plainText);
+              _view.dispatch(tr);
+              return true;
+            }
 
             // If text looks like markdown, ALWAYS prefer markdown parsing.
             // HTML from code editors (VS Code, Cursor) wraps text in <pre>/<div style>
@@ -345,3 +366,19 @@ function serializeInline(node: import('@tiptap/pm/model').Node): string {
   });
   return result;
 }
+
+const ROOTED_PATH_RE = /^(?:\/|[A-Z]:\\|~\/|\.\.?\/)/;
+const HAS_EXT_RE = /\.\w{1,10}$/;
+const BARE_RELATIVE_PATH_RE = /^[\w][\w.\- ]*(?:\/[\w.\- ]+)+$/;
+
+export function looksLikeFilePath(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 500) return false;
+  if (!HAS_EXT_RE.test(t)) return false;
+  // Rooted paths: /foo, ~/foo, ./foo, ../foo, C:\foo
+  if (ROOTED_PATH_RE.test(t)) return true;
+  // Bare relative paths with at least one /: docs/networking/readme.md
+  if (BARE_RELATIVE_PATH_RE.test(t)) return true;
+  return false;
+}
+

@@ -57,7 +57,7 @@ function convertBlockNode(node: PMNode): RootContent[] {
         type: 'list',
         ordered: false,
         spread: false,
-        children: (node.content || []).map(convertListItem),
+        children: (node.content || []).map(convertMixedListItem),
       }];
 
     case 'orderedList':
@@ -74,7 +74,7 @@ function convertBlockNode(node: PMNode): RootContent[] {
         type: 'list',
         ordered: false,
         spread: false,
-        children: (node.content || []).map(convertTaskItem),
+        children: (node.content || []).map(convertMixedListItem),
       }];
 
     case 'horizontalRule':
@@ -128,26 +128,29 @@ function convertBlockNode(node: PMNode): RootContent[] {
     case 'excalidrawBlock': {
       const excSrc = node.attrs?.src as string | null;
       if (excSrc) {
+        const excAlt = (node.attrs?.alt as string | null)
+          || excSrc.split('/').pop()?.replace(/\.excalidraw$/i, '') || 'excalidraw';
         const width = node.attrs?.width as number | null;
-        if (width) {
-          // Width specified — use HTML img tag to preserve it
+        const align = node.attrs?.['data-align'] as string | null;
+        if (width || align) {
+          const parts = [`src="${escAttr(excSrc)}"`, `alt="${escAttr(excAlt)}"`];
+          if (width) parts.push(`width="${width}"`);
+          if (align) parts.push(`data-align="${escAttr(align)}"`);
           return [{
             type: 'html',
-            value: `<img src="${excSrc}" alt="${excSrc.split('/').pop()?.replace(/\.excalidraw$/i, '') || 'excalidraw'}" width="${width}" />`,
+            value: `<img ${parts.join(' ')} />`,
           } as unknown as RootContent];
         }
-        // File-referenced excalidraw: serialize as image syntax
         return [{
           type: 'paragraph',
           children: [{
             type: 'image',
             url: excSrc,
-            alt: excSrc.split('/').pop()?.replace(/\.excalidraw$/i, '') || 'excalidraw',
+            alt: excAlt,
             title: null,
           }],
         } as unknown as RootContent];
       }
-      // Inline data: serialize as fenced code block
       return [{
         type: 'code',
         lang: 'excalidraw',
@@ -177,6 +180,11 @@ function convertTaskItem(node: PMNode): import('mdast').ListItem {
     spread: false,
     children: children as import('mdast').ListItem['children'],
   };
+}
+
+function convertMixedListItem(node: PMNode): import('mdast').ListItem {
+  if (node.type === 'taskItem') return convertTaskItem(node);
+  return convertListItem(node);
 }
 
 function convertTable(node: PMNode): import('mdast').Table {
@@ -355,6 +363,10 @@ function getTextContent(node: PMNode): string {
   return node.content.map(getTextContent).join('');
 }
 
+function escAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function imageHasCustomAttrs(node: PMNode): boolean {
   return !!node.attrs?.width || !!node.attrs?.['data-align'];
 }
@@ -364,10 +376,10 @@ function buildImageHtml(node: PMNode): string {
   const alt = (node.attrs?.alt as string) || '';
   const width = node.attrs?.width as number | null;
   const align = node.attrs?.['data-align'] as string | null;
-  let html = `<img src="${src}"`;
-  if (alt) html += ` alt="${alt}"`;
+  let html = `<img src="${escAttr(src)}"`;
+  if (alt) html += ` alt="${escAttr(alt)}"`;
   if (width) html += ` width="${width}"`;
-  if (align) html += ` data-align="${align}"`;
+  if (align) html += ` data-align="${escAttr(align)}"`;
   html += ' />';
   return html;
 }
@@ -376,10 +388,10 @@ function convertVideo(node: PMNode): RootContent {
   const src = (node.attrs?.src as string) || '';
   const controls = node.attrs?.controls !== false;
   const width = (node.attrs?.width as string | null);
-  let html = `<video src="${src}"`;
+  let html = `<video src="${escAttr(src)}"`;
   if (controls) html += ' controls';
-  if (width) html += ` width="${width}"`;
-  html += ' style="max-width:100%"></video>';
+  if (width) html += ` width="${escAttr(width)}"`;
+  html += ' style="max-width:100%">\n</video>';
   return { type: 'html', value: html } as unknown as RootContent;
 }
 
@@ -387,10 +399,10 @@ function convertAudio(node: PMNode): RootContent {
   const src = (node.attrs?.src as string) || '';
   const controls = node.attrs?.controls !== false;
   const width = (node.attrs?.width as string | null);
-  let html = `<audio src="${src}"`;
+  let html = `<audio src="${escAttr(src)}"`;
   if (controls) html += ' controls';
-  if (width) html += ` width="${width}"`;
-  html += '></audio>';
+  if (width) html += ` width="${escAttr(width)}"`;
+  html += '>\n</audio>';
   return { type: 'html', value: html } as unknown as RootContent;
 }
 

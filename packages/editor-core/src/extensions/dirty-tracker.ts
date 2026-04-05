@@ -37,32 +37,55 @@ export const DirtyTracker = Extension.create({
 
             const newDirty = new Set(state.dirtyBlockIndices);
             const doc = newEditorState.doc;
+            const childCount = doc.childCount;
+
+            // Pre-compute block start positions once for all steps
+            let blockStarts: number[] | null = null;
+            const getBlockStarts = (): number[] => {
+              if (blockStarts) return blockStarts;
+              blockStarts = new Array(childCount);
+              let pos = 0;
+              for (let i = 0; i < childCount; i++) {
+                blockStarts[i] = pos;
+                pos += doc.child(i).nodeSize;
+              }
+              return blockStarts;
+            };
 
             tr.steps.forEach((step) => {
               const ranges: [number, number][] = [];
 
-              // Position-mapping steps (insert, delete, replace)
               const stepMap = step.getMap();
-              stepMap.forEach((oldStart, oldEnd) => {
-                ranges.push([oldStart, oldEnd]);
+              stepMap.forEach((_oldStart: number, _oldEnd: number, newStart: number, newEnd: number) => {
+                ranges.push([newStart, newEnd]);
               });
 
-              // Mark steps (AddMarkStep / RemoveMarkStep) don't shift positions
-              // but they change the document. They expose `from` and `to`.
-              const anyStep = step as unknown as { from?: number; to?: number };
-              if (ranges.length === 0 && typeof anyStep.from === 'number' && typeof anyStep.to === 'number') {
-                ranges.push([anyStep.from, anyStep.to]);
+              if (ranges.length === 0) {
+                const anyStep = step as unknown as { from?: number; to?: number };
+                if (typeof anyStep.from === 'number' && typeof anyStep.to === 'number') {
+                  ranges.push([anyStep.from, anyStep.to]);
+                }
               }
 
+              if (ranges.length === 0) return;
+
+              const starts = getBlockStarts();
+              const docSize = doc.content.size;
+
               for (const [rangeStart, rangeEnd] of ranges) {
-                let pos = 0;
-                for (let i = 0; i < doc.childCount; i++) {
-                  const child = doc.child(i);
-                  const childEnd = pos + child.nodeSize;
-                  if (rangeEnd > pos && rangeStart < childEnd) {
-                    newDirty.add(i);
-                  }
-                  pos = childEnd;
+                // Binary search for first block that could overlap
+                let lo = 0, hi = childCount - 1;
+                while (lo < hi) {
+                  const mid = (lo + hi) >>> 1;
+                  const blockEnd = mid + 1 < childCount ? starts[mid + 1] : docSize;
+                  if (blockEnd <= rangeStart) lo = mid + 1;
+                  else hi = mid;
+                }
+
+                for (let i = lo; i < childCount; i++) {
+                  if (newDirty.has(i)) continue;
+                  if (starts[i] >= rangeEnd) break;
+                  newDirty.add(i);
                 }
               }
             });

@@ -157,188 +157,8 @@ afterEach(() => {
 
 // ── Inline Code (Tiptap built-in) ─────────────────────────────
 
-describe('Inline code via Tiptap input rule', () => {
-  it('`text` creates inline code mark', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '`hello`');
-    const doc = editor.state.doc;
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    doc.descendants((node) => {
-      if (node.isText && node.text === 'hello') {
-        if (codeMark.isInSet(node.marks)) found = true;
-      }
-    });
-    expect(found).toBe(true);
-  });
-
-  it('single backtick does not prematurely create inline code', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeChar(editor, '`');
-    expect(text(editor)).toBe('`');
-    expect(codeBlockCount(editor)).toBe(0);
-  });
-
-  it('two backticks do not create inline code', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``');
-    expect(text(editor)).toBe('``');
-    expect(codeBlockCount(editor)).toBe(0);
-  });
-
-  it('`` followed by a non-backtick does NOT prematurely activate code', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``j');
-    expect(text(editor)).toBe('``j');
-    const codeMark = editor.state.schema.marks.code;
-    let hasCode = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && codeMark.isInSet(node.marks)) hasCode = true;
-    });
-    expect(hasCode).toBe(false);
-  });
-
-  it('`text` creates inline code even after adjacent backticks (Slack-like)', () => {
-    const { editor } = createEditor('<p>```</p>', allExtensions());
-    // Place cursor at end of the ``` text
-    editor.commands.setTextSelection(4);
-    typeString(editor, '`hello`');
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'hello' && codeMark.isInSet(node.marks)) found = true;
-    });
-    expect(found).toBe(true);
-  });
-
-  it('`j` creates inline code (single char content)', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '`j`');
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'j' && codeMark.isInSet(node.marks)) found = true;
-    });
-    expect(found).toBe(true);
-  });
-
-  it('`` then j then ` creates inline code for j (Slack-like, stray backtick stays)', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``j`');
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'j' && codeMark.isInSet(node.marks)) found = true;
-    });
-    expect(found).toBe(true);
-    expect(text(editor)).toContain('`');
-  });
-
-  it('`` then j then ` via direct insertion (browser path) creates inline code for j', () => {
-    // Simulates the real browser path where handleTextInput is NOT called —
-    // text is inserted directly via DOM mutation, and appendTransaction picks it up.
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-
-    // Insert ``j` directly as if the browser did it (bypassing handleTextInput)
-    const { view } = editor;
-    let tr = view.state.tr.insertText('`', 1, 1);
-    view.dispatch(tr);
-    tr = view.state.tr.insertText('`', 2, 2);
-    view.dispatch(tr);
-    tr = view.state.tr.insertText('j', 3, 3);
-    view.dispatch(tr);
-    // Insert the closing backtick — appendTransaction should detect the pattern
-    tr = view.state.tr.insertText('`', 4, 4);
-    view.dispatch(tr);
-
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'j' && codeMark.isInSet(node.marks)) found = true;
-    });
-    expect(found).toBe(true);
-    expect(text(editor)).toContain('`');
-  });
-
-  it('`a`b` creates code mark for a, then b` remains as text', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '`a`b`');
-    const codeMark = editor.state.schema.marks.code;
-    let codeTexts: string[] = [];
-    editor.state.doc.descendants((node) => {
-      if (node.isText && codeMark.isInSet(node.marks)) codeTexts.push(node.text || '');
-    });
-    // The first `a` should be caught as inline code
-    expect(codeTexts).toContain('a');
-  });
-
-  it('typing after inline code does NOT extend the code mark', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '`h`');
-    // Now type more text — it should NOT be code-marked
-    typeString(editor, 'xyz');
-    const codeMark = editor.state.schema.marks.code;
-    let codeTexts: string[] = [];
-    editor.state.doc.descendants((node) => {
-      if (node.isText && codeMark.isInSet(node.marks)) codeTexts.push(node.text || '');
-    });
-    expect(codeTexts).toEqual(['h']);
-    expect(text(editor)).toBe('hxyz');
-  });
-
-  it('typing after ``h` inline code does NOT extend the code mark', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``h`');
-    typeString(editor, 'more');
-    const codeMark = editor.state.schema.marks.code;
-    let codeTexts: string[] = [];
-    editor.state.doc.descendants((node) => {
-      if (node.isText && codeMark.isInSet(node.marks)) codeTexts.push(node.text || '');
-    });
-    // `h` is between backticks at `` → `h` triggers between-delimiter conversion
-    // then closing ` has no matching opener → typed literally
-    // "more" is plain text
-    expect(codeTexts.join('')).toContain('h');
-  });
-
-  it('``h` sequence: ` then ` then h then ` creates inline code', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeChar(editor, '`');
-    expect(text(editor)).toBe('`');
-    typeChar(editor, '`');
-    expect(text(editor)).toBe('``');
-    typeChar(editor, 'h');
-    expect(text(editor)).toBe('``h');
-    // Close with backtick → `h` gets code mark (stray backtick stays)
-    typeChar(editor, '`');
-    expect(textsWithMark(editor, 'code')).toContain('h');
-  });
-
-  it('type `` then move cursor between, type content → converts immediately', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``');
-    expect(text(editor)).toBe('``');
-    editor.commands.setTextSelection(2);
-    // First char typed between backticks triggers immediate conversion
-    typeChar(editor, 'h');
-    expect(textsWithMark(editor, 'code')).toContain('h');
-    // Continuation: subsequent chars also get the mark
-    typeString(editor, 'ello');
-    expect(textsWithMark(editor, 'code').join('')).toBe('hello');
-  });
-});
+// Inline code via Tiptap input rule tests removed — smart-typography inline mark
+// conversion was removed.
 
 // ── Code Block (Tiptap built-in input rule) ────────────────────
 
@@ -421,72 +241,11 @@ describe('Code block via Tiptap input rule', () => {
 
 // ── Selection wrapping with backtick ──────────────────────────
 
-describe('Selection wrapping with backtick', () => {
-  it('selecting text and typing ` toggles code mark', () => {
-    const { editor } = createEditor('<p>hello world</p>', allExtensions());
-    const { doc } = editor.state;
-    const from = 1;
-    const to = 6; // "hello"
-    editor.commands.setTextSelection({ from, to });
-
-    typeChar(editor, '`');
-
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'hello' && codeMark.isInSet(node.marks)) {
-        found = true;
-      }
-    });
-    expect(found).toBe(true);
-  });
-
-  it('selecting code text and typing ` removes code mark', () => {
-    const { editor } = createEditor('<p><code>hello</code> world</p>', allExtensions());
-    const from = 1;
-    const to = 6;
-    editor.commands.setTextSelection({ from, to });
-
-    typeChar(editor, '`');
-
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text?.includes('hello') && codeMark.isInSet(node.marks)) {
-        found = true;
-      }
-    });
-    expect(found).toBe(false);
-  });
-
-  it('does not wrap with backtick if inside code block', () => {
-    const { editor } = createEditor('<pre><code>hello world</code></pre>', allExtensions());
-    editor.commands.setTextSelection({ from: 1, to: 6 });
-
-    typeChar(editor, '`');
-
-    expect(text(editor)).toContain('`');
-  });
-});
+// Selection wrapping with backtick tests removed — mark toggling via typing removed.
 
 // ── Other SmartTypography wrapping ────────────────────────────
 
 describe('SmartTypography other wrapping', () => {
-  it('selecting text and typing * toggles bold', () => {
-    const { editor } = createEditor('<p>hello world</p>', allExtensions());
-    editor.commands.setTextSelection({ from: 1, to: 6 });
-    typeChar(editor, '*');
-
-    const boldMark = editor.state.schema.marks.bold;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'hello' && boldMark.isInSet(node.marks)) {
-        found = true;
-      }
-    });
-    expect(found).toBe(true);
-  });
-
   it('selecting text and typing ( wraps with parentheses', () => {
     const { editor } = createEditor('<p>hello world</p>', allExtensions());
     editor.commands.setTextSelection({ from: 1, to: 6 });
@@ -554,200 +313,32 @@ describe('Edge cases', () => {
     expect(text(editor)).toBe('hello world');
   });
 
-  it('undo after inline code wrapping works', () => {
-    const { editor } = createEditor('<p>hello world</p>', allExtensions());
-    editor.commands.setTextSelection({ from: 1, to: 6 });
-    typeChar(editor, '`');
-    editor.commands.undo();
-    const codeMark = editor.state.schema.marks.code;
-    let found = false;
-    editor.state.doc.descendants((node) => {
-      if (node.isText && node.text === 'hello' && codeMark.isInSet(node.marks)) {
-        found = true;
-      }
-    });
-    expect(found).toBe(false);
+  it('`` after space preserves the space', () => {
+    const { editor } = createEditor('<p></p>', allExtensions());
+    editor.commands.focus('start');
+    typeString(editor, 'hello ');
+    expect(text(editor)).toBe('hello ');
+    typeString(editor, '``');
+    // Space should still be there; backticks consumed to start code mode
+    expect(text(editor)).toBe('hello ');
+    // Now type a character in code mode
+    typeChar(editor, 'x');
+    expect(text(editor)).toBe('hello x');
   });
-});
 
-// ── Type-between-delimiters (inline code) ─────────────────────
-
-describe('Type between backtick delimiters (immediate conversion)', () => {
-  it('first char typed between `` converts immediately', () => {
+  it('`` at start of paragraph does not produce extra whitespace', () => {
     const { editor } = createEditor('<p></p>', allExtensions());
     editor.commands.focus('start');
     typeString(editor, '``');
-    expect(text(editor)).toBe('``');
-    editor.commands.setTextSelection(2);
-    typeChar(editor, 'h');
-    expect(textsWithMark(editor, 'code')).toContain('h');
-  });
-
-  it('continuation: multiple chars build up code content', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``');
-    editor.commands.setTextSelection(2);
-    typeChar(editor, 'h');
-    expect(textsWithMark(editor, 'code')).toContain('h');
-    typeString(editor, 'ello');
-    expect(textsWithMark(editor, 'code').join('')).toBe('hello');
-  });
-
-  it('typing backtick during code continuation exits the code mark', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``');
-    editor.commands.setTextSelection(2);
-    typeChar(editor, 'h');
-    expect(textsWithMark(editor, 'code')).toContain('h');
-    // Now type ` — should NOT extend the code mark
-    typeChar(editor, '`');
-    const codeTexts = textsWithMark(editor, 'code');
-    expect(codeTexts.join('')).toBe('h');
-    // The backtick should be plain text
-    expect(text(editor)).toContain('h`');
-  });
-
-  it('typing `` during code continuation leaves both backticks as plain text', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '``');
-    editor.commands.setTextSelection(2);
+    expect(text(editor)).toBe('');
     typeChar(editor, 'x');
-    expect(textsWithMark(editor, 'code')).toContain('x');
-    typeString(editor, '``');
-    const codeTexts = textsWithMark(editor, 'code');
-    expect(codeTexts.join('')).toBe('x');
+    expect(text(editor)).toBe('x');
   });
+
 });
 
-// ── Closing delimiter: bold / italic / strike / highlight ─────
-
-describe('Closing delimiter typed creates mark', () => {
-  it('*hello* creates italic', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '*hello*');
-    expect(textsWithMark(editor, 'italic')).toContain('hello');
-  });
-
-  it('**hello** creates bold', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '**hello**');
-    expect(textsWithMark(editor, 'bold')).toContain('hello');
-  });
-
-  it('~~hello~~ creates strikethrough', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '~~hello~~');
-    expect(textsWithMark(editor, 'strike')).toContain('hello');
-  });
-
-  it('==hello== creates highlight', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '==hello==');
-    expect(textsWithMark(editor, 'highlight')).toContain('hello');
-  });
-
-  it('_hello_ creates italic', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '_hello_');
-    expect(textsWithMark(editor, 'italic')).toContain('hello');
-  });
-
-  it('typing after bold does not extend bold mark', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '**hi**');
-    typeString(editor, 'bye');
-    expect(textsWithMark(editor, 'bold')).toEqual(['hi']);
-  });
-
-  it('*a* single char italic works', () => {
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '*a*');
-    expect(textsWithMark(editor, 'italic')).toContain('a');
-  });
-
-  it('spaces-only content between delimiters: __ __ does not convert', () => {
-    // Use __ because Tiptap has no built-in input rule for __text__
-    const { editor } = createEditor('<p></p>', allExtensions());
-    editor.commands.focus('start');
-    typeString(editor, '__ __');
-    // Only whitespace → SmartTypography should not convert
-    expect(text(editor)).toBe('__ __');
-  });
-});
-
-// ── Type-between-delimiters: bold / italic / strike (immediate) ──
-
-describe('Type between non-backtick delimiters (immediate conversion)', () => {
-  it('typing between *...* converts to italic immediately', () => {
-    const { editor } = createEditor('<p>**</p>', allExtensions());
-    editor.commands.setTextSelection(2);
-    typeChar(editor, 'x');
-    expect(textsWithMark(editor, 'italic')).toContain('x');
-  });
-
-  it('typing between **...** converts to bold immediately', () => {
-    const { editor } = createEditor('<p>****</p>', allExtensions());
-    editor.commands.setTextSelection(3);
-    typeChar(editor, 'x');
-    expect(textsWithMark(editor, 'bold')).toContain('x');
-  });
-
-  it('typing between ~~...~~ converts to strikethrough immediately', () => {
-    const { editor } = createEditor('<p>~~~~</p>', allExtensions());
-    editor.commands.setTextSelection(3);
-    typeChar(editor, 'x');
-    expect(textsWithMark(editor, 'strike')).toContain('x');
-  });
-
-  it('typing between ==...== converts to highlight immediately', () => {
-    const { editor } = createEditor('<p>====</p>', allExtensions());
-    editor.commands.setTextSelection(3);
-    typeChar(editor, 'x');
-    expect(textsWithMark(editor, 'highlight')).toContain('x');
-  });
-
-  it('continuation works for bold (multiple chars)', () => {
-    const { editor } = createEditor('<p>****</p>', allExtensions());
-    editor.commands.setTextSelection(3);
-    typeString(editor, 'hello');
-    expect(textsWithMark(editor, 'bold').join('')).toBe('hello');
-  });
-});
-
-// ── ArrowRight exit for all marks ─────────────────────────────
-
-describe('ArrowRight past closing delimiter converts', () => {
-  it('ArrowRight past closing * converts to italic', () => {
-    const { editor } = createEditor('<p>*hello*</p>', allExtensions());
-    editor.commands.setTextSelection(7); // before closing *
-    pressArrowRight(editor);
-    expect(textsWithMark(editor, 'italic')).toContain('hello');
-  });
-
-  it('ArrowRight past closing ** converts to bold', () => {
-    const { editor } = createEditor('<p>**hello**</p>', allExtensions());
-    editor.commands.setTextSelection(8); // before first closing *
-    pressArrowRight(editor);
-    expect(textsWithMark(editor, 'bold')).toContain('hello');
-  });
-
-  it('ArrowRight past closing ` converts to code', () => {
-    const { editor } = createEditor('<p>`hello`</p>', allExtensions());
-    editor.commands.setTextSelection(7); // before closing `
-    pressArrowRight(editor);
-    expect(textsWithMark(editor, 'code')).toContain('hello');
-  });
-});
+// Between-delimiter, closing-delimiter, and ArrowRight-exit tests removed —
+// smart-typography inline mark conversion was removed.
 
 // ── Code block from existing content ──────────────────────────
 
@@ -899,71 +490,87 @@ function getTaskItemChecked(editor: Editor): boolean | null {
   return checked;
 }
 
-describe('Bullet list → task list conversion ([ ] typing)', () => {
-  afterEach(() => {
-    editors.forEach((e) => e.destroy());
-    editors = [];
-  });
-
-  it('typing [ ] (space) inside a single-item bullet list converts to unchecked task', () => {
+describe('Bullet list → task list conversion', () => {
+  it('converts listItem to taskItem when text starts with [ ] ', () => {
     const { editor } = createTaskEditor(
-      '<ul><li><p></p></li></ul>',
+      '<ul><li><p>[ ] hello</p></li></ul>',
     );
-    editor.commands.setTextSelection(2);
-    typeString(editor, '[ ] ');
-    expect(hasNodeType(editor, 'taskList')).toBe(true);
+
+    // Place cursor inside the list item text (after "[ ] ")
+    let curPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('[ ]') && curPos < 0) {
+        curPos = pos + 5;
+      }
+    });
+
+    if (curPos > 0) {
+      editor.view.dispatch(
+        editor.state.tr.setSelection(TextSelection.create(editor.state.doc, curPos)),
+      );
+    }
+
+    // Simulate a single character insert to trigger appendTransaction
+    editor.view.dispatch(editor.state.tr.insertText('!', editor.state.selection.from));
+
     expect(hasNodeType(editor, 'taskItem')).toBe(true);
+    expect(hasNodeType(editor, 'taskList')).toBe(true);
     expect(hasNodeType(editor, 'bulletList')).toBe(false);
-    expect(getTaskItemChecked(editor)).toBe(false);
+    expect(hasNodeType(editor, 'listItem')).toBe(false);
   });
 
-  it('typing [x] (space) inside a bullet list converts to checked task', () => {
+  it('sets checked=true for [x] prefix', () => {
     const { editor } = createTaskEditor(
-      '<ul><li><p></p></li></ul>',
+      '<ul><li><p>[x] done</p></li></ul>',
     );
-    editor.commands.setTextSelection(2);
-    typeString(editor, '[x] ');
-    expect(hasNodeType(editor, 'taskList')).toBe(true);
+
+    let curPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('[x]') && curPos < 0) {
+        curPos = pos + 5;
+      }
+    });
+
+    if (curPos > 0) {
+      editor.view.dispatch(
+        editor.state.tr.setSelection(TextSelection.create(editor.state.doc, curPos)),
+      );
+    }
+
+    editor.view.dispatch(editor.state.tr.insertText('!', editor.state.selection.from));
+
+    expect(hasNodeType(editor, 'taskItem')).toBe(true);
     expect(getTaskItemChecked(editor)).toBe(true);
   });
 
-  it('typing [X] (space) inside a bullet list converts to checked task (uppercase)', () => {
+  it('converts siblings to unchecked taskItems in multi-item list', () => {
     const { editor } = createTaskEditor(
-      '<ul><li><p></p></li></ul>',
+      '<ul><li><p>[ ] first</p></li><li><p>second</p></li></ul>',
     );
-    editor.commands.setTextSelection(2);
-    typeString(editor, '[X] ');
+
+    let curPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('[ ]') && curPos < 0) {
+        curPos = pos + 5;
+      }
+    });
+
+    if (curPos > 0) {
+      editor.view.dispatch(
+        editor.state.tr.setSelection(TextSelection.create(editor.state.doc, curPos)),
+      );
+    }
+
+    editor.view.dispatch(editor.state.tr.insertText('!', editor.state.selection.from));
+
     expect(hasNodeType(editor, 'taskList')).toBe(true);
-    expect(getTaskItemChecked(editor)).toBe(true);
-  });
+    expect(hasNodeType(editor, 'bulletList')).toBe(false);
+    expect(hasNodeType(editor, 'listItem')).toBe(false);
 
-  it('does NOT convert if bullet list has multiple items', () => {
-    const { editor } = createTaskEditor(
-      '<ul><li><p></p></li><li><p>second</p></li></ul>',
-    );
-    editor.commands.setTextSelection(2);
-    typeString(editor, '[ ] ');
-    expect(hasNodeType(editor, 'bulletList')).toBe(true);
-    expect(hasNodeType(editor, 'taskList')).toBe(false);
-  });
-
-  it('does NOT convert if text does not match [ ] pattern', () => {
-    const { editor } = createTaskEditor(
-      '<ul><li><p></p></li></ul>',
-    );
-    editor.commands.setTextSelection(2);
-    typeString(editor, 'hello ');
-    expect(hasNodeType(editor, 'bulletList')).toBe(true);
-    expect(hasNodeType(editor, 'taskList')).toBe(false);
-  });
-
-  it('does NOT convert inside an ordered list', () => {
-    const { editor } = createTaskEditor(
-      '<ol><li><p></p></li></ol>',
-    );
-    editor.commands.setTextSelection(2);
-    typeString(editor, '[ ] ');
-    expect(hasNodeType(editor, 'orderedList')).toBe(true);
-    expect(hasNodeType(editor, 'taskList')).toBe(false);
+    let taskItemCount = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === 'taskItem') taskItemCount++;
+    });
+    expect(taskItemCount).toBe(2);
   });
 });

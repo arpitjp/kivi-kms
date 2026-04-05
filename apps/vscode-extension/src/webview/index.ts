@@ -1,6 +1,9 @@
-import { createKiviEditor, KiviEditor, searchPluginKey, setExcalidrawCallbacks } from '@kivi/editor-core';
+import { createKiviEditor, KiviEditor, searchPluginKey, setExcalidrawCallbacks, getHostZoom, getBodyZoom, getRectZoomCorrection } from '@kivi/editor-core';
 import { computeKiviFontSize, detectToolbarContext } from '../shared/font.js';
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
+import { createMonacoRawEditor, type MonacoRawEditor, type BlameEntry as MonacoBlameEntry, type DiffMark } from './monaco-raw-editor.js';
 import './styles.css';
+
 
 let katexCssLoaded = false;
 function ensureKatexCss() {
@@ -14,6 +17,10 @@ declare function acquireVsCodeApi(): {
   getState(): unknown;
   setState(state: unknown): void;
 };
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 interface KiviSettings {
   editorBackground: string;
@@ -40,6 +47,7 @@ interface KiviSettings {
 interface VsCodeMessage {
   type: string;
   content?: string;
+  text?: string;
   settings?: KiviSettings;
   id?: number;
   data?: Record<string, unknown> | null;
@@ -59,6 +67,7 @@ const vscode = acquireVsCodeApi();
 
 let editor: KiviEditor | null = null;
 let isUpdatingFromExtension = false;
+let lastRawEditTimestamp = 0;
 let lastSentContent = '';
 let savedBaseLines: string[] = [];
 let pendingBlameCallback: ((entries: Array<{ line: number; author: string; date: string; summary: string; hash: string }>) => void) | null = null;
@@ -78,8 +87,66 @@ let viewMode: 'live' | 'source' | 'split' = 'live';
 let filePath = '';
 let fileName = '';
 let docBaseUrl = '';
+let workspaceBaseUrl = '';
 let currentEditorZoom = 100;
 let currentWordWrap = true;
+let _lastFontSize = 14;
+let _lastFontFamily = '';
+let rawMonaco: MonacoRawEditor | null = null;
+let splitMonaco: MonacoRawEditor | null = null;
+let _rawMonacoContainer: HTMLElement | null = null;
+
+function ensureRawMonaco(): MonacoRawEditor {
+  if (rawMonaco) return rawMonaco;
+  if (!_rawMonacoContainer) throw new Error('Raw Monaco container not initialized');
+  const isDark = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast');
+  rawMonaco = createMonacoRawEditor({
+    container: _rawMonacoContainer,
+    value: '',
+    wordWrap: currentWordWrap,
+    fontSize: _lastFontSize || 14,
+    fontFamily: _lastFontFamily || undefined,
+    onGutterClick: (lineNumber) => handleMonacoGutterClick(rawMonaco!, lineNumber),
+  });
+  rawMonaco.setTheme(isDark);
+
+  rawMonaco.onDidChangeContent((content) => {
+    if (isUpdatingFromExtension) return;
+    vscode.postMessage({ type: 'edit', content });
+    if (viewMode === 'source') detectActiveHeadingMonaco();
+    // Refresh diff marks after edits
+    applyDiffToMonaco();
+  });
+
+  rawMonaco.onDidScrollChange(() => {
+    if (viewMode === 'source') detectActiveHeadingMonaco();
+  });
+
+  // Apply any existing diff/blame decorations
+  applyDiffToMonaco();
+  applyBlameToMonaco();
+
+  return rawMonaco;
+}
+
+function detectActiveHeadingMonaco() {
+  if (!rawMonaco) return;
+  const model = rawMonaco.editor().getModel();
+  if (!model) return;
+  const scrollTop = rawMonaco.getScrollTop();
+  const lineHeight = Number(rawMonaco.editor().getOption(66 /* EditorOption.lineHeight */)) || 20;
+  const visibleLine = Math.max(1, Math.floor(scrollTop / lineHeight) + 1);
+
+  let bestHeading = '';
+  for (let i = visibleLine; i >= 1; i--) {
+    const line = model.getLineContent(i);
+    const m = /^(#{1,6})\s+(.*)/.exec(line);
+    if (m) { bestHeading = m[2].trim(); break; }
+  }
+  if (bestHeading) {
+    vscode.postMessage({ type: 'activeHeading', heading: bestHeading });
+  }
+}
 let linkResolveId = 0;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const pendingLinkResolves = new Map<number, { resolve: (v: any) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -93,7 +160,7 @@ let savedSourceSelStart = 0;
 let savedSourceSelEnd = 0;
 
 // ─── Link input with autocomplete ───
-interface WorkspaceFile { rel: string; name: string; relToDoc: string }
+interface WorkspaceFile { rel: string; name: string; relToDoc: string; fileType?: string; ext?: string }
 let cachedWorkspaceFiles: WorkspaceFile[] = [];
 let linkInputEl: HTMLElement | null = null;
 let linkInputResolve: ((url: string | null) => void) | null = null;
@@ -130,12 +197,14 @@ function showLinkInput(anchorRect: DOMRect, currentUrl?: string): Promise<string
     document.body.appendChild(container);
     linkInputEl = container;
 
-    container.style.left = `${Math.max(8, anchorRect.left)}px`;
-    container.style.top = `${anchorRect.bottom + 4}px`;
+    const bz = getBodyZoom();
+    const editorDom = document.getElementById('editor');
+    const zc = editorDom ? getRectZoomCorrection(editorDom) : 1;
+    let linkLeft = Math.max(8, anchorRect.left * zc);
     const maxRight = window.innerWidth - 8;
-    if (anchorRect.left + 320 > maxRight) {
-      container.style.left = `${maxRight - 320}px`;
-    }
+    if (linkLeft + 320 > maxRight) linkLeft = maxRight - 320;
+    container.style.left = `${linkLeft / bz}px`;
+    container.style.top = `${(anchorRect.bottom * zc + 4) / bz}px`;
 
     requestWorkspaceFiles();
 
@@ -281,14 +350,14 @@ function applySettings(s: KiviSettings) {
     props.push(`--kivi-font-size: ${computedSize}px;`);
   }
 
-  // CSS zoom for editor containers (does not affect toolbar)
+  // CSS zoom for the live editor container only; raw editors use font scaling
+  // because CSS zoom breaks textarea selection/cursor positioning.
   const editorZoomPercent = (s.editorZoom > 0) ? s.editorZoom : 100;
   currentEditorZoom = editorZoomPercent;
   const cssZoom = editorZoomPercent / 100;
-  for (const id of ['editor', 'kivi-raw-wrapper', 'kivi-split-container']) {
-    const el = document.getElementById(id);
-    if (el) (el.style as any).zoom = String(cssZoom);
-  }
+  const editorDiv = document.getElementById('editor');
+  if (editorDiv) (editorDiv.style as any).zoom = String(cssZoom);
+  props.push(`--kivi-raw-zoom: ${cssZoom};`);
 
   // Update toolbar zoom display
   const zoomLabel = document.getElementById('kivi-zoom-label');
@@ -331,13 +400,37 @@ function applySettings(s: KiviSettings) {
     css += `#editor { line-height: var(--kivi-line-height) !important; }\n`;
   }
 
+  // Track font settings for Monaco editors.
+  // The live editor (#editor) gets CSS zoom applied directly on its container,
+  // so its effective visual size = fontSize * cssZoom.
+  // Monaco is NOT under CSS zoom, so we use the raw base font size — no zoom multiplier.
+  // The user can still scale Monaco via the Kivi zoom setting if desired.
+  const monacoFontSize = computedSize ?? s.vscodeEditorFontSize ?? 14;
+  _lastFontSize = Math.round(monacoFontSize);
+  _lastFontFamily = s.fontFamily || s.vscodeEditorFontFamily || '';
+
   // Word wrap — delegated to applyWordWrap for consistency
   applyWordWrap(wordWrapEnabled);
-  const wrapBtn = document.getElementById('kivi-wrap-label');
-  if (wrapBtn) wrapBtn.classList.toggle('active', wordWrapEnabled);
+  syncWordWrapButtons();
 
   overrideStyleEl.textContent = css;
   customCSSStyleEl.textContent = s.customCSS || '';
+
+  // Update Monaco editors if they exist
+  if (rawMonaco) {
+    rawMonaco.setFontSize(_lastFontSize);
+    if (_lastFontFamily) rawMonaco.setFontFamily(_lastFontFamily);
+    rawMonaco.setWordWrap(wordWrapEnabled);
+    const isDark = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast');
+    rawMonaco.setTheme(isDark);
+  }
+  if (splitMonaco) {
+    splitMonaco.setFontSize(_lastFontSize);
+    if (_lastFontFamily) splitMonaco.setFontFamily(_lastFontFamily);
+    splitMonaco.setWordWrap(wordWrapEnabled);
+    const isDark = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast');
+    splitMonaco.setTheme(isDark);
+  }
 
   const toolbar = document.getElementById('kivi-toolbar');
   if (toolbar) {
@@ -352,140 +445,8 @@ function applySettings(s: KiviSettings) {
   }
 }
 
-// ── Markdown syntax highlighting for raw/source mode ──
-
-function highlightMarkdown(text: string): string {
-  const lines = text.split('\n');
-  const result: string[] = [];
-  let inCodeBlock = false;
-  let inFrontmatter = false;
-  const firstLine = lines[0]?.trim();
-  if (firstLine === '---') inFrontmatter = true;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    // Frontmatter
-    if (inFrontmatter) {
-      if (i > 0 && trimmed === '---') {
-        result.push(`<span class="md-frontmatter">${esc(line)}</span>`);
-        inFrontmatter = false;
-        continue;
-      }
-      result.push(`<span class="md-frontmatter">${esc(line)}</span>`);
-      continue;
-    }
-
-    // Code block fences
-    if (trimmed.startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-      result.push(`<span class="md-code-fence">${esc(line)}</span>`);
-      continue;
-    }
-
-    if (inCodeBlock) {
-      result.push(`<span class="md-code-content">${esc(line)}</span>`);
-      continue;
-    }
-
-    // Headings
-    const headingMatch = /^(#{1,6}\s)(.*)$/.exec(line);
-    if (headingMatch) {
-      result.push(`<span class="md-heading-marker">${esc(headingMatch[1])}</span><span class="md-heading">${highlightInline(headingMatch[2])}</span>`);
-      continue;
-    }
-
-    // Horizontal rule
-    if (/^(\s*[-*_]\s*){3,}$/.test(trimmed)) {
-      result.push(`<span class="md-hr">${esc(line)}</span>`);
-      continue;
-    }
-
-    // Blockquote
-    if (/^>\s?/.test(trimmed)) {
-      const qMatch = /^(>\s?)(.*)$/.exec(line);
-      if (qMatch) {
-        result.push(`<span class="md-blockquote-marker">${esc(qMatch[1])}</span><span class="md-blockquote">${highlightInline(qMatch[2])}</span>`);
-        continue;
-      }
-    }
-
-    // List items
-    const ulMatch = /^(\s*)([-*+]\s)(.*)$/.exec(line);
-    if (ulMatch) {
-      result.push(`${esc(ulMatch[1])}<span class="md-list-marker">${esc(ulMatch[2])}</span>${highlightInline(ulMatch[3])}`);
-      continue;
-    }
-    const olMatch = /^(\s*)(\d+\.\s)(.*)$/.exec(line);
-    if (olMatch) {
-      result.push(`${esc(olMatch[1])}<span class="md-list-marker">${esc(olMatch[2])}</span>${highlightInline(olMatch[3])}`);
-      continue;
-    }
-
-    // Task list
-    const taskMatch = /^(\s*[-*+]\s)(\[[ xX]\]\s)(.*)$/.exec(line);
-    if (taskMatch) {
-      result.push(`<span class="md-list-marker">${esc(taskMatch[1])}</span><span class="md-task-marker">${esc(taskMatch[2])}</span>${highlightInline(taskMatch[3])}`);
-      continue;
-    }
-
-    // Normal line with inline highlighting
-    result.push(highlightInline(line));
-  }
-
-  return result.join('\n');
-}
-
-function highlightInline(text: string): string {
-  // Escape first so no raw HTML tags are ever interpreted by the browser,
-  // then colorize markdown tokens inside the already-safe string.
-  const safe = esc(text);
-  return safe.replace(
-    /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(~~[^~]+~~)|(\[\[[^\]]+\]\])|(\[[^\]]*\]\([^)]*\))|(!\[[^\]]*\]\([^)]*\))|(#[a-zA-Z][\w/-]*)|(https?:\/\/\S+)/g,
-    (match, code, bold1, bold2, italic1, italic2, strike, wikiLink, mdLink, image, tag, url) => {
-      if (code) return `<span class="md-inline-code">${match}</span>`;
-      if (bold1 || bold2) return `<span class="md-bold">${match}</span>`;
-      if (italic1 || italic2) return `<span class="md-italic">${match}</span>`;
-      if (strike) return `<span class="md-strike">${match}</span>`;
-      if (wikiLink) return `<span class="md-wiki-link">${match}</span>`;
-      if (mdLink) return `<span class="md-link">${match}</span>`;
-      if (image) return `<span class="md-image">${match}</span>`;
-      if (tag) return `<span class="md-tag">${match}</span>`;
-      if (url) return `<span class="md-url">${match}</span>`;
-      return match;
-    },
-  );
-}
-
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-let _highlightFrame: ReturnType<typeof requestAnimationFrame> | null = null;
-let _pendingHighlights: Set<HTMLTextAreaElement> = new Set();
-
-const HIGHLIGHT_SIZE_LIMIT = 100 * 1024; // skip syntax highlighting above 100KB
-
-function syncHighlight(textarea: HTMLTextAreaElement) {
-  _pendingHighlights.add(textarea);
-  if (!_highlightFrame) {
-    _highlightFrame = requestAnimationFrame(() => {
-      _highlightFrame = null;
-      const pending = _pendingHighlights;
-      _pendingHighlights = new Set();
-      for (const ta of pending) {
-        const backdrop = ta.parentElement?.querySelector('.kivi-raw-backdrop') as HTMLPreElement | null;
-        if (!backdrop) continue;
-        if (ta.value.length > HIGHLIGHT_SIZE_LIMIT) {
-          backdrop.textContent = ta.value + '\n';
-        } else {
-          backdrop.innerHTML = highlightMarkdown(ta.value) + '\n';
-        }
-      }
-    });
-  }
-}
+// (Syntax highlighting and search overlay for old textarea raw editor removed —
+//  Monaco handles this natively.)
 
 // ── Performance tracing ──
 
@@ -520,73 +481,6 @@ function init() {
   // --- Main toolbar ---
   const toolbarEl = document.createElement('div');
   toolbarEl.id = 'kivi-toolbar';
-  const brand = document.createElement('span');
-  brand.className = 'kivi-toolbar-brand';
-  brand.innerHTML = `<svg class="kivi-brand-icon" width="16" height="16" viewBox="63 46 913 901" fill="currentColor"><path d="M618.3,816.5C580.5,830.7,541.8,838.3,501.7,837C452.2,835.5,405.7,822.5,362.1,799.5C304.6,769.2,257.9,726.9,222.7,672.1C205.8,645.7,196.4,616.3,192.6,585.1C186.3,533.4,196,484.1,214.5,436.1C237,377.4,272.1,326.9,317.3,283.5C368,234.9,426.6,199.4,494.7,180.3C527.2,171.1,560.2,166.7,593.9,168.9C651.6,172.8,700.1,195.5,738,240.1C770,277.7,796.4,318.6,813.8,365C825.5,396.2,833,428.2,836.4,461.4C841.7,511.7,836.1,560.7,819.5,608.4C804.3,652,781.1,691.1,750.3,725.5C718.1,761.4,680,789.2,636.2,809.1C630.5,811.7,624.5,813.9,618.3,816.5M716.8,281.7C700.4,249.3,674.2,228,640.6,215.5C604.6,202.1,567.6,201.4,530.3,207.7C486.8,215.1,447.2,232.4,410.1,255.9C366.5,283.5,329.1,318.1,298.2,359.6C261.6,408.8,237.1,463.1,230,524.6C226.7,553.2,228.4,581.4,236.4,609.1C249,651.9,274.4,683.8,315.7,702.1C347.9,716.3,381.7,718.2,416.1,714.3C445.9,710.9,474.4,702.1,501.5,689.5C585.2,650.7,649.5,590.7,695.1,510.8C722.2,463.2,737.5,412.2,735.6,356.8C734.8,330.7,729,305.8,716.8,281.7z"/><path d="M443.2,539.3C417.9,537.2,403.2,521.4,402.6,496.4C402.1,477.3,408.2,460.1,418,444.1C435.6,415.2,459.5,393.5,491.8,382.1C503.4,378.1,515.3,376.5,527.6,378.5C556.3,383.2,565.3,407.9,562.9,428.3C559.1,460.2,542.2,485,519,506.1C503.5,520.3,486,531.4,465.4,536.7C458.2,538.5,451.1,539.7,443.2,539.3z"/><path d="M348.4,612.9C344.4,609.5,344.9,605.2,345.9,601.5C352.1,579.5,365,563.3,387.6,556.5C398.2,553.3,403.8,558.8,401.4,569.6C398.1,584.8,388.5,595.6,376.1,604.1C369.9,608.4,363.5,612.2,356,613.7C353.4,614.2,351.1,614.3,348.4,612.9z"/><path d="M365,473.7C376.2,479.6,377,486.4,368,494.8C354.9,507.1,325.8,510.8,310.2,502.2C302.5,497.9,301.5,492,307.7,485.7C318.5,474.6,345.6,464.7,365,473.7z"/><path d="M641.1,408.6C645.7,409.3,649.7,410.3,653.5,412.1C662,416.2,663.3,423,656.5,429.5C646.1,439.5,633.2,444.1,619.1,445.3C611.8,445.9,604.5,445.3,597.8,441.6C589.6,437,588.2,429.9,594.9,423.3C607.7,410.9,623.3,406.8,641.1,408.6z"/><path d="M465.5,576.8C467.3,572.5,469.1,568.9,472.2,565.9C478,560.1,484.2,560.3,489.1,567C496.6,577.4,498.3,589.3,497,601.6C496,610.1,493.6,618.2,488.7,625.4C482.3,634.8,474.8,634.7,469.2,624.7C460.6,609.4,459.4,593.6,465.5,576.8z"/><path d="M483.1,285.8C488.8,284,492.1,286.9,494.7,290.9C503.3,303.9,505.3,318.2,501.6,333.3C500.2,339,498.1,344.4,494.4,349.1C488.4,356.6,480.3,356.5,475.1,348.4C466.6,335.1,466.1,320.6,470.4,305.7C472.6,298,475.2,290.5,483.1,285.8z"/><path d="M569.2,332.3C579,317.9,591.5,307.6,608.3,303.5C615.8,301.7,620.3,306,618.6,313.5C613.7,335.7,600,350.5,579.3,359.2C577.1,360.1,574.8,360.4,572.4,360.4C565.7,360.3,562.1,356.3,562.8,349.4C563.5,343.3,566,337.8,569.2,332.3z"/><path d="M361.6,374C359.4,364,363.1,359.1,372.5,359.8C387.9,360.9,411,372.3,415.7,394.1C417.9,404.4,413.3,410.8,402.8,410.2C387.2,409.4,375.8,401.2,367.7,388.1C365,383.9,363,379.3,361.6,374z"/><path d="M550.9,525.8C550.4,524.3,550,523.2,549.7,522.1C547,511.9,551.7,505.5,562.2,505C581.7,504,604.6,526.1,604.3,545.5C604.2,551.7,601.7,554.2,595.5,554.4C576.8,555.1,559.2,543.9,550.9,525.8z"/></svg><span class="kivi-brand-text">Kivi</span>`;
-  brand.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const existing = document.querySelector('.kivi-brand-menu');
-    if (existing) { existing.remove(); return; }
-    const menu = document.createElement('div');
-    menu.className = 'kivi-brand-menu';
-
-    const svgI = (d: string) =>
-      `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
-
-    const items: { icon: string; label: string; action: () => void }[] = [
-      {
-        icon: svgI('<circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="8"/><circle cx="8" cy="11" r="0.5" fill="currentColor"/>'),
-        label: 'About Kivi',
-        action: () => vscode.postMessage({ type: 'openExternal', url: 'https://github.com/nicholasgriffintn/kivi' }),
-      },
-      {
-        icon: svgI('<path d="M9 2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6L9 2z"/><polyline points="9,2 9,6 13,6"/>'),
-        label: 'Documentation',
-        action: () => vscode.postMessage({ type: 'openExternal', url: 'https://github.com/nicholasgriffintn/kivi#readme' }),
-      },
-      {
-        icon: svgI('<circle cx="8" cy="8" r="6"/><path d="M6 6.5a2 2 0 1 1 2 2v1"/><circle cx="8" cy="12" r="0.5" fill="currentColor"/>'),
-        label: 'Report Issue',
-        action: () => vscode.postMessage({ type: 'openExternal', url: 'https://github.com/nicholasgriffintn/kivi/issues/new' }),
-      },
-      {
-        icon: svgI('<path d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7z"/><path d="M5.5 6.5a2.5 2.5 0 0 1 5 0c0 1.5-2.5 1.5-2.5 3"/><circle cx="8" cy="12.5" r="0.5" fill="currentColor"/>'),
-        label: 'Keyboard Shortcuts',
-        action: () => vscode.postMessage({ type: 'command', command: 'workbench.action.openGlobalKeybindings', args: ['kivi'] }),
-      },
-    ];
-
-    for (const it of items) {
-      const row = document.createElement('div');
-      row.className = 'kivi-brand-menu-item';
-      row.innerHTML = `${it.icon}<span>${it.label}</span>`;
-      row.addEventListener('click', (ev) => { ev.stopPropagation(); it.action(); menu.remove(); });
-      menu.appendChild(row);
-    }
-
-    const sep = document.createElement('div');
-    sep.className = 'kivi-brand-menu-sep';
-    menu.appendChild(sep);
-
-    const hint = document.createElement('div');
-    hint.className = 'kivi-brand-menu-hint';
-    hint.textContent = 'Kivi — Markdown knowledge base';
-    menu.appendChild(hint);
-
-    brand.appendChild(menu);
-
-    const dismiss = (ev: MouseEvent) => {
-      if (!menu.contains(ev.target as Node) && ev.target !== brand) {
-        menu.remove();
-        document.removeEventListener('click', dismiss, true);
-      }
-    };
-    requestAnimationFrame(() => document.addEventListener('click', dismiss, true));
-  });
-  toolbarEl.appendChild(brand);
-  const brandSep = document.createElement('span');
-  brandSep.className = 'kivi-toolbar-sep';
-  toolbarEl.appendChild(brandSep);
   document.body.insertBefore(toolbarEl, editorEl);
 
   // --- Split container ---
@@ -595,44 +489,23 @@ function init() {
   splitContainer.style.display = 'none';
   editorEl.parentElement!.insertBefore(splitContainer, editorEl.nextSibling);
 
-  // --- Raw source editor (with syntax highlight backdrop + line gutter) ---
+  // --- Raw source editor (Monaco) ---
   const rawWrapper = document.createElement('div');
   rawWrapper.id = 'kivi-raw-wrapper';
   rawWrapper.style.display = 'none';
 
-  const rawGutter = document.createElement('div');
-  rawGutter.id = 'kivi-source-gutter';
-  rawGutter.className = 'kivi-raw-gutter';
-  rawWrapper.appendChild(rawGutter);
-
-  const rawContainer = document.createElement('div');
-  rawContainer.className = 'kivi-raw-container';
-
-  const rawBackdrop = document.createElement('pre');
-  rawBackdrop.className = 'kivi-raw-backdrop';
-  rawContainer.appendChild(rawBackdrop);
-
-  const rawEl = document.createElement('textarea');
-  rawEl.id = 'kivi-raw-editor';
-  rawEl.spellcheck = false;
-  rawContainer.appendChild(rawEl);
-
-  rawWrapper.appendChild(rawContainer);
+  const rawMonacoContainer = document.createElement('div');
+  rawMonacoContainer.id = 'kivi-raw-monaco';
+  rawMonacoContainer.style.cssText = 'width:100%;height:100%;';
+  rawWrapper.appendChild(rawMonacoContainer);
+  _rawMonacoContainer = rawMonacoContainer;
 
   editorEl.parentElement!.insertBefore(rawWrapper, splitContainer.nextSibling);
 
-  let rawScrollFrame: ReturnType<typeof requestAnimationFrame> | null = null;
-  rawEl.addEventListener('scroll', () => {
-    if (!rawScrollFrame) {
-      rawScrollFrame = requestAnimationFrame(() => {
-        rawScrollFrame = null;
-        rawBackdrop.scrollTop = rawEl.scrollTop;
-        rawBackdrop.scrollLeft = rawEl.scrollLeft;
-        rawGutter.scrollTop = rawEl.scrollTop;
-        if (viewMode === 'source') detectActiveHeadingRaw(rawEl);
-      });
-    }
-  }, { passive: true });
+  // Legacy compatibility shims — some code still references rawGutter
+  const rawGutter = document.createElement('div');
+  rawGutter.id = 'kivi-source-gutter';
+  rawGutter.style.display = 'none';
 
   createSearchBar();
 
@@ -678,6 +551,7 @@ function init() {
     console.log(`[kivi-perf] markdown size: ${(initialMarkdown.length / 1024).toFixed(1)}KB`);
   }
 
+  try {
   editor = createKiviEditor({
     element: editorEl,
     autoFocus: !initialMarkdown,
@@ -692,6 +566,53 @@ function init() {
       vscode.postMessage({ type: 'promptCreateChildPage' });
     },
     promptInput: (message, placeholder) => requestInput(message, placeholder),
+    createExcalidrawFile: (name: string) => {
+      return new Promise<string | null>((resolve) => {
+        const reqId = `exc-create-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        vscode.postMessage({ type: 'createExcalidrawFile', name, reqId });
+        const handler = (event: MessageEvent) => {
+          if (event.data?.type === 'excalidrawFileCreated' && event.data?.reqId === reqId) {
+            window.removeEventListener('message', handler);
+            resolve(event.data.relPath || null);
+          }
+        };
+        window.addEventListener('message', handler);
+        setTimeout(() => { window.removeEventListener('message', handler); resolve(null); }, 10000);
+      });
+    },
+    linkSuggest: {
+      getFiles: () => {
+        try {
+          if (cachedWorkspaceFiles.length > 0) {
+            return cachedWorkspaceFiles.map(f => ({
+              rel: f.rel,
+              name: f.name,
+              relToDoc: f.relToDoc,
+              fileType: f.fileType || 'file',
+              ext: f.ext || '',
+            }));
+          }
+          requestWorkspaceFiles();
+          return new Promise<Array<{ rel: string; name: string; relToDoc: string; fileType: string; ext: string }>>((resolve) => {
+            const check = () => {
+              if (cachedWorkspaceFiles.length > 0) {
+                resolve(cachedWorkspaceFiles.map(f => ({
+                  rel: f.rel,
+                  name: f.name,
+                  relToDoc: f.relToDoc,
+                  fileType: f.fileType || 'file',
+                  ext: f.ext || '',
+                })));
+              } else {
+                setTimeout(check, 100);
+              }
+            };
+            setTimeout(check, 100);
+            setTimeout(() => resolve([]), 3000);
+          });
+        } catch { return []; }
+      },
+    },
     tagSuggestion: {
       items: (query: string) => {
         if (!query) return workspaceTags.slice(0, 15);
@@ -732,13 +653,13 @@ function init() {
       },
     },
     imageStorageAdapter: {
-      async store(blob: Blob, filename: string): Promise<string> {
+      async store(blob: Blob, filename: string, originalName?: string): Promise<string> {
         return new Promise((resolve) => {
           const reader = new FileReader();
           reader.onload = () => {
             const dataUrl = reader.result as string;
             const uploadId = `${filename}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            vscode.postMessage({ type: 'storeImage', data: dataUrl, name: filename, uploadId });
+            vscode.postMessage({ type: 'storeImage', data: dataUrl, name: filename, originalName, uploadId });
 
             const handler = (event: MessageEvent) => {
               if (event.data?.type === 'imageStored' && event.data?.name === filename) {
@@ -757,13 +678,13 @@ function init() {
       },
     },
     fileStorageAdapter: {
-      async store(blob: Blob, filename: string): Promise<string> {
+      async store(blob: Blob, filename: string, originalName?: string): Promise<string> {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
             const dataUrl = reader.result as string;
             const storeId = `${filename}-${Date.now()}`;
-            vscode.postMessage({ type: 'storeFile', data: dataUrl, name: filename, storeId });
+            vscode.postMessage({ type: 'storeFile', data: dataUrl, name: filename, originalName, storeId });
 
             const handler = (event: MessageEvent) => {
               if (event.data?.type === 'fileStored' && event.data?.storeId === storeId) {
@@ -783,6 +704,14 @@ function init() {
       },
     },
   });
+  } catch (err) {
+    console.error('[kivi] FATAL: editor creation failed', err);
+    const errEl = document.createElement('pre');
+    errEl.style.cssText = 'color:red;padding:20px;font-size:14px;white-space:pre-wrap;';
+    errEl.textContent = `Kivi editor failed to initialize:\n${err instanceof Error ? err.stack || err.message : String(err)}`;
+    editorEl.appendChild(errEl);
+    return;
+  }
 
   perfLog('editor-created', 'editor-create-start');
 
@@ -810,7 +739,7 @@ function init() {
     hasExcalidrawExtension: () => {
       if (_hasExcalidrawExtension === null) {
         vscode.postMessage({ type: 'checkExcalidrawExtension' });
-        return false; // Assume not available until we hear back
+        return false;
       }
       return _hasExcalidrawExtension;
     },
@@ -821,34 +750,55 @@ function init() {
     vscode.postMessage({ type: 'openExcalidraw', src: e.detail.src });
   }) as EventListener);
 
-  // Load content asynchronously to avoid blocking first paint
+  // Defer markdown render until docBaseUrl is available so that relative
+  // image src attributes are resolved correctly on first paint (avoids
+  // ERR_ACCESS_DENIED from the browser fetching against the webview origin).
+  // The ready → init round-trip is sub-millisecond so the delay is negligible.
   if (initialMarkdown) {
     lastSentContent = initialMarkdown;
     savedBaseLines = initialMarkdown.split('\n');
-    rawEl.value = initialMarkdown;
 
-    // Eagerly load KaTeX CSS only if content has math markers
     if (/\$\$|\\\[|\\begin\{/.test(initialMarkdown)) ensureKatexCss();
 
-    perfMark('async-load-start');
-    editor.loadMarkdownAsync(initialMarkdown).then(() => {
-      perfLog('async-load-done', 'async-load-start');
-      const skeleton = document.getElementById('kivi-skeleton');
-      if (skeleton) skeleton.remove();
-      rewriteRelativeImages();
-      editor!.focus('start');
-      // Restore view mode after content is loaded so split/source has content
-      if (viewMode !== 'live') doSetViewMode(viewMode, false);
-    });
+    const loadInitial = () => {
+      perfMark('async-load-start');
+      editor!.loadMarkdownAsync(initialMarkdown!).then(() => {
+        perfLog('async-load-done', 'async-load-start');
+        const skeleton = document.getElementById('kivi-skeleton');
+        if (skeleton) skeleton.remove();
+        document.body.classList.remove('kivi-loading');
+        rewriteRelativeImages();
+        editor!.focus('start');
+        if (viewMode !== 'live') doSetViewMode(viewMode, false);
+      }).catch((err: unknown) => {
+        console.error('[kivi] loadMarkdownAsync failed:', err);
+        const skeleton = document.getElementById('kivi-skeleton');
+        if (skeleton) skeleton.remove();
+        document.body.classList.remove('kivi-loading');
+      });
+    };
+
+    if (docBaseUrl) {
+      loadInitial();
+    } else {
+      const onInit = (ev: MessageEvent<VsCodeMessage>) => {
+        if (ev.data?.type === 'init') {
+          window.removeEventListener('message', onInit);
+          loadInitial();
+        }
+      };
+      window.addEventListener('message', onInit);
+    }
   } else {
     const skeleton = document.getElementById('kivi-skeleton');
     if (skeleton) skeleton.remove();
+    document.body.classList.remove('kivi-loading');
     if (viewMode !== 'live') doSetViewMode(viewMode, false);
   }
 
   if (searchBarVisible) {
     const bar = document.getElementById('kivi-search-bar');
-    if (bar) bar.style.display = 'flex';
+    if (bar) bar.style.display = '';
   }
 
   // Defer toolbar/UI chrome to after first frame
@@ -878,9 +828,24 @@ function init() {
       return;
     }
 
+    const selectedText = tiptap.state.doc.textBetween(from, to, ' ');
+
+    // Wiki-link: [[target]] or [[target|alias]]
+    const wikiMatch = result.match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/);
+    if (wikiMatch) {
+      const alias = wikiMatch[2] || selectedText || wikiMatch[1];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chain = tiptap.chain().focus().setTextSelection({ from, to }) as any;
+      if (selectedText) {
+        chain.setLink({ href: result }).run();
+      } else {
+        chain.insertContent({ type: 'text', text: alias, marks: [{ type: 'link', attrs: { href: result } }] }).run();
+      }
+      return;
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chain = tiptap.chain().focus().setTextSelection({ from, to }) as any;
-    const selectedText = tiptap.state.doc.textBetween(from, to, ' ');
     if (selectedText) {
       chain.setLink({ href: result }).run();
     } else {
@@ -899,6 +864,11 @@ function init() {
   document.addEventListener('kivi-asset-deleted', (e) => {
     const detail = (e as CustomEvent).detail as { src: string } | undefined;
     if (detail?.src) vscode.postMessage({ type: 'checkOrphanAsset', src: detail.src });
+  });
+
+  document.addEventListener('kivi-copy-asset-path', (e) => {
+    const detail = (e as CustomEvent).detail as { src: string } | undefined;
+    if (detail?.src) vscode.postMessage({ type: 'copyAssetPath', src: detail.src });
   });
 
   // ── Sticky scroll container ──
@@ -934,6 +904,7 @@ function init() {
     const scrollTop = scrollParent.scrollTop;
     const viewportMid = scrollTop + scrollParent.clientHeight * 0.15;
     const parentRect = scrollParent.getBoundingClientRect();
+    const z = getHostZoom(scrollParent);
 
     let bestHeading = '';
     let bestTop = -Infinity;
@@ -944,7 +915,7 @@ function init() {
         const dom = view.nodeDOM(offset) as HTMLElement | null;
         if (!dom) return;
         const rect = dom.getBoundingClientRect();
-        const relTop = rect.top - parentRect.top + scrollTop;
+        const relTop = (rect.top - parentRect.top) / z + scrollTop;
         const level = node.attrs?.level ?? 1;
         const text = node.textContent.trim();
 
@@ -1032,28 +1003,6 @@ function init() {
     }
   }
 
-  function detectActiveHeadingRaw(textarea: HTMLTextAreaElement) {
-    const text = textarea.value;
-    const lines = text.split('\n');
-    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
-    const visibleLine = Math.floor(textarea.scrollTop / lineHeight);
-
-    let bestHeading = '';
-    let inCodeBlock = false;
-    for (let i = 0; i <= Math.min(visibleLine + 2, lines.length - 1); i++) {
-      const line = lines[i];
-      if (line.trimStart().startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
-      if (inCodeBlock) continue;
-      const m = /^#{1,6}\s+(.+)$/.exec(line);
-      if (m) bestHeading = m[1].trim();
-    }
-
-    if (bestHeading && bestHeading !== _lastActiveHeading) {
-      _lastActiveHeading = bestHeading;
-      vscode.postMessage({ type: 'activeHeading', heading: bestHeading });
-    }
-  }
-
   const scrollEl = editorEl.querySelector('.ProseMirror')?.parentElement || editorEl;
   scrollEl.addEventListener('scroll', () => {
     if (_headingScrollFrame) return;
@@ -1063,48 +1012,22 @@ function init() {
     });
   }, { passive: true });
 
-  // Sync raw -> extension host
-  let rawDebounce: ReturnType<typeof setTimeout> | null = null;
-  const hookRawInput = (el: HTMLTextAreaElement) => {
-    el.addEventListener('input', () => {
-      // Highlight + gutter update immediately (already rAF-throttled internally)
-      syncHighlight(el);
-      const sourceGutter = document.getElementById('kivi-source-gutter');
-      if (sourceGutter) updateLineNumbers(el, sourceGutter);
-
-      // Debounce the expensive extension-host sync and split-mode live reload
-      if (rawDebounce) clearTimeout(rawDebounce);
-      rawDebounce = setTimeout(() => {
-        const content = el.value;
-        if (content === lastSentContent) return;
-        lastSentContent = content;
-        vscode.postMessage({ type: 'edit', content });
-        if (viewMode === 'split' && editor) {
-          isUpdatingFromExtension = true;
-          editor.loadMarkdown(content);
-          isUpdatingFromExtension = false;
-        }
-      }, 150);
-    });
-  };
-  hookRawInput(rawEl);
+  // Raw -> extension host sync is now handled by Monaco's onDidChangeContent
+  // in ensureRawMonaco() and the split mode setup in doSetViewMode().
 
   // Debounced edit send from ProseMirror
   editor.onUpdate(({ markdown }) => {
     if (isUpdatingFromExtension) return;
+    // Skip if the raw textarea was the source of this PM change (guard
+    // covers debounce window — loadMarkdown fires synchronous onUpdate via
+    // suppressUpdates, but post-setContent DOM observation or plugin
+    // transactions can trigger this callback asynchronously).
+    if (Date.now() - lastRawEditTimestamp < 600) return;
     if (markdown === lastSentContent) return;
     lastSentContent = markdown;
     vscode.postMessage({ type: 'edit', content: markdown });
-    if (viewMode === 'split') {
-      const splitRaw = document.getElementById('kivi-split-raw') as HTMLTextAreaElement | null;
-      if (splitRaw) {
-        const scrollTop = splitRaw.scrollTop;
-        splitRaw.value = markdown;
-        splitRaw.scrollTop = scrollTop;
-        const gutter = document.getElementById('kivi-split-gutter');
-        if (gutter) updateLineNumbers(splitRaw, gutter);
-        syncHighlight(splitRaw);
-      }
+    if (viewMode === 'split' && splitMonaco && splitMonaco.getValue() !== markdown) {
+      splitMonaco.setValue(markdown, true);
     }
     saveState();
   });
@@ -1121,6 +1044,11 @@ function init() {
         if (msg.fileName) fileName = msg.fileName;
         if (msg.docBaseUrl) {
           docBaseUrl = msg.docBaseUrl;
+        }
+        if (msg.workspaceBaseUrl) {
+          workspaceBaseUrl = msg.workspaceBaseUrl;
+        }
+        if (msg.docBaseUrl || msg.workspaceBaseUrl) {
           rewriteRelativeImages();
           requestAnimationFrame(() => rewriteRelativeImages());
         }
@@ -1161,29 +1089,12 @@ function init() {
               });
             }
           }
-          for (const id of ['kivi-raw-editor', 'kivi-split-raw']) {
-            const raw = document.getElementById(id) as HTMLTextAreaElement | null;
-            if (!raw) continue;
-            if (viewMode === 'source' || viewMode === 'split') {
-              const scrollTop = raw.scrollTop;
-              const selStart = raw.selectionStart;
-              const selEnd = raw.selectionEnd;
-              raw.value = msg.content;
-              raw.scrollTop = scrollTop;
-              raw.setSelectionRange(selStart, selEnd);
-            } else {
-              raw.value = msg.content;
-            }
+          // Update Monaco editors with new content
+          if (rawMonaco && rawMonaco.getValue() !== msg.content) {
+            rawMonaco.setValue(msg.content, true);
           }
-          const splitGutter = document.getElementById('kivi-split-gutter');
-          const splitRawEl = document.getElementById('kivi-split-raw') as HTMLTextAreaElement | null;
-          if (splitGutter && splitRawEl) updateLineNumbers(splitRawEl, splitGutter);
-          const sourceGutter = document.getElementById('kivi-source-gutter');
-          const sourceRawEl = document.getElementById('kivi-raw-editor') as HTMLTextAreaElement | null;
-          if (sourceGutter && sourceRawEl) updateLineNumbers(sourceRawEl, sourceGutter);
-          for (const rid of ['kivi-raw-editor', 'kivi-split-raw']) {
-            const rel = document.getElementById(rid) as HTMLTextAreaElement | null;
-            if (rel) syncHighlight(rel);
+          if (splitMonaco && splitMonaco.getValue() !== msg.content) {
+            splitMonaco.setValue(msg.content, true);
           }
           isUpdatingFromExtension = false;
           rewriteRelativeImages();
@@ -1199,6 +1110,7 @@ function init() {
         if (msg.content !== undefined) {
           savedBaseLines = msg.content.split('\n');
           refreshAllGutters();
+          applyDiffToMonaco();
         }
         break;
 
@@ -1218,6 +1130,7 @@ function init() {
           blameByLine = new Map();
           for (const e of entries) blameByLine.set(e.line, e);
           refreshAllGutters();
+          applyBlameToMonaco();
         }
         break;
       }
@@ -1258,8 +1171,16 @@ function init() {
       }
 
       case 'flushEdits': {
-        // Force flush any pending debounced edit
-        if (editor) {
+        if (viewMode === 'source' || viewMode === 'split') {
+          const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
+          if (monacoInst) {
+            const content = monacoInst.getValue();
+            if (content !== lastSentContent) {
+              lastSentContent = content;
+              vscode.postMessage({ type: 'edit', content });
+            }
+          }
+        } else if (editor) {
           const md = editor.getMarkdown();
           if (md !== lastSentContent) {
             lastSentContent = md;
@@ -1292,27 +1213,54 @@ function init() {
           const { doc } = tiptapEd.state;
           let foundOffset = -1;
           const target = String(msg.heading || '').trim().toLowerCase();
+          const targetLine = typeof msg.line === 'number' ? msg.line : -1;
 
+          // First pass: try to match both heading text AND approximate position
+          // (handles duplicate headings by preferring the one at the right line)
+          let bestOffset = -1;
+          let bestDist = Infinity;
+          let headingIdx = 0;
           doc.forEach((node, offset) => {
-            if (foundOffset >= 0) return;
             if (node.type.name === 'heading') {
+              headingIdx++;
               const nodeText = node.textContent.trim().toLowerCase();
               if (nodeText === target) {
-                foundOffset = offset;
+                if (foundOffset < 0) foundOffset = offset;
+                // Use heading index as proxy for line distance
+                const dist = targetLine >= 0 ? Math.abs(headingIdx - targetLine) : 0;
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  bestOffset = offset;
+                }
               }
             }
           });
 
-          if (foundOffset >= 0) {
-            tiptapEd.commands.setTextSelection(foundOffset + 1);
-            tiptapEd.commands.scrollIntoView();
-            requestAnimationFrame(() => {
-              const domNode = tiptapEd.view.nodeDOM(foundOffset) as HTMLElement | null;
-              if (domNode) {
-                domNode.classList.add('kivi-heading-highlight');
-                setTimeout(() => domNode.classList.remove('kivi-heading-highlight'), 2000);
+          const scrollOffset = bestOffset >= 0 ? bestOffset : foundOffset;
+          if (scrollOffset >= 0) {
+            tiptapEd.commands.setTextSelection(scrollOffset + 1);
+
+            // Double-rAF ensures layout is computed after selection/unfold change
+            requestAnimationFrame(() => { requestAnimationFrame(() => {
+              const domNode = tiptapEd.view.nodeDOM(scrollOffset) as HTMLElement | null;
+              if (!domNode) return;
+
+              const livePane = document.getElementById('kivi-live') || domNode.closest('.ProseMirror')?.parentElement;
+              if (livePane) {
+                const paneRect = livePane.getBoundingClientRect();
+                const headingRect = domNode.getBoundingClientRect();
+                const pz = getHostZoom(livePane as HTMLElement);
+                const scrollTarget = livePane.scrollTop + (headingRect.top - paneRect.top) / pz - 16;
+                livePane.scrollTo({ top: Math.max(0, scrollTarget), behavior: 'smooth' });
+              } else {
+                domNode.scrollIntoView({ block: 'start', behavior: 'smooth' });
               }
-            });
+
+              domNode.classList.remove('kivi-heading-highlight');
+              void domNode.offsetWidth;
+              domNode.classList.add('kivi-heading-highlight');
+              setTimeout(() => domNode.classList.remove('kivi-heading-highlight'), 2500);
+            }); });
           }
         }
         break;
@@ -1397,14 +1345,24 @@ function init() {
         }
         break;
       }
+
     }
   });
 
   // ── Keyboard shortcuts ──
 
   document.addEventListener('keydown', (e) => {
-    // Cmd+F: search
+    // Cmd+F: search — use Monaco's built-in find in raw/split modes
     if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      if (viewMode === 'source' && rawMonaco) {
+        e.preventDefault();
+        rawMonaco.openFind();
+        return;
+      } else if (viewMode === 'split' && splitMonaco) {
+        e.preventDefault();
+        splitMonaco.openFind();
+        return;
+      }
       e.preventDefault();
       toggleSearchBar();
     }
@@ -1412,6 +1370,21 @@ function init() {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'e') {
       vscode.postMessage({ type: 'revealInExplorer' });
     }
+    // Cmd+K: insert / edit link
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      insertLinkAtCursor();
+    }
+  });
+
+  // Recalculate gutter heights when window resizes (word-wrap changes)
+  let _resizeGutterTimer: ReturnType<typeof setTimeout> | null = null;
+  window.addEventListener('resize', () => {
+    if (_resizeGutterTimer) clearTimeout(_resizeGutterTimer);
+    _resizeGutterTimer = setTimeout(() => {
+      _resizeGutterTimer = null;
+      refreshAllGutters();
+    }, 120);
   });
 
   // Save state before unload
@@ -1429,59 +1402,100 @@ function init() {
 
 function isRelativeUrl(url: string): boolean {
   if (!url) return false;
-  if (/^(https?|data|vscode-webview|vscode-resource):/.test(url)) return false;
-  if (url.startsWith('//')) return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  // Absolute schemes (case-insensitive) and protocol-relative URLs
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return false;
+  if (trimmed.startsWith('//')) return false;
   return true;
 }
 
+let _rewritingSrc = false;
+const _failedSrcs = new Set<string>();
+const _rewrittenEls = new WeakSet<HTMLElement>();
+
+function resolveMediaUrl(src: string): string | null {
+  if (!src || !isRelativeUrl(src)) return null;
+  if (src.startsWith('/') && workspaceBaseUrl) {
+    return workspaceBaseUrl + src.slice(1);
+  }
+  if (!docBaseUrl) return null;
+  return docBaseUrl + src.replace(/^\.\//, '');
+}
+
 function rewriteRelativeImages() {
-  if (!docBaseUrl) return;
+  if (!docBaseUrl && !workspaceBaseUrl) return;
   const editorEl = document.getElementById('editor');
   if (!editorEl) return;
-  for (const img of editorEl.querySelectorAll<HTMLImageElement>('img')) {
-    const src = img.getAttribute('src') || '';
-    if (isRelativeUrl(src)) {
-      const resolved = docBaseUrl + src.replace(/^\.\//, '');
-      if (img.src !== resolved) {
-        img.src = resolved;
+  _rewritingSrc = true;
+  try {
+    for (const el of editorEl.querySelectorAll<HTMLElement>('img, video, audio')) {
+      const src = el.getAttribute('src') || '';
+      const resolved = resolveMediaUrl(src);
+      if (resolved && !_failedSrcs.has(resolved) && (el as HTMLMediaElement).src !== resolved) {
+        (el as HTMLMediaElement).src = resolved;
+        _rewrittenEls.add(el);
+        if (el instanceof HTMLImageElement) {
+          el.addEventListener('error', () => { _failedSrcs.add(resolved); }, { once: true });
+        }
       }
     }
+  } finally {
+    _rewritingSrc = false;
   }
 }
 
-// Watch for dynamically added/updated images (ProseMirror re-renders nodes)
 let _imgRewriteFrame: ReturnType<typeof requestAnimationFrame> | null = null;
+
+function rewriteMediaSrc(el: HTMLElement) {
+  if (!docBaseUrl && !workspaceBaseUrl) return;
+  if (_rewrittenEls.has(el)) return;
+  const src = el.getAttribute('src') || '';
+  const resolved = resolveMediaUrl(src);
+  if (resolved && !_failedSrcs.has(resolved) && (el as HTMLMediaElement).src !== resolved) {
+    _rewritingSrc = true;
+    (el as HTMLMediaElement).src = resolved;
+    _rewrittenEls.add(el);
+    if (el instanceof HTMLImageElement) {
+      el.addEventListener('error', () => { _failedSrcs.add(resolved); }, { once: true });
+    }
+    _rewritingSrc = false;
+  }
+}
+
 const _imgObserver = new MutationObserver((mutations) => {
-  if (!docBaseUrl) return;
+  if (_rewritingSrc) return;
+  if (!docBaseUrl && !workspaceBaseUrl) return;
 
   let needsRewrite = false;
   for (const m of mutations) {
-    // Attribute change on an img element
-    if (m.type === 'attributes' && m.target instanceof HTMLImageElement) {
-      const src = m.target.getAttribute('src') || '';
-      if (isRelativeUrl(src)) {
-        const resolved = docBaseUrl + src.replace(/^\.\//, '');
-        if (m.target.src !== resolved) {
-          m.target.src = resolved;
-        }
+    if (m.type === 'attributes') {
+      if (_rewritingSrc) continue;
+      if (
+        m.target instanceof HTMLImageElement ||
+        m.target instanceof HTMLVideoElement ||
+        m.target instanceof HTMLAudioElement
+      ) {
+        _rewrittenEls.delete(m.target as HTMLElement);
+        rewriteMediaSrc(m.target as HTMLElement);
       }
       continue;
     }
-    // New nodes added
     for (const node of m.addedNodes) {
       if (!(node instanceof HTMLElement)) continue;
-      const imgs = node.tagName === 'IMG' ? [node as HTMLImageElement] : node.querySelectorAll<HTMLImageElement>('img');
-      for (const img of imgs) {
-        const src = img.getAttribute('src') || '';
-        if (isRelativeUrl(src)) {
-          img.src = docBaseUrl + src.replace(/^\.\//, '');
+      if (node.tagName === 'IMG' || node.tagName === 'VIDEO' || node.tagName === 'AUDIO') {
+        rewriteMediaSrc(node);
+        needsRewrite = true;
+      } else if (node.querySelector) {
+        const media = node.querySelectorAll<HTMLElement>('img, video, audio');
+        if (media.length > 0) {
+          for (const el of media) rewriteMediaSrc(el);
+          needsRewrite = true;
         }
       }
-      if (imgs.length > 0) needsRewrite = true;
     }
   }
 
-  // ProseMirror may batch DOM updates; schedule a full sweep after paint
   if (needsRewrite && !_imgRewriteFrame) {
     _imgRewriteFrame = requestAnimationFrame(() => {
       _imgRewriteFrame = null;
@@ -1505,12 +1519,7 @@ requestAnimationFrame(() => {
 // ── Breadcrumb ──
 
 function updateBreadcrumb() {
-  const brand = document.querySelector('.kivi-toolbar-brand');
-  if (brand) {
-    const textEl = brand.querySelector('.kivi-brand-text');
-    if (textEl) textEl.textContent = 'Kivi';
-    (brand as HTMLElement).title = filePath || 'Kivi';
-  }
+  // Brand icon removed; breadcrumb is now a no-op
 }
 
 // ─── View mode / zoom / wrap helpers ───
@@ -1524,13 +1533,14 @@ function saveCurrentPosition() {
     }
   }
   if (viewMode === 'source' || viewMode === 'split') {
-    const raw = (viewMode === 'split')
-      ? document.getElementById('kivi-split-raw') as HTMLTextAreaElement | null
-      : document.getElementById('kivi-raw-editor') as HTMLTextAreaElement | null;
-    if (raw) {
-      savedSourceScrollTop = raw.scrollTop;
-      savedSourceSelStart = raw.selectionStart;
-      savedSourceSelEnd = raw.selectionEnd;
+    const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
+    if (monacoInst) {
+      savedSourceScrollTop = monacoInst.getScrollTop();
+      const pos = monacoInst.getPosition();
+      if (pos) {
+        savedSourceSelStart = pos.lineNumber;
+        savedSourceSelEnd = pos.column;
+      }
     }
   }
 }
@@ -1550,13 +1560,11 @@ function restorePosition(target: 'live' | 'source' | 'both') {
     }
   }
   if (target === 'source' || target === 'both') {
-    const raw = (viewMode === 'split')
-      ? document.getElementById('kivi-split-raw') as HTMLTextAreaElement | null
-      : document.getElementById('kivi-raw-editor') as HTMLTextAreaElement | null;
-    if (raw) {
+    const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
+    if (monacoInst) {
       requestAnimationFrame(() => {
-        raw.scrollTop = savedSourceScrollTop;
-        raw.setSelectionRange(savedSourceSelStart, savedSourceSelEnd);
+        monacoInst.setScrollTop(savedSourceScrollTop);
+        monacoInst.setPosition(savedSourceSelStart, savedSourceSelEnd);
       });
     }
   }
@@ -1572,75 +1580,12 @@ function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
 
 let scrollSyncCleanup: (() => void) | null = null;
 
-function setupScrollSync(splitRaw: HTMLTextAreaElement) {
-  if (scrollSyncCleanup) { scrollSyncCleanup(); scrollSyncCleanup = null; }
-
-  const tiptapEd = editor?.getTiptapEditor();
-  if (!tiptapEd) return;
-
-  const editorEl = document.getElementById('editor');
-  if (!editorEl) return;
-
-  const scrollEl = editorEl;
-  let syncSource: 'live' | 'raw' | null = null;
-  let syncTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function clearSyncLock() {
-    if (syncTimer) clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => { syncSource = null; }, 50);
-  }
-
-  // Vertical-only ratio sync: maps percentage of scroll range.
-  // Horizontal scroll is independent since the two panes render
-  // completely different content widths (monospace raw vs rich HTML).
-  const syncLiveToRaw = () => {
-    if (syncSource === 'raw') return;
-    syncSource = 'live';
-    const maxY = scrollEl.scrollHeight - scrollEl.clientHeight;
-    const ratioY = maxY > 0 ? scrollEl.scrollTop / maxY : 0;
-    splitRaw.scrollTop = ratioY * (splitRaw.scrollHeight - splitRaw.clientHeight);
-    clearSyncLock();
-  };
-
-  const syncRawToLive = () => {
-    if (syncSource === 'live') return;
-    syncSource = 'raw';
-    const maxRawY = splitRaw.scrollHeight - splitRaw.clientHeight;
-    const ratioY = maxRawY > 0 ? splitRaw.scrollTop / maxRawY : 0;
-    scrollEl.scrollTop = ratioY * (scrollEl.scrollHeight - scrollEl.clientHeight);
-    clearSyncLock();
-  };
-
-  editorEl.addEventListener('scroll', syncLiveToRaw, { passive: true });
-
-  const splitLeft = editorEl.closest('.kivi-split-left');
-  if (splitLeft && splitLeft !== editorEl) {
-    splitLeft.addEventListener('scroll', syncLiveToRaw, { passive: true });
-  }
-
-  const pmEl = editorEl.querySelector('.ProseMirror');
-  if (pmEl) {
-    pmEl.addEventListener('scroll', syncLiveToRaw, { passive: true });
-  }
-
-  splitRaw.addEventListener('scroll', syncRawToLive, { passive: true });
-
-  scrollSyncCleanup = () => {
-    editorEl.removeEventListener('scroll', syncLiveToRaw);
-    if (splitLeft) splitLeft.removeEventListener('scroll', syncLiveToRaw);
-    if (pmEl) pmEl.removeEventListener('scroll', syncLiveToRaw);
-    splitRaw.removeEventListener('scroll', syncRawToLive);
-    if (syncTimer) clearTimeout(syncTimer);
-  };
-}
-
 function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
   saveCurrentPosition();
 
   viewMode = mode;
   if (persist) vscode.postMessage({ type: 'persistSetting', key: 'viewMode', value: mode });
   const editorEl = document.getElementById('editor');
-  const rawEl = document.getElementById('kivi-raw-editor') as HTMLTextAreaElement | null;
   const rawWrapper = document.getElementById('kivi-raw-wrapper');
   const splitContainer = document.getElementById('kivi-split-container');
 
@@ -1657,26 +1602,30 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
   }
 
   if (scrollSyncCleanup) { scrollSyncCleanup(); scrollSyncCleanup = null; }
+  // Dispose split Monaco if it exists
+  if (splitMonaco) { splitMonaco.dispose(); splitMonaco = null; }
   splitContainer.innerHTML = '';
 
   if (mode === 'source') {
-    if (editor && rawEl) {
-      rawEl.value = editor.getMarkdown();
-      syncHighlight(rawEl);
+    const rm = ensureRawMonaco();
+    if (editor) {
+      rm.setValue(editor.getMarkdown());
     }
     editorEl.style.display = 'none';
     rawWrapper.style.display = 'flex';
     splitContainer.style.display = 'none';
-    const sourceGutter = document.getElementById('kivi-source-gutter');
-    if (rawEl && sourceGutter) updateLineNumbers(rawEl, sourceGutter);
+    requestAnimationFrame(() => rm.layout());
     restorePosition('source');
-    rawEl?.focus();
+    rm.focus();
   } else if (mode === 'split') {
     // Sync raw editor content to live editor if coming from source mode
     const comingFromSource = rawWrapper.style.display !== 'none';
-    if (comingFromSource && editor && rawEl?.value) {
-      editor.loadMarkdown(rawEl.value);
-      lastSentContent = rawEl.value;
+    if (comingFromSource && rawMonaco) {
+      const content = rawMonaco.getValue();
+      if (editor && content) {
+        editor.loadMarkdown(content);
+        lastSentContent = content;
+      }
     }
 
     rawWrapper.style.display = 'none';
@@ -1693,37 +1642,94 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
     const rightPane = document.createElement('div');
     rightPane.className = 'kivi-split-pane kivi-split-right';
 
-    const lineNumberGutter = document.createElement('div');
-    lineNumberGutter.id = 'kivi-split-gutter';
-    lineNumberGutter.className = 'kivi-raw-gutter';
-    rightPane.appendChild(lineNumberGutter);
-
-    const splitRawContainer = document.createElement('div');
-    splitRawContainer.className = 'kivi-raw-container';
-
-    const splitBackdrop = document.createElement('pre');
-    splitBackdrop.className = 'kivi-raw-backdrop';
-    splitRawContainer.appendChild(splitBackdrop);
-
-    const splitRaw = document.createElement('textarea');
-    splitRaw.id = 'kivi-split-raw';
-    splitRaw.className = 'kivi-split-raw-editor';
-    splitRaw.spellcheck = false;
-    if (editor) {
-      splitRaw.value = editor.getMarkdown();
-    }
-    splitRawContainer.appendChild(splitRaw);
-    rightPane.appendChild(splitRawContainer);
-
-    splitBackdrop.innerHTML = highlightMarkdown(splitRaw.value) + '\n';
+    const splitMonacoContainer = document.createElement('div');
+    splitMonacoContainer.id = 'kivi-split-monaco';
+    splitMonacoContainer.style.cssText = 'width:100%;height:100%;';
+    rightPane.appendChild(splitMonacoContainer);
 
     splitContainer.appendChild(leftPane);
     splitContainer.appendChild(divider);
     splitContainer.appendChild(rightPane);
 
-    updateLineNumbers(splitRaw, lineNumberGutter);
-    setupScrollSync(splitRaw);
+    // Create split Monaco editor
+    const isDark = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast');
+    splitMonaco = createMonacoRawEditor({
+      container: splitMonacoContainer,
+      value: editor ? editor.getMarkdown() : '',
+      wordWrap: currentWordWrap,
+      fontSize: _lastFontSize || 14,
+      fontFamily: _lastFontFamily || undefined,
+      onGutterClick: (lineNumber) => handleMonacoGutterClick(splitMonaco!, lineNumber),
+    });
+    splitMonaco.setTheme(isDark);
 
+    let splitDebounce: ReturnType<typeof setTimeout> | null = null;
+    splitMonaco.onDidChangeContent((content) => {
+      if (isUpdatingFromExtension) return;
+      if (splitDebounce) clearTimeout(splitDebounce);
+      splitDebounce = setTimeout(() => {
+        if (content === lastSentContent) return;
+        lastSentContent = content;
+        lastRawEditTimestamp = Date.now();
+        isUpdatingFromExtension = true;
+        editor?.loadMarkdown(content);
+        isUpdatingFromExtension = false;
+        vscode.postMessage({ type: 'edit', content });
+      }, 150);
+    });
+
+    // Apply diff/blame decorations
+    applyDiffToMonaco();
+    applyBlameToMonaco();
+
+    // ── Scroll sync: vertical ratio-based, live ↔ split Monaco ──
+    {
+      const scrollEl = editorEl;
+      let syncSource: 'live' | 'raw' | null = null;
+      let syncTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearLock = () => {
+        if (syncTimer) clearTimeout(syncTimer);
+        syncTimer = setTimeout(() => { syncSource = null; }, 50);
+      };
+
+      const syncLiveToRaw = () => {
+        if (syncSource === 'raw' || !splitMonaco) return;
+        syncSource = 'live';
+        const maxY = scrollEl.scrollHeight - scrollEl.clientHeight;
+        const ratio = maxY > 0 ? scrollEl.scrollTop / maxY : 0;
+        const rawMaxY = splitMonaco.getScrollHeight() - splitMonaco.getClientHeight();
+        splitMonaco.setScrollTop(ratio * rawMaxY);
+        clearLock();
+      };
+
+      const syncRawToLive = () => {
+        if (syncSource === 'live' || !splitMonaco) return;
+        syncSource = 'raw';
+        const rawMaxY = splitMonaco.getScrollHeight() - splitMonaco.getClientHeight();
+        const ratio = rawMaxY > 0 ? splitMonaco.getScrollTop() / rawMaxY : 0;
+        scrollEl.scrollTop = ratio * (scrollEl.scrollHeight - scrollEl.clientHeight);
+        clearLock();
+      };
+
+      editorEl.addEventListener('scroll', syncLiveToRaw, { passive: true });
+      const splitLeft = editorEl.closest('.kivi-split-left');
+      if (splitLeft && splitLeft !== editorEl) {
+        splitLeft.addEventListener('scroll', syncLiveToRaw, { passive: true });
+      }
+      const pmEl = editorEl.querySelector('.ProseMirror');
+      if (pmEl) pmEl.addEventListener('scroll', syncLiveToRaw, { passive: true });
+
+      splitMonaco.onDidScrollChange(() => syncRawToLive());
+
+      scrollSyncCleanup = () => {
+        editorEl.removeEventListener('scroll', syncLiveToRaw);
+        if (splitLeft) splitLeft.removeEventListener('scroll', syncLiveToRaw);
+        if (pmEl) pmEl.removeEventListener('scroll', syncLiveToRaw);
+        if (syncTimer) clearTimeout(syncTimer);
+      };
+    }
+
+    // Divider drag resize
     let isDragging = false;
     const onDragMove = (e: MouseEvent) => {
       if (!isDragging) return;
@@ -1731,6 +1737,7 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
       const ratio = Math.max(0.2, Math.min(0.8, (e.clientX - rect.left) / rect.width));
       leftPane.style.flex = `${ratio}`;
       rightPane.style.flex = `${1 - ratio}`;
+      splitMonaco?.layout();
     };
     const onDragEnd = () => {
       if (isDragging) { isDragging = false; document.body.classList.remove('kivi-dragging'); }
@@ -1743,57 +1750,18 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
       document.addEventListener('mouseup', onDragEnd);
     });
 
-    let splitDebounce: ReturnType<typeof setTimeout> | null = null;
-    splitRaw.addEventListener('input', () => {
-      // Highlight + gutter immediately (visual responsiveness)
-      updateLineNumbers(splitRaw, lineNumberGutter);
-      syncHighlight(splitRaw);
-
-      // Debounce expensive sync
-      if (splitDebounce) clearTimeout(splitDebounce);
-      splitDebounce = setTimeout(() => {
-        const content = splitRaw.value;
-        if (content === lastSentContent) return;
-        lastSentContent = content;
-        isUpdatingFromExtension = true;
-        editor?.loadMarkdown(content);
-        isUpdatingFromExtension = false;
-        vscode.postMessage({ type: 'edit', content });
-      }, 150);
-    });
-
-    let splitRawScrollFrame: ReturnType<typeof requestAnimationFrame> | null = null;
-    splitRaw.addEventListener('scroll', () => {
-      if (!splitRawScrollFrame) {
-        splitRawScrollFrame = requestAnimationFrame(() => {
-          splitRawScrollFrame = null;
-          lineNumberGutter.scrollTop = splitRaw.scrollTop;
-          splitBackdrop.scrollTop = splitRaw.scrollTop;
-          splitBackdrop.scrollLeft = splitRaw.scrollLeft;
-        });
-      }
-    }, { passive: true });
-
-    splitRaw.addEventListener('keydown', (e) => {
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        const start = splitRaw.selectionStart;
-        const end = splitRaw.selectionEnd;
-        splitRaw.value = splitRaw.value.substring(0, start) + '  ' + splitRaw.value.substring(end);
-        splitRaw.selectionStart = splitRaw.selectionEnd = start + 2;
-        splitRaw.dispatchEvent(new Event('input'));
-      }
-    });
-
+    requestAnimationFrame(() => splitMonaco?.layout());
     restorePosition('both');
     editor?.focus();
   } else {
-    // Only reload from raw editor if coming from source mode (not split).
-    // In split mode the live editor was the left pane and is already current.
+    // Switching to live mode — sync content from raw if coming from source
     const comingFromSource = rawWrapper.style.display !== 'none';
-    if (comingFromSource && rawEl?.value && rawEl.value !== lastSentContent) {
-      editor?.loadMarkdown(rawEl.value);
-      lastSentContent = rawEl.value;
+    if (comingFromSource && rawMonaco) {
+      const content = rawMonaco.getValue();
+      if (editor && content && content !== lastSentContent) {
+        editor.loadMarkdown(content);
+        lastSentContent = content;
+      }
     }
     rawWrapper.style.display = 'none';
     editorEl.style.display = '';
@@ -1956,13 +1924,77 @@ function computeGutterInfo(baseLines: string[], currentLines: string[]): GutterI
   return { marks, hunks };
 }
 
+/**
+ * Build a mapping from current-buffer line index to the corresponding
+ * base (on-disk) line index using diff hunks.  Returns -1 for lines
+ * that are purely added (no base counterpart).
+ */
+function buildCurrentToBaseMap(hunks: DiffHunk[], currentLineCount: number): Int32Array {
+  const map = new Int32Array(currentLineCount);
+  let curIdx = 0;
+  let baseIdx = 0;
+
+  for (const h of hunks) {
+    // Unchanged lines before this hunk
+    while (curIdx < h.newStart && curIdx < currentLineCount) {
+      map[curIdx] = baseIdx;
+      curIdx++;
+      baseIdx++;
+    }
+    const deletedCount = h.oldEnd - h.oldStart;
+    const insertedCount = h.newEnd - h.newStart;
+    const modCount = Math.min(deletedCount, insertedCount);
+
+    // Modified lines map 1-to-1 to their base counterparts
+    for (let i = 0; i < modCount && curIdx < currentLineCount; i++) {
+      map[curIdx] = baseIdx;
+      curIdx++;
+      baseIdx++;
+    }
+    // Extra inserted lines have no base counterpart
+    for (let i = modCount; i < insertedCount && curIdx < currentLineCount; i++) {
+      map[curIdx] = -1;
+      curIdx++;
+    }
+    // Skip deleted base lines (not present in current buffer)
+    baseIdx += Math.max(0, deletedCount - modCount);
+  }
+
+  // Remaining unchanged lines after the last hunk
+  while (curIdx < currentLineCount) {
+    map[curIdx] = baseIdx;
+    curIdx++;
+    baseIdx++;
+  }
+  return map;
+}
+
+function applyDiffToMonaco() {
+  if (!savedBaseLines.length) return;
+  const applyToEditor = (monacoInst: MonacoRawEditor | null) => {
+    if (!monacoInst) return;
+    const currentLines = monacoInst.getValue().split('\n');
+    const info = computeGutterInfo(savedBaseLines, currentLines);
+    const marks: DiffMark[] = [];
+
+    let i = 0;
+    while (i < info.marks.length) {
+      const m = info.marks[i];
+      if (m === 'u') { i++; continue; }
+      const start = i;
+      while (i < info.marks.length && info.marks[i] === m) i++;
+      const type = m === 'a' ? 'added' : m === 'm' ? 'modified' : 'deleted';
+      marks.push({ type, startLine: start + 1, endLine: i });
+    }
+    monacoInst.setDiffMarks(marks);
+  };
+  applyToEditor(rawMonaco);
+  applyToEditor(splitMonaco);
+}
+
 function refreshAllGutters() {
-  const sourceGutter = document.getElementById('kivi-source-gutter');
-  const sourceRaw = document.getElementById('kivi-raw-editor') as HTMLTextAreaElement | null;
-  if (sourceGutter && sourceRaw) updateLineNumbers(sourceRaw, sourceGutter);
-  const splitGutter = document.getElementById('kivi-split-gutter');
-  const splitRaw = document.getElementById('kivi-split-raw') as HTMLTextAreaElement | null;
-  if (splitGutter && splitRaw) updateLineNumbers(splitRaw, splitGutter);
+  // Legacy — old textarea gutter refresh. Now a no-op.
+  // Diff/blame decorations are handled by applyDiffToMonaco/applyBlameToMonaco.
 }
 
 let _gutterUpdateFrame: ReturnType<typeof requestAnimationFrame> | null = null;
@@ -2007,6 +2039,41 @@ function toggleBlame() {
   document.querySelectorAll('.kivi-raw-gutter').forEach(g => {
     g.classList.toggle('blame-active', blameEnabled);
   });
+  applyBlameToMonaco();
+}
+
+function applyBlameToMonaco() {
+  if (!blameEnabled) {
+    rawMonaco?.clearBlame();
+    splitMonaco?.clearBlame();
+    return;
+  }
+  if (blameEntries.length === 0) return;
+
+  const applyToEditor = (monacoInst: MonacoRawEditor | null) => {
+    if (!monacoInst) return;
+    const currentLines = monacoInst.getValue().split('\n');
+    const info = computeGutterInfo(savedBaseLines, currentLines);
+    const curToBase = buildCurrentToBaseMap(info.hunks, currentLines.length);
+
+    const entries: MonacoBlameEntry[] = [];
+    for (let i = 0; i < currentLines.length; i++) {
+      const baseLine = curToBase[i];
+      const blameInfo = baseLine >= 0 ? blameByLine.get(baseLine) : null;
+      if (blameInfo) {
+        entries.push({
+          hash: blameInfo.hash,
+          author: blameInfo.author,
+          authorTime: blameInfo.authorTime,
+          summary: blameInfo.summary,
+          currentLine: i,
+        });
+      }
+    }
+    monacoInst.setBlameInfo(entries);
+  };
+  applyToEditor(rawMonaco);
+  applyToEditor(splitMonaco);
 }
 
 function closeBlamePopup() {
@@ -2118,8 +2185,9 @@ function showBlameDetailPopup(entry: BlameEntry, anchor: HTMLElement, wrapper: H
   wrapper.style.position = 'relative';
   const anchorRect = anchor.getBoundingClientRect();
   const wrapperRect = wrapper.getBoundingClientRect();
-  popup.style.top = `${anchorRect.bottom - wrapperRect.top + wrapper.scrollTop + 2}px`;
-  popup.style.left = `${Math.max(0, anchorRect.left - wrapperRect.left)}px`;
+  const bz = getHostZoom(wrapper);
+  popup.style.top = `${(anchorRect.bottom - wrapperRect.top) / bz + wrapper.scrollTop + 2}px`;
+  popup.style.left = `${Math.max(0, (anchorRect.left - wrapperRect.left) / bz + wrapper.scrollLeft)}px`;
   wrapper.appendChild(popup);
 
   const escHandler = (e: KeyboardEvent) => {
@@ -2136,10 +2204,94 @@ function showBlameDetailPopup(entry: BlameEntry, anchor: HTMLElement, wrapper: H
   setTimeout(() => document.addEventListener('click', clickHandler), 0);
 }
 
+/**
+ * Measure the rendered height of each logical line in the textarea,
+ * accounting for word-wrap.  Uses a hidden mirror div that replicates
+ * the textarea's text layout and inserts zero-width markers at each
+ * newline boundary to read their offsetTop deltas.
+ */
+const _lineHeightCache = new WeakMap<HTMLTextAreaElement, { text: string; width: number; heights: number[] }>();
+
+function measureLineHeights(textarea: HTMLTextAreaElement, lineCount: number): number[] {
+  const style = getComputedStyle(textarea);
+  const baseLineH = parseFloat(style.lineHeight) || 20;
+
+  if (style.whiteSpace === 'pre' || style.overflowWrap === 'normal') {
+    return new Array(lineCount).fill(baseLineH);
+  }
+
+  const text = textarea.value;
+  const width = textarea.clientWidth;
+  const cached = _lineHeightCache.get(textarea);
+  if (cached && cached.text === text && cached.width === width) {
+    return cached.heights;
+  }
+
+  let mirror = textarea.parentElement?.querySelector('.kivi-gutter-mirror') as HTMLDivElement | null;
+  if (!mirror) {
+    mirror = document.createElement('div');
+    mirror.className = 'kivi-gutter-mirror';
+    mirror.setAttribute('aria-hidden', 'true');
+    textarea.parentElement?.appendChild(mirror);
+  }
+
+  mirror.style.cssText = `
+    position: absolute; top: -9999px; left: -9999px;
+    visibility: hidden; pointer-events: none;
+    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;
+  `;
+  mirror.style.fontFamily = style.fontFamily;
+  mirror.style.fontSize = style.fontSize;
+  mirror.style.lineHeight = style.lineHeight;
+  mirror.style.letterSpacing = style.letterSpacing;
+  mirror.style.tabSize = style.tabSize;
+  mirror.style.width = `${width}px`;
+  mirror.style.paddingLeft = style.paddingLeft;
+  mirror.style.paddingRight = style.paddingRight;
+  mirror.style.boxSizing = 'border-box';
+
+  // Build content: one <br>-terminated div per logical line for
+  // reliable height measurement (block elements have stable offsetTop)
+  mirror.innerHTML = '';
+  const wrappers: HTMLDivElement[] = [];
+  let pos = 0;
+
+  for (let i = 0; i < lineCount; i++) {
+    const nlIdx = text.indexOf('\n', pos);
+    const end = nlIdx === -1 ? text.length : nlIdx;
+    const lineText = text.slice(pos, end);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;';
+    if (lineText) {
+      row.textContent = lineText;
+    } else {
+      row.innerHTML = '\u200b';
+    }
+    mirror.appendChild(row);
+    wrappers.push(row);
+
+    pos = nlIdx === -1 ? text.length : nlIdx + 1;
+  }
+
+  const heights: number[] = [];
+  for (let i = 0; i < lineCount; i++) {
+    const h = wrappers[i].offsetHeight;
+    heights.push(Math.max(baseLineH, h));
+  }
+
+  // Collapse mirror to zero height when done
+  mirror.style.cssText = 'position:absolute;top:0;left:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;';
+  _lineHeightCache.set(textarea, { text, width, heights });
+  return heights;
+}
+
 function _updateLineNumbersImmediate(textarea: HTMLTextAreaElement, gutter: HTMLElement) {
   const currentLines = textarea.value.split('\n');
   const lineCount = currentLines.length;
   const info = computeGutterInfo(savedBaseLines, currentLines);
+  const curToBase = blameEnabled ? buildCurrentToBaseMap(info.hunks, lineCount) : null;
+  const lineHeights = measureLineHeights(textarea, lineCount);
   const existingChildren = gutter.children;
   const existingCount = existingChildren.length;
 
@@ -2154,6 +2306,7 @@ function _updateLineNumbersImmediate(textarea: HTMLTextAreaElement, gutter: HTML
       gutter.appendChild(div);
     }
     div.className = 'gutter-line';
+    div.style.height = `${lineHeights[i]}px`;
 
     const mark = info.marks[i];
     if (mark === 'a') div.classList.add('gutter-added');
@@ -2180,8 +2333,10 @@ function _updateLineNumbersImmediate(textarea: HTMLTextAreaElement, gutter: HTML
     div.onclick = isChanged ? () => showDiffPopup(textarea, gutter, i, info) : null;
 
     if (blameEnabled) {
-      const blameInfo = blameByLine.get(i);
-      const prevBlame = i > 0 ? blameByLine.get(i - 1) : null;
+      const baseLine = curToBase ? curToBase[i] : i;
+      const prevBaseLine = i > 0 && curToBase ? curToBase[i - 1] : (i > 0 ? i - 1 : -1);
+      const blameInfo = baseLine >= 0 ? blameByLine.get(baseLine) : null;
+      const prevBlame = prevBaseLine >= 0 ? blameByLine.get(prevBaseLine) : null;
       const isSameCommit = prevBlame && blameInfo && prevBlame.hash === blameInfo.hash;
 
       let lineNum = div.querySelector('.gutter-linenum') as HTMLElement | null;
@@ -2324,16 +2479,33 @@ function showDiffPopup(textarea: HTMLTextAreaElement, gutterEl: HTMLElement, lin
   const spacer = document.createElement('span');
   spacer.className = 'kivi-diff-spacer';
 
+  // Revert (discard) — VS Code "discard-clean" icon
   const revertBtn = document.createElement('button');
   revertBtn.title = 'Revert Change';
-  revertBtn.className = 'kivi-diff-action-btn';
-  revertBtn.innerHTML = codiconSvg('<path d="M12.75 8a4.5 4.5 0 0 1-8.61 1.834l-1.391.565A6.001 6.001 0 0 0 14.25 8 6 6 0 0 0 3.5 4.334V2.5H2v4h4v-1.5H3.92A4.5 4.5 0 0 1 12.75 8z"/>');
+  revertBtn.className = 'kivi-diff-action-btn kivi-diff-action-revert';
+  revertBtn.innerHTML = codiconSvg('<path d="M3.5 2v3.5H7v1H2.5V2h1zm9.08 5.33a4.5 4.5 0 0 0-8.33-.96l-.89-.45a5.5 5.5 0 0 1 10.2 1.2l.6-.56.69.72-2.02 1.88-1.88-2.02.69-.72.94.89zM8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0z"/>');
   revertBtn.addEventListener('click', () => {
     const lines = textarea.value.split('\n');
     const baseChunk = savedBaseLines.slice(baseStart, baseEnd);
     lines.splice(hunk.newStart, hunk.newEnd - hunk.newStart, ...baseChunk);
     textarea.value = lines.join('\n');
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    closeDiffPopup();
+  });
+
+  // Stage — VS Code "add" / plus icon
+  const stageBtn = document.createElement('button');
+  stageBtn.title = 'Stage Change';
+  stageBtn.className = 'kivi-diff-action-btn kivi-diff-action-stage';
+  stageBtn.innerHTML = codiconSvg('<path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/>');
+  stageBtn.addEventListener('click', () => {
+    vscode.postMessage({
+      type: 'stageChange',
+      newStart: hunk.newStart,
+      newEnd: hunk.newEnd,
+      oldStart: baseStart,
+      oldEnd: baseEnd,
+    });
     closeDiffPopup();
   });
 
@@ -2373,10 +2545,11 @@ function showDiffPopup(textarea: HTMLTextAreaElement, gutterEl: HTMLElement, lin
   closeBtn.addEventListener('click', closeDiffPopup);
 
   addDelayedTooltip(revertBtn);
+  addDelayedTooltip(stageBtn);
   addDelayedTooltip(prevBtn);
   addDelayedTooltip(nextBtn);
   addDelayedTooltip(closeBtn);
-  toolbar.append(label, changeCount, spacer, revertBtn, prevBtn, nextBtn, closeBtn);
+  toolbar.append(label, changeCount, spacer, stageBtn, revertBtn, prevBtn, nextBtn, closeBtn);
   popup.appendChild(toolbar);
 
   const content = document.createElement('div');
@@ -2483,7 +2656,8 @@ function showDiffPopup(textarea: HTMLTextAreaElement, gutterEl: HTMLElement, lin
     if (lineEl) {
       const wrapperRect = (wrapper as HTMLElement).getBoundingClientRect();
       const lineRect = lineEl.getBoundingClientRect();
-      popup.style.top = `${lineRect.bottom - wrapperRect.top + (wrapper as HTMLElement).scrollTop}px`;
+      const dz = getHostZoom(wrapper as HTMLElement);
+      popup.style.top = `${(lineRect.bottom - wrapperRect.top) / dz + (wrapper as HTMLElement).scrollTop}px`;
     }
     (wrapper as HTMLElement).appendChild(popup);
   }
@@ -2494,6 +2668,216 @@ function showDiffPopup(textarea: HTMLTextAreaElement, gutterEl: HTMLElement, lin
       closeDiffPopup();
       document.removeEventListener('keydown', escHandler);
     }
+  };
+  document.addEventListener('keydown', escHandler);
+}
+
+function handleMonacoGutterClick(monacoInst: MonacoRawEditor, lineNumber: number) {
+  if (!savedBaseLines.length) return;
+  const currentLines = monacoInst.getValue().split('\n');
+  const info = computeGutterInfo(savedBaseLines, currentLines);
+  const lineIndex = lineNumber - 1;
+  const hunkIdx = findHunkForLine(info.hunks, lineIndex);
+  if (hunkIdx < 0) return;
+
+  showMonacoDiffPopup(monacoInst, lineIndex, info, hunkIdx);
+}
+
+function showMonacoDiffPopup(monacoInst: MonacoRawEditor, lineIndex: number, info: GutterInfo, hunkIdx: number) {
+  closeDiffPopup();
+
+  const ed = monacoInst.editor();
+  const currentLines = monacoInst.getValue().split('\n');
+  const hunk = info.hunks[hunkIdx];
+  const baseStart = hunk.oldStart;
+  const baseEnd = hunk.oldEnd;
+
+  const popup = document.createElement('div');
+  popup.className = 'kivi-diff-popup';
+  activeDiffPopup = popup;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'kivi-diff-toolbar';
+
+  const svgIcon = (d: string, w = 16) =>
+    `<svg width="${w}" height="${w}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const codiconSvg = (d: string) =>
+    `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">${d}</svg>`;
+
+  const removedCount = baseEnd - baseStart;
+  const addedCount = hunk.newEnd - hunk.newStart;
+  const changeSummary = removedCount > 0 && addedCount > 0
+    ? `−${removedCount} +${addedCount}`
+    : removedCount > 0 ? `−${removedCount}` : `+${addedCount}`;
+
+  const label = document.createElement('span');
+  label.className = 'kivi-diff-label';
+  label.textContent = `Change ${hunkIdx + 1}/${info.hunks.length}`;
+
+  const changeCount = document.createElement('span');
+  changeCount.className = 'kivi-diff-change-count';
+  changeCount.textContent = changeSummary;
+
+  const spacer = document.createElement('span');
+  spacer.className = 'kivi-diff-spacer';
+
+  const revertBtn = document.createElement('button');
+  revertBtn.title = 'Revert Change';
+  revertBtn.className = 'kivi-diff-action-btn kivi-diff-action-revert';
+  revertBtn.innerHTML = codiconSvg('<path d="M3.5 2v3.5H7v1H2.5V2h1zm9.08 5.33a4.5 4.5 0 0 0-8.33-.96l-.89-.45a5.5 5.5 0 0 1 10.2 1.2l.6-.56.69.72-2.02 1.88-1.88-2.02.69-.72.94.89zM8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0z"/>');
+  revertBtn.addEventListener('click', () => {
+    const lines = monacoInst.getValue().split('\n');
+    const baseChunk = savedBaseLines.slice(baseStart, baseEnd);
+    lines.splice(hunk.newStart, hunk.newEnd - hunk.newStart, ...baseChunk);
+    monacoInst.setValue(lines.join('\n'));
+    closeDiffPopup();
+  });
+
+  const stageBtn = document.createElement('button');
+  stageBtn.title = 'Stage Change';
+  stageBtn.className = 'kivi-diff-action-btn kivi-diff-action-stage';
+  stageBtn.innerHTML = codiconSvg('<path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/>');
+  stageBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'stageChange', newStart: hunk.newStart, newEnd: hunk.newEnd, oldStart: baseStart, oldEnd: baseEnd });
+    closeDiffPopup();
+  });
+
+  const prevBtn = document.createElement('button');
+  prevBtn.title = 'Previous Change';
+  prevBtn.innerHTML = svgIcon('<polyline points="12,10 8,6 4,10"/>');
+  prevBtn.disabled = hunkIdx === 0;
+  prevBtn.addEventListener('click', () => {
+    if (hunkIdx > 0) {
+      const newInfo = computeGutterInfo(savedBaseLines, monacoInst.getValue().split('\n'));
+      if (hunkIdx - 1 < newInfo.hunks.length) {
+        const target = newInfo.hunks[hunkIdx - 1];
+        const targetLine = target.newEnd > target.newStart ? target.newStart : Math.max(0, target.newStart - 1);
+        monacoInst.revealLine(targetLine + 1);
+        showMonacoDiffPopup(monacoInst, targetLine, newInfo, hunkIdx - 1);
+      }
+    }
+  });
+
+  const nextBtn = document.createElement('button');
+  nextBtn.title = 'Next Change';
+  nextBtn.innerHTML = svgIcon('<polyline points="4,6 8,10 12,6"/>');
+  nextBtn.disabled = hunkIdx >= info.hunks.length - 1;
+  nextBtn.addEventListener('click', () => {
+    if (hunkIdx < info.hunks.length - 1) {
+      const newInfo = computeGutterInfo(savedBaseLines, monacoInst.getValue().split('\n'));
+      if (hunkIdx + 1 < newInfo.hunks.length) {
+        const target = newInfo.hunks[hunkIdx + 1];
+        const targetLine = target.newEnd > target.newStart ? target.newStart : Math.max(0, target.newStart - 1);
+        monacoInst.revealLine(targetLine + 1);
+        showMonacoDiffPopup(monacoInst, targetLine, newInfo, hunkIdx + 1);
+      }
+    }
+  });
+
+  const closeBtn = document.createElement('button');
+  closeBtn.title = 'Close (Escape)';
+  closeBtn.innerHTML = svgIcon('<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>');
+  closeBtn.addEventListener('click', closeDiffPopup);
+
+  addDelayedTooltip(revertBtn);
+  addDelayedTooltip(stageBtn);
+  addDelayedTooltip(prevBtn);
+  addDelayedTooltip(nextBtn);
+  addDelayedTooltip(closeBtn);
+  toolbar.append(label, changeCount, spacer, stageBtn, revertBtn, prevBtn, nextBtn, closeBtn);
+  popup.appendChild(toolbar);
+
+  const content = document.createElement('div');
+  content.className = 'kivi-diff-content';
+
+  const removedLines = savedBaseLines.slice(baseStart, baseEnd);
+  const addedLines = currentLines.slice(hunk.newStart, hunk.newEnd);
+
+  function makeDiffLine(text: string, type: 'context' | 'removed' | 'added', oldNum?: number, newNum?: number): HTMLElement {
+    const row = document.createElement('div');
+    row.className = `kivi-diff-line kivi-diff-line-${type}`;
+    const oldGutter = document.createElement('span');
+    oldGutter.className = 'kivi-diff-line-gutter';
+    oldGutter.textContent = oldNum != null ? String(oldNum + 1) : '';
+    const newGutter = document.createElement('span');
+    newGutter.className = 'kivi-diff-line-gutter';
+    newGutter.textContent = newNum != null ? String(newNum + 1) : '';
+    const sign = document.createElement('span');
+    sign.className = 'kivi-diff-line-sign';
+    sign.textContent = type === 'removed' ? '−' : type === 'added' ? '+' : ' ';
+    const txt = document.createElement('span');
+    txt.className = 'kivi-diff-line-text';
+    txt.textContent = text || ' ';
+    row.append(oldGutter, newGutter, sign, txt);
+    return row;
+  }
+
+  const ctxBeforeStart = Math.max(0, baseStart - 3);
+  for (let i = ctxBeforeStart; i < baseStart; i++) {
+    const newLineForCtx = hunk.newStart - (baseStart - i);
+    content.appendChild(makeDiffLine(savedBaseLines[i], 'context', i, newLineForCtx >= 0 ? newLineForCtx : undefined));
+  }
+  for (let i = 0; i < removedLines.length; i++) {
+    content.appendChild(makeDiffLine(removedLines[i], 'removed', baseStart + i, undefined));
+  }
+  for (let i = 0; i < addedLines.length; i++) {
+    content.appendChild(makeDiffLine(addedLines[i], 'added', undefined, hunk.newStart + i));
+  }
+  for (let i = baseEnd; i < Math.min(savedBaseLines.length, baseEnd + 3); i++) {
+    const newLineForCtx = hunk.newEnd + (i - baseEnd);
+    content.appendChild(makeDiffLine(savedBaseLines[i], 'context', i, newLineForCtx < currentLines.length ? newLineForCtx : undefined));
+  }
+  popup.appendChild(content);
+
+  const blameBar = document.createElement('div');
+  blameBar.className = 'kivi-diff-blame';
+  blameBar.textContent = 'Loading blame info…';
+  popup.appendChild(blameBar);
+
+  pendingBlameCallback = (entries) => {
+    if (!activeDiffPopup || activeDiffPopup !== popup) return;
+    blameBar.textContent = '';
+    if (entries.length === 0) { blameBar.textContent = 'Uncommitted change'; return; }
+    const byHash = new Map<string, { author: string; date: string; summary: string; hash: string }>();
+    for (const e of entries) { if (!byHash.has(e.hash)) byHash.set(e.hash, e); }
+    for (const e of byHash.values()) {
+      const row = document.createElement('div');
+      row.className = 'kivi-diff-blame-entry';
+      const avatar = document.createElement('span');
+      avatar.className = 'kivi-diff-blame-avatar';
+      avatar.textContent = e.author.charAt(0).toUpperCase();
+      const bInfo = document.createElement('span');
+      bInfo.className = 'kivi-diff-blame-info';
+      bInfo.innerHTML = `<strong>${esc(e.author)}</strong> <span class="kivi-diff-blame-date">${esc(e.date)}</span>`;
+      const msg = document.createElement('span');
+      msg.className = 'kivi-diff-blame-msg';
+      msg.textContent = `${e.hash} — ${e.summary}`;
+      row.append(avatar, bInfo, msg);
+      blameBar.appendChild(row);
+    }
+  };
+
+  vscode.postMessage({ type: 'requestBlame', lineStart: baseStart, lineEnd: Math.max(baseStart, baseEnd - 1) });
+
+  // Position: use Monaco's getTopForLineNumber for pixel-accurate placement
+  const container = ed.getDomNode()?.closest('#kivi-raw-wrapper, .kivi-split-right') as HTMLElement | null;
+  if (container) {
+    container.style.position = 'relative';
+    const topForLine = ed.getTopForLineNumber(lineIndex + 1);
+    const scrollTop = ed.getScrollTop();
+    const editorDom = ed.getDomNode();
+    const editorRect = editorDom?.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const editorOffset = editorRect ? editorRect.top - containerRect.top : 0;
+    const lineHeight = ed.getOption(monaco.editor.EditorOption.lineHeight);
+    popup.style.top = `${editorOffset + (topForLine - scrollTop) + lineHeight}px`;
+    container.appendChild(popup);
+  } else {
+    document.body.appendChild(popup);
+  }
+
+  const escHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { closeDiffPopup(); document.removeEventListener('keydown', escHandler); }
   };
   document.addEventListener('keydown', escHandler);
 }
@@ -2596,7 +2980,7 @@ function initToolbar(el: HTMLElement) {
       btn.dataset.actionId = action.id;
       btn.title = action.title || '';
       if (action.svg) btn.innerHTML = action.svg;
-      btn.addEventListener('click', (e) => { e.preventDefault(); action.cmd?.(undefined, btn); });
+      btn.addEventListener('click', (e) => { e.preventDefault(); action.cmd?.(undefined, btn); update(); });
       addDelayedTooltip(btn);
       formatGroup.appendChild(btn);
     }
@@ -2604,6 +2988,9 @@ function initToolbar(el: HTMLElement) {
 
   let currentContext: 'text' | 'image' = 'text';
   renderActions(textActions);
+
+  // IDs of formatting buttons that don't work inside code blocks
+  const INLINE_FORMAT_IDS = new Set(['bold', 'italic', 'strike', 'code', 'subscript', 'superscript', 'highlight', 'link']);
 
   const update = () => {
     const { from } = tiptap.state.selection;
@@ -2617,12 +3004,17 @@ function initToolbar(el: HTMLElement) {
     }
 
     if (currentContext === 'text') {
+      const inCodeBlock = tiptap.isActive('codeBlock');
       const buttons = formatGroup.querySelectorAll<HTMLButtonElement>('.kivi-toolbar-btn');
       let i = 0;
       for (const action of textActions) {
         if (action.id === 'sep') continue;
         const btn = buttons[i++];
-        if (btn && action.active) btn.classList.toggle('active', action.active());
+        if (!btn) continue;
+        if (action.active) btn.classList.toggle('active', action.active());
+        const disabled = inCodeBlock && INLINE_FORMAT_IDS.has(action.id);
+        btn.classList.toggle('kivi-btn-disabled', disabled);
+        btn.setAttribute('aria-disabled', String(disabled));
       }
     }
   };
@@ -2666,16 +3058,28 @@ function initToolbar(el: HTMLElement) {
   el.appendChild(hideBtn);
 }
 
-// ─── Floating mini-bar ───
+// ─── Floating bar ───
 
-function initFloatingBar() {
-  const bar = document.createElement('div');
-  bar.id = 'kivi-floating-bar';
-  bar.style.display = 'none';
+type FloatItemDef = { id: string; label: string; build: (parent: HTMLElement) => void };
 
-  appendViewModeGroup(bar);
-  appendSep(bar);
-  appendGraphButton(bar);
+const FLOAT_ITEM_DEFS: FloatItemDef[] = [
+  { id: 'viewmode', label: 'View Mode (L/S/R)', build: (p) => appendViewModeGroup(p) },
+  { id: 'wordwrap', label: 'Word Wrap', build: (p) => appendWordWrapToggle(p) },
+  { id: 'graph', label: 'Graph', build: (p) => appendGraphButton(p) },
+];
+
+function buildFloatingBar(bar: HTMLElement) {
+  bar.innerHTML = '';
+
+  for (let i = 0; i < FLOAT_ITEM_DEFS.length; i++) {
+    const def = FLOAT_ITEM_DEFS[i];
+    const wrapper = document.createElement('span');
+    wrapper.className = 'kivi-float-item';
+    def.build(wrapper);
+    bar.appendChild(wrapper);
+    if (i < FLOAT_ITEM_DEFS.length - 1) appendSep(bar);
+  }
+
   appendSep(bar);
 
   const showBtn = document.createElement('button');
@@ -2685,8 +3089,16 @@ function initFloatingBar() {
   showBtn.addEventListener('click', () => setToolbarVisible(true));
   addDelayedTooltip(showBtn);
   bar.appendChild(showBtn);
+}
 
+function initFloatingBar() {
+  const bar = document.createElement('div');
+  bar.id = 'kivi-floating-bar';
+  const toolbar = document.getElementById('kivi-toolbar');
+  const toolbarHidden = toolbar && toolbar.style.display === 'none';
+  bar.style.display = toolbarHidden ? 'flex' : 'none';
   document.body.appendChild(bar);
+  buildFloatingBar(bar);
 }
 
 // ─── Context Menu ───
@@ -2715,11 +3127,6 @@ function initContextMenu() {
     { label: 'Insert Horizontal Rule', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.setHorizontalRule().run(); } },
     { label: 'Toggle Blockquote', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.toggleBlockquote().run(); } },
     { label: 'Toggle Code Block', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.toggleCodeBlock().run(); } },
-    { divider: true, label: '' },
-    { label: 'Fold Section', shortcut: '⌘⇧[', action: () => { (editor?.getTiptapEditor() as any)?.commands?.foldAtCursor?.(); } },
-    { label: 'Unfold Section', shortcut: '⌘⇧]', action: () => { (editor?.getTiptapEditor() as any)?.commands?.unfoldAtCursor?.(); } },
-    { label: 'Fold All', action: () => { (editor?.getTiptapEditor() as any)?.commands?.foldAll?.(); } },
-    { label: 'Unfold All', action: () => { (editor?.getTiptapEditor() as any)?.commands?.unfoldAll?.(); } },
     { divider: true, label: '' },
     { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
     { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
@@ -2869,6 +3276,7 @@ function initContextMenu() {
         renderMenu(textItems);
       }
     } else {
+      const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
       const rawItems: MenuItem[] = [
         { label: 'Cut', shortcut: '⌘X', action: () => document.execCommand('cut') },
         { label: 'Copy', shortcut: '⌘C', action: () => document.execCommand('copy') },
@@ -2878,7 +3286,7 @@ function initContextMenu() {
         { divider: true, label: '' },
         { label: blameEnabled ? 'Hide Git Blame' : 'Show Git Blame', action: () => toggleBlame() },
         { divider: true, label: '' },
-        { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+        { label: 'Find in File', shortcut: '⌘F', action: () => monacoInst ? monacoInst.openFind() : toggleSearchBar() },
         { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
       ];
       renderMenu(rawItems);
@@ -2890,10 +3298,11 @@ function initContextMenu() {
     menu.style.visibility = 'hidden';
 
     const rect = menu.getBoundingClientRect();
+    const cbz = getBodyZoom();
     const x = Math.min(e.clientX, window.innerWidth - rect.width - 4);
     const y = Math.min(e.clientY, window.innerHeight - rect.height - 4);
-    menu.style.left = `${Math.max(0, x)}px`;
-    menu.style.top = `${Math.max(0, y)}px`;
+    menu.style.left = `${Math.max(0, x) / cbz}px`;
+    menu.style.top = `${Math.max(0, y) / cbz}px`;
     menu.style.visibility = '';
   });
 
@@ -2930,20 +3339,33 @@ function setImageAttr(tiptap: any, pos: number, key: string, value: unknown) {
   tiptap.view.dispatch(tr);
 }
 
+
 async function insertLinkAtCursor(anchorRect?: DOMRect) {
   const tiptap = editor?.getTiptapEditor();
   if (!tiptap) return;
   const { from, to } = tiptap.state.selection;
   const selectedText = tiptap.state.doc.textBetween(from, to, ' ');
 
+  // Detect if cursor is inside an existing link
+  const $from = tiptap.state.doc.resolve(from);
+  const linkMark = $from.marks().find(m => m.type.name === 'link');
+  const existingHref = linkMark?.attrs.href as string | undefined;
+
   if (!anchorRect) {
     const coords = tiptap.view.coordsAtPos(from);
     anchorRect = new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top);
   }
 
-  const result = await showLinkInput(anchorRect);
+  const result = await showLinkInput(anchorRect, existingHref || undefined);
   if (!result) {
     tiptap.chain().focus().setTextSelection({ from, to }).run();
+    return;
+  }
+
+  // If editing an existing link, extend the mark range and update href
+  if (existingHref) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (tiptap.chain().focus().extendMarkRange('link').setLink({ href: result }) as any).run();
     return;
   }
 
@@ -3006,11 +3428,31 @@ function addDelayedTooltip(btn: HTMLElement) {
     tooltipTimer = setTimeout(() => {
       const tip = ensureTooltipEl();
       tip.textContent = text;
-      const rect = btn.getBoundingClientRect();
-      tip.style.left = `${rect.left + rect.width / 2}px`;
-      tip.style.top = `${rect.bottom + 6}px`;
-      tip.style.transform = 'translateX(-50%)';
+      tip.style.left = '0';
+      tip.style.top = '0';
+      tip.style.transform = 'none';
       tip.classList.add('visible');
+
+      const rect = btn.getBoundingClientRect();
+      const tw = tip.offsetWidth;
+      const th = tip.offsetHeight;
+      const pad = 4;
+      const gap = 6;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const tbz = getBodyZoom();
+
+      let left = rect.left + rect.width / 2 - tw / 2;
+      left = Math.max(pad, Math.min(left, vw - tw - pad));
+
+      let top = rect.bottom + gap;
+      if (top + th > vh - pad) {
+        top = rect.top - th - gap;
+      }
+      top = Math.max(pad, top);
+
+      tip.style.left = `${left / tbz}px`;
+      tip.style.top = `${top / tbz}px`;
     }, TOOLTIP_DELAY);
   });
 
@@ -3023,17 +3465,23 @@ function addDelayedTooltip(btn: HTMLElement) {
 
 // ─── Shared control builders ───
 
+function syncWordWrapButtons() {
+  document.querySelectorAll<HTMLButtonElement>('.kivi-wrap-toggle').forEach(b => {
+    b.classList.toggle('active', currentWordWrap);
+  });
+}
+
 function appendWordWrapToggle(parent: HTMLElement) {
   const wrapIcon = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="4" x2="14" y2="4"/><path d="M2 8h9.5a2.5 2.5 0 0 1 0 5H10"/><polyline points="11,11.5 10,13 9,11.5"/><line x1="2" y1="12" x2="6" y2="12"/></svg>';
   const btn = document.createElement('button');
-  btn.className = 'kivi-toolbar-btn';
-  btn.id = 'kivi-wrap-label';
+  btn.className = 'kivi-toolbar-btn kivi-wrap-toggle';
+  btn.id = '';
   btn.title = 'Toggle Word Wrap';
   btn.innerHTML = wrapIcon;
   if (currentWordWrap) btn.classList.add('active');
   btn.addEventListener('click', () => {
     currentWordWrap = !currentWordWrap;
-    btn.classList.toggle('active', currentWordWrap);
+    syncWordWrapButtons();
     applyWordWrap(currentWordWrap);
     vscode.postMessage({ type: 'updateKiviSetting', key: 'appearance.wordWrap', value: currentWordWrap ? 'on' : 'off' });
   });
@@ -3053,17 +3501,9 @@ function applyWordWrap(enabled: boolean) {
     splitLeft.style.overflowX = enabled ? 'hidden' : 'auto';
   }
 
-  for (const id of ['kivi-raw-editor', 'kivi-split-raw']) {
-    const el = document.getElementById(id) as HTMLTextAreaElement | null;
-    if (el) {
-      el.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
-      el.style.overflowX = enabled ? 'hidden' : 'auto';
-    }
-  }
-
-  for (const bd of document.querySelectorAll<HTMLPreElement>('.kivi-raw-backdrop')) {
-    bd.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
-  }
+  // Update Monaco editors
+  if (rawMonaco) rawMonaco.setWordWrap(enabled);
+  if (splitMonaco) splitMonaco.setWordWrap(enabled);
 
   const wrapStyleEl = document.getElementById('kivi-wrap-style') || (() => {
     const el = document.createElement('style');
@@ -3159,10 +3599,9 @@ function changeEditorZoom(delta: number, absolute?: number) {
   currentEditorZoom = newZoom;
 
   const cssZoom = newZoom / 100;
-  for (const id of ['editor', 'kivi-raw-wrapper', 'kivi-split-container']) {
-    const el = document.getElementById(id);
-    if (el) (el.style as any).zoom = String(cssZoom);
-  }
+  const editorDiv = document.getElementById('editor');
+  if (editorDiv) (editorDiv.style as any).zoom = String(cssZoom);
+  document.documentElement.style.setProperty('--kivi-raw-zoom', String(cssZoom));
 
   const label = document.getElementById('kivi-zoom-label');
   if (label) label.textContent = `${newZoom}%`;
@@ -3214,99 +3653,104 @@ function appendSep(parent: HTMLElement) {
 // ─── Search ───
 
 let searchBarVisible = false;
+// (rawSearchMatches/rawSearchIndex removed — Monaco handles search natively)
+
+const _si = (d: string, s = 14) =>
+  `<svg width="${s}" height="${s}" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">${d}</svg>`;
+
+const SEARCH_ICONS = {
+  chevronRight: _si('<path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.5"/>'),
+  chevronDown: _si('<path d="M3.5 6L8 10.5 12.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/>'),
+  prevMatch: _si('<path d="M12 10L8 6 4 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'),
+  nextMatch: _si('<path d="M4 6L8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'),
+  close: _si('<path d="M4 4L12 12M12 4L4 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'),
+  replace: _si('<path d="M3 8h7M7 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>'),
+  replaceAll: _si('<path d="M3 6h6M6 3l3 3-3 3M3 11h6M6 8l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>'),
+};
 
 function createSearchBar() {
   const bar = document.createElement('div');
   bar.id = 'kivi-search-bar';
   bar.style.display = 'none';
   bar.innerHTML = `
-    <input type="text" id="kivi-search-input" placeholder="Search..." />
-    <button id="kivi-search-prev" title="Previous (⇧Enter)">↑</button>
-    <button id="kivi-search-next" title="Next (Enter)">↓</button>
-    <label><input type="checkbox" id="kivi-search-case" /> Aa</label>
-    <label><input type="checkbox" id="kivi-search-regex" /> .*</label>
-    <label><input type="checkbox" id="kivi-search-word" /> \\b</label>
-    <span id="kivi-search-count"></span>
-    <input type="text" id="kivi-replace-input" placeholder="Replace..." />
-    <button id="kivi-replace-one" title="Replace">⏎</button>
-    <button id="kivi-replace-all" title="Replace All">⏎⏎</button>
-    <button id="kivi-search-close" title="Close (Esc)">✕</button>
+    <div class="ks-rows">
+      <div class="ks-row">
+        <button class="ks-toggle-replace ks-icon-btn" id="ks-toggle-replace" title="Toggle Replace">${SEARCH_ICONS.chevronRight}</button>
+        <div class="ks-input-wrap">
+          <input type="text" id="kivi-search-input" placeholder="Search" />
+          <div class="ks-input-actions">
+            <button class="ks-option-btn" id="ks-case" title="Match Case">Aa</button>
+            <button class="ks-option-btn" id="ks-word" title="Match Whole Word">ab</button>
+            <button class="ks-option-btn" id="ks-regex" title="Use Regular Expression">.*</button>
+          </div>
+        </div>
+        <span class="ks-count" id="kivi-search-count"></span>
+        <button class="ks-icon-btn" id="kivi-search-prev" title="Previous Match (⇧Enter)">${SEARCH_ICONS.prevMatch}</button>
+        <button class="ks-icon-btn" id="kivi-search-next" title="Next Match (Enter)">${SEARCH_ICONS.nextMatch}</button>
+        <button class="ks-icon-btn" id="kivi-search-close" title="Close (Escape)">${SEARCH_ICONS.close}</button>
+      </div>
+      <div class="ks-row ks-replace-row" id="ks-replace-row" style="display:none">
+        <div class="ks-spacer"></div>
+        <div class="ks-input-wrap">
+          <input type="text" id="kivi-replace-input" placeholder="Replace" />
+        </div>
+        <button class="ks-icon-btn" id="kivi-replace-one" title="Replace">${SEARCH_ICONS.replace}</button>
+        <button class="ks-icon-btn" id="kivi-replace-all" title="Replace All">${SEARCH_ICONS.replaceAll}</button>
+      </div>
+    </div>
   `;
   document.body.insertBefore(bar, document.getElementById('editor'));
-  bar.querySelectorAll<HTMLElement>('button[title]').forEach(addDelayedTooltip);
+  bar.querySelectorAll<HTMLElement>('.ks-icon-btn[title],.ks-option-btn[title]').forEach(addDelayedTooltip);
 
   const searchInput = bar.querySelector<HTMLInputElement>('#kivi-search-input')!;
   const replaceInput = bar.querySelector<HTMLInputElement>('#kivi-replace-input')!;
-  const caseCheck = bar.querySelector<HTMLInputElement>('#kivi-search-case')!;
-  const regexCheck = bar.querySelector<HTMLInputElement>('#kivi-search-regex')!;
-  const wordCheck = bar.querySelector<HTMLInputElement>('#kivi-search-word')!;
-
+  const caseBtn = bar.querySelector<HTMLButtonElement>('#ks-case')!;
+  const wordBtn = bar.querySelector<HTMLButtonElement>('#ks-word')!;
+  const regexBtn = bar.querySelector<HTMLButtonElement>('#ks-regex')!;
   const countEl = bar.querySelector<HTMLSpanElement>('#kivi-search-count')!;
+  const replaceRow = bar.querySelector<HTMLElement>('#ks-replace-row')!;
+  const toggleReplaceBtn = bar.querySelector<HTMLButtonElement>('#ks-toggle-replace')!;
 
-  let rawSearchMatches: { start: number; end: number }[] = [];
-  let rawSearchIndex = -1;
+  let replaceVisible = false;
+  let caseSensitive = false;
+  let wholeWord = false;
+  let useRegex = false;
 
-  const getVisibleRawTextarea = (): HTMLTextAreaElement | null => {
-    if (viewMode === 'source') return document.getElementById('kivi-raw-editor') as HTMLTextAreaElement | null;
-    if (viewMode === 'split') return document.getElementById('kivi-split-raw') as HTMLTextAreaElement | null;
-    return null;
+  const toggleOption = (btn: HTMLButtonElement, getter: () => boolean, setter: (v: boolean) => void) => {
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => {
+      setter(!getter());
+      btn.classList.toggle('active', getter());
+      doSearch();
+      searchInput.focus();
+    });
   };
+  toggleOption(caseBtn, () => caseSensitive, (v) => { caseSensitive = v; });
+  toggleOption(wordBtn, () => wholeWord, (v) => { wholeWord = v; });
+  toggleOption(regexBtn, () => useRegex, (v) => { useRegex = v; });
 
-  const findRawMatches = (query: string, caseSensitive: boolean, regex: boolean, wholeWord: boolean): { start: number; end: number }[] => {
-    const raw = getVisibleRawTextarea();
-    if (!raw) return [];
-    const text = raw.value;
-    const matches: { start: number; end: number }[] = [];
-    try {
-      let flags = 'g' + (caseSensitive ? '' : 'i');
-      let pattern: string;
-      if (regex) {
-        pattern = query;
-      } else {
-        pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      }
-      if (wholeWord) pattern = `\\b${pattern}\\b`;
-      const re = new RegExp(pattern, flags);
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) !== null) {
-        matches.push({ start: m.index, end: m.index + m[0].length });
-        if (m[0].length === 0) re.lastIndex++;
-      }
-    } catch { /* invalid regex */ }
-    return matches;
-  };
-
-  const highlightRawMatch = (index: number) => {
-    const raw = getVisibleRawTextarea();
-    if (!raw || index < 0 || index >= rawSearchMatches.length) return;
-    const m = rawSearchMatches[index];
-    raw.focus();
-    raw.setSelectionRange(m.start, m.end);
-    const linesBefore = raw.value.slice(0, m.start).split('\n').length - 1;
-    const lineHeight = parseInt(getComputedStyle(raw).lineHeight) || 20;
-    raw.scrollTop = Math.max(0, linesBefore * lineHeight - raw.clientHeight / 3);
-  };
+  toggleReplaceBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  toggleReplaceBtn.addEventListener('click', () => {
+    replaceVisible = !replaceVisible;
+    replaceRow.style.display = replaceVisible ? 'flex' : 'none';
+    toggleReplaceBtn.innerHTML = replaceVisible ? SEARCH_ICONS.chevronDown : SEARCH_ICONS.chevronRight;
+    if (replaceVisible) replaceInput.focus();
+    else searchInput.focus();
+  });
 
   const updateSearchCount = () => {
     if (!editor) return;
-    if (viewMode === 'source' || viewMode === 'split') {
-      if (rawSearchMatches.length > 0) {
-        countEl.textContent = `${rawSearchIndex + 1} of ${rawSearchMatches.length}`;
-      } else if (searchInput.value) {
-        countEl.textContent = 'No results';
-      } else {
-        countEl.textContent = '';
-      }
-      return;
-    }
-    const tiptap = editor.getTiptapEditor();
-    const searchState = searchPluginKey.getState(tiptap.state) as { results: { from: number; to: number }[]; activeIndex: number } | undefined;
-    if (searchState && searchState.results.length > 0) {
-      countEl.textContent = `${searchState.activeIndex + 1} of ${searchState.results.length}`;
+    if (viewMode === 'source' || viewMode === 'split') return;
+    const info = editor.getSearchInfo();
+    if (info.total > 0) {
+      countEl.textContent = `${info.activeIndex + 1} of ${info.total}`;
+      countEl.classList.remove('ks-no-results');
     } else if (searchInput.value) {
       countEl.textContent = 'No results';
+      countEl.classList.add('ks-no-results');
     } else {
       countEl.textContent = '';
+      countEl.classList.remove('ks-no-results');
     }
   };
 
@@ -3315,97 +3759,93 @@ function createSearchBar() {
     const query = searchInput.value;
     if (!query) {
       editor.clearSearch();
-      rawSearchMatches = [];
-      rawSearchIndex = -1;
       countEl.textContent = '';
+      countEl.classList.remove('ks-no-results');
       return;
     }
-    editor.search({ query, caseSensitive: caseCheck.checked, regex: regexCheck.checked, wholeWord: wordCheck.checked });
-    rawSearchMatches = findRawMatches(query, caseCheck.checked, regexCheck.checked, wordCheck.checked);
-    if (rawSearchMatches.length > 0) {
-      rawSearchIndex = 0;
-      if (viewMode === 'source' || viewMode === 'split') highlightRawMatch(0);
-    } else {
-      rawSearchIndex = -1;
-    }
+    const focused = document.activeElement;
+    editor.search({ query, caseSensitive, regex: useRegex, wholeWord });
+    if (focused && bar.contains(focused)) (focused as HTMLElement).focus();
     requestAnimationFrame(updateSearchCount);
   };
 
-  searchInput.addEventListener('input', doSearch);
-  caseCheck.addEventListener('change', doSearch);
-  regexCheck.addEventListener('change', doSearch);
-  wordCheck.addEventListener('change', doSearch);
+  let _searchDebounce: ReturnType<typeof setTimeout> | null = null;
+  searchInput.addEventListener('input', () => {
+    if (_searchDebounce) clearTimeout(_searchDebounce);
+    _searchDebounce = setTimeout(doSearch, 80);
+  });
+
   const nextResult = () => {
-    if ((viewMode === 'source' || viewMode === 'split') && rawSearchMatches.length > 0) {
-      rawSearchIndex = (rawSearchIndex + 1) % rawSearchMatches.length;
-      highlightRawMatch(rawSearchIndex);
-    } else {
-      editor?.nextSearchResult();
-    }
+    editor?.nextSearchResult();
     requestAnimationFrame(updateSearchCount);
   };
   const prevResult = () => {
-    if ((viewMode === 'source' || viewMode === 'split') && rawSearchMatches.length > 0) {
-      rawSearchIndex = (rawSearchIndex - 1 + rawSearchMatches.length) % rawSearchMatches.length;
-      highlightRawMatch(rawSearchIndex);
-    } else {
-      editor?.previousSearchResult();
-    }
+    editor?.previousSearchResult();
     requestAnimationFrame(updateSearchCount);
   };
 
   searchInput.addEventListener('keydown', (e) => {
+    e.stopPropagation();
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); nextResult(); }
     else if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); prevResult(); }
+    else if (e.key === 'Escape') { toggleSearchBar(); }
+  });
+
+  replaceInput.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doReplace(); }
     else if (e.key === 'Escape') { toggleSearchBar(); }
   });
 
   bar.querySelector('#kivi-search-next')!.addEventListener('click', nextResult);
   bar.querySelector('#kivi-search-prev')!.addEventListener('click', prevResult);
   bar.querySelector('#kivi-search-close')!.addEventListener('click', () => toggleSearchBar());
-  bar.querySelector('#kivi-replace-one')!.addEventListener('click', () => {
-    if ((viewMode === 'source' || viewMode === 'split') && rawSearchMatches.length > 0 && rawSearchIndex >= 0) {
-      const raw = getVisibleRawTextarea();
-      if (raw) {
-        const m = rawSearchMatches[rawSearchIndex];
-        const before = raw.value.slice(0, m.start);
-        const after = raw.value.slice(m.end);
-        raw.value = before + replaceInput.value + after;
-        raw.dispatchEvent(new Event('input', { bubbles: true }));
-        doSearch();
-      }
-    } else {
-      const tiptap = editor?.getTiptapEditor();
-      if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceCurrentResult'](replaceInput.value);
+
+  const doReplace = () => {
+    // In source/split mode, use Monaco's built-in find/replace
+    if (viewMode === 'source' || viewMode === 'split') {
+      const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
+      monacoInst?.openReplace();
+      return;
     }
+    const tiptap = editor?.getTiptapEditor();
+    if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceCurrentResult'](replaceInput.value);
+    requestAnimationFrame(updateSearchCount);
+  };
+
+  bar.querySelector('#kivi-replace-one')!.addEventListener('click', doReplace);
+  bar.querySelector('#kivi-replace-all')!.addEventListener('click', () => {
+    // In source/split mode, use Monaco's built-in find/replace
+    if (viewMode === 'source' || viewMode === 'split') {
+      const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
+      monacoInst?.openReplace();
+      return;
+    }
+    const tiptap = editor?.getTiptapEditor();
+    if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceAllResults'](replaceInput.value);
     requestAnimationFrame(updateSearchCount);
   });
-  bar.querySelector('#kivi-replace-all')!.addEventListener('click', () => {
-    if ((viewMode === 'source' || viewMode === 'split') && rawSearchMatches.length > 0) {
-      const raw = getVisibleRawTextarea();
-      if (raw) {
-        let text = raw.value;
-        for (let i = rawSearchMatches.length - 1; i >= 0; i--) {
-          const m = rawSearchMatches[i];
-          text = text.slice(0, m.start) + replaceInput.value + text.slice(m.end);
-        }
-        raw.value = text;
-        raw.dispatchEvent(new Event('input', { bubbles: true }));
-        doSearch();
-      }
-    } else {
-      const tiptap = editor?.getTiptapEditor();
-      if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceAllResults'](replaceInput.value);
-    }
-    requestAnimationFrame(updateSearchCount);
+
+  // Prevent clicks inside the bar from propagating to the editor
+  bar.addEventListener('mousedown', (e) => {
+    if ((e.target as HTMLElement).tagName !== 'INPUT') e.preventDefault();
   });
 }
 
 function toggleSearchBar() {
+  // In source/split mode, delegate to Monaco's built-in find
+  if (viewMode === 'source' && rawMonaco) {
+    rawMonaco.openFind();
+    return;
+  }
+  if (viewMode === 'split' && splitMonaco) {
+    splitMonaco.openFind();
+    return;
+  }
   const bar = document.getElementById('kivi-search-bar');
   if (!bar) return;
   searchBarVisible = !searchBarVisible;
-  bar.style.display = searchBarVisible ? 'flex' : 'none';
+  bar.style.display = searchBarVisible ? '' : 'none';
   if (searchBarVisible) {
     const input = bar.querySelector<HTMLInputElement>('#kivi-search-input');
     input?.focus();

@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 
 export interface OutlineItem {
   label: string;
@@ -8,14 +10,65 @@ export interface OutlineItem {
   children: OutlineItem[];
 }
 
-const headingIcons: Record<number, string> = {
-  1: 'symbol-class',
-  2: 'symbol-method',
-  3: 'symbol-field',
-  4: 'symbol-variable',
-  5: 'symbol-constant',
-  6: 'symbol-property',
+let _iconDir: string | null = null;
+
+const HEADING_COLORS_DARK: Record<number, string> = {
+  1: '#e06c75', // soft red
+  2: '#61afef', // blue
+  3: '#98c379', // green
+  4: '#d19a66', // orange
+  5: '#c678dd', // purple
+  6: '#56b6c2', // cyan
 };
+
+const HEADING_COLORS_LIGHT: Record<number, string> = {
+  1: '#c9384b', // red
+  2: '#4078f2', // blue
+  3: '#518c25', // green
+  4: '#b76c1a', // orange
+  5: '#9a40bd', // purple
+  6: '#0f8a8a', // teal
+};
+
+function ensureHeadingIcons(context: vscode.ExtensionContext): string {
+  if (_iconDir) return _iconDir;
+  const dir = path.join(context.globalStorageUri.fsPath, 'heading-icons');
+
+  const VERSION = '4';
+  const marker = path.join(dir, `.version-${VERSION}`);
+  if (fs.existsSync(marker)) {
+    _iconDir = dir;
+    return dir;
+  }
+
+  fs.mkdirSync(dir, { recursive: true });
+
+  for (const f of fs.readdirSync(dir)) {
+    if (f.endsWith('.svg') || f.startsWith('.version-')) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch { /* ignore */ }
+    }
+  }
+
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    for (const theme of ['light', 'dark'] as const) {
+      const fill = theme === 'dark' ? HEADING_COLORS_DARK[lvl] : HEADING_COLORS_LIGHT[lvl];
+      const size = Math.max(10, 14 - lvl);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">`
+        + `<text x="1" y="12" font-family="system-ui,sans-serif" font-size="${size}" font-weight="700" fill="${fill}">H${lvl}</text></svg>`;
+      fs.writeFileSync(path.join(dir, `h${lvl}-${theme}.svg`), svg);
+    }
+  }
+  fs.writeFileSync(marker, '');
+  _iconDir = dir;
+  return dir;
+}
+
+function headingIconPath(level: number, iconDir: string): { light: vscode.Uri; dark: vscode.Uri } {
+  return {
+    light: vscode.Uri.file(path.join(iconDir, `h${level}-light.svg`)),
+    dark: vscode.Uri.file(path.join(iconDir, `h${level}-dark.svg`)),
+  };
+}
 
 function stripMarkdownInline(text: string): string {
   return text
@@ -47,6 +100,13 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
   private roots: OutlineItem[] = [];
   private allItems: OutlineItem[] = [];
   private collapsed = false;
+  private iconDir: string | null = null;
+
+  constructor(private context?: vscode.ExtensionContext) {
+    if (context) {
+      try { this.iconDir = ensureHeadingIcons(context); } catch { /* fallback to no icons */ }
+    }
+  }
 
   refresh(): void {
     this.collapsed = false;
@@ -60,6 +120,11 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
     this._onDidChangeTreeData.fire();
   }
 
+  expandAll(): void {
+    this.collapsed = false;
+    this._onDidChangeTreeData.fire();
+  }
+
   getTreeItem(element: OutlineItem): vscode.TreeItem {
     const hasChildren = element.children.length > 0;
     const item = new vscode.TreeItem(
@@ -69,14 +134,15 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
         : vscode.TreeItemCollapsibleState.None,
     );
 
-    item.description = `L${element.line}`;
     item.tooltip = `H${element.level} — line ${element.line}`;
     item.command = {
       command: 'kivi.scrollToHeading',
       title: 'Go to heading',
       arguments: [element.label, element.line],
     };
-    item.iconPath = new vscode.ThemeIcon(headingIcons[element.level] || 'symbol-key');
+    if (this.iconDir) {
+      item.iconPath = headingIconPath(element.level, this.iconDir);
+    }
     item.contextValue = 'kiviOutlineHeading';
 
     return item;

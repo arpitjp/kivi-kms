@@ -31,6 +31,20 @@ if (!watch) {
   execSync('npx vite build --config vite.webview.config.ts', { stdio: 'inherit' });
   console.log('Editor webview built.');
 
+  // Monaco editor worker — built AFTER Vite (which cleans outDir)
+  console.log('Building Monaco editor worker...');
+  await esbuild.build({
+    entryPoints: ['node_modules/monaco-editor/esm/vs/editor/editor.worker.js'],
+    bundle: true,
+    outfile: 'dist/webview/editor.worker.js',
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    minify: true,
+    sourcemap: false,
+  });
+  console.log('Monaco editor worker built.');
+
   console.log('Building graph webview...');
   execSync('npx vite build --config vite.graph.config.ts', { stdio: 'inherit' });
   console.log('Graph webview built.');
@@ -38,4 +52,8 @@ if (!watch) {
   console.log('Building dev panel webview...');
   execSync('npx vite build --config vite.devpanel.config.ts', { stdio: 'inherit' });
   console.log('Dev panel webview built.');
+
+  console.log('Building excalidraw renderer...');
+  execSync('npx vite build --config vite.excalidraw.config.ts', { stdio: 'inherit' });
+  console.log('Excalidraw renderer built.');
 }

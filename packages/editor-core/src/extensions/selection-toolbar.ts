@@ -3,6 +3,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { NodeSelection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { addDelayedTooltip } from '../tooltip.js';
+import { positionFixedPopup } from '../zoom.js';
 
 const selectionToolbarKey = new PluginKey('kiviSelectionToolbar');
 
@@ -21,8 +22,6 @@ const ICONS = {
   bullet: svg('<line x1="3" y1="4" x2="3" y2="4" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="4" x2="14" y2="4"/><line x1="3" y1="8" x2="3" y2="8" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="8" x2="14" y2="8"/><line x1="3" y1="12" x2="3" y2="12" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="12" x2="14" y2="12"/>'),
   ordered: svg('<text x="1" y="5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">1</text><line x1="6" y1="4" x2="14" y2="4"/><text x="1" y="9.5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text><line x1="6" y1="8" x2="14" y2="8"/><text x="1" y="13.5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">3</text><line x1="6" y1="12" x2="14" y2="12"/>'),
   task: svg('<rect x="1.5" y="2" width="4.5" height="4.5" rx="1" stroke-width="1.3"/><polyline points="2.5,4 3.5,5.2 5.2,3" stroke-width="1.2"/><line x1="8" y1="4" x2="14" y2="4"/><rect x="1.5" y="9.5" width="4.5" height="4.5" rx="1" stroke-width="1.3"/><line x1="8" y1="12" x2="14" y2="12"/>'),
-  indent: svg('<polyline points="9,3 13,8 9,13"/><line x1="2" y1="4" x2="7" y2="4"/><line x1="2" y1="8" x2="7" y2="8"/><line x1="2" y1="12" x2="7" y2="12"/>'),
-  outdent: svg('<polyline points="7,3 3,8 7,13"/><line x1="9" y1="4" x2="14" y2="4"/><line x1="9" y1="8" x2="14" y2="8"/><line x1="9" y1="12" x2="14" y2="12"/>'),
 };
 
 type FormatAction = {
@@ -34,34 +33,6 @@ type FormatAction = {
   isActive: (editor: import('@tiptap/core').Editor) => boolean;
 };
 
-function sinkCurrentListItem(e: import('@tiptap/core').Editor) {
-  const { $from } = e.state.selection;
-  const listItem = $from.node(-1)?.type.name === 'listItem' || $from.node(-1)?.type.name === 'taskItem';
-  if (listItem) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chain = e.chain().focus() as any;
-    if ($from.node(-1)?.type.name === 'taskItem') {
-      chain.sinkListItem('taskItem').run();
-    } else {
-      chain.sinkListItem('listItem').run();
-    }
-  }
-}
-
-function liftCurrentListItem(e: import('@tiptap/core').Editor) {
-  const { $from } = e.state.selection;
-  const listItem = $from.node(-1)?.type.name === 'listItem' || $from.node(-1)?.type.name === 'taskItem';
-  if (listItem) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chain = e.chain().focus() as any;
-    if ($from.node(-1)?.type.name === 'taskItem') {
-      chain.liftListItem('taskItem').run();
-    } else {
-      chain.liftListItem('listItem').run();
-    }
-  }
-}
-
 const ACTIONS: FormatAction[] = [
   { id: 'bold', icon: ICONS.bold, title: 'Bold', cmd: (e) => e.chain().focus().toggleBold().run(), isActive: (e) => e.isActive('bold') },
   { id: 'italic', icon: ICONS.italic, title: 'Italic', cmd: (e) => e.chain().focus().toggleItalic().run(), isActive: (e) => e.isActive('italic') },
@@ -70,7 +41,7 @@ const ACTIONS: FormatAction[] = [
   { id: 'subscript', icon: ICONS.subscript, title: 'Subscript', cmd: (e) => e.chain().focus().toggleSubscript().run(), isActive: (e) => e.isActive('subscript') },
   { id: 'superscript', icon: ICONS.superscript, title: 'Superscript', cmd: (e) => e.chain().focus().toggleSuperscript().run(), isActive: (e) => e.isActive('superscript') },
   { id: 'highlight', icon: ICONS.highlight, title: 'Highlight', cmd: (e) => e.chain().focus().toggleHighlight().run(), isActive: (e) => e.isActive('highlight') },
-  { id: 'link', icon: ICONS.link, title: 'Link', cmd: (e) => {
+  { id: 'link', icon: ICONS.link, title: 'Link (⌘K)', cmd: (e) => {
     if (e.isActive('link')) {
       e.chain().focus().unsetLink().run();
     } else {
@@ -84,8 +55,6 @@ const ACTIONS: FormatAction[] = [
   { id: 'bullet', icon: ICONS.bullet, title: 'Bullet List', cmd: (e) => e.chain().focus().toggleBulletList().run(), isActive: (e) => e.isActive('bulletList') },
   { id: 'ordered', icon: ICONS.ordered, title: 'Numbered List', cmd: (e) => e.chain().focus().toggleOrderedList().run(), isActive: (e) => e.isActive('orderedList') },
   { id: 'task', icon: ICONS.task, title: 'Task List', cmd: (e) => e.chain().focus().toggleTaskList().run(), isActive: (e) => e.isActive('taskList') },
-  { id: 'outdent', icon: ICONS.outdent, title: 'Outdent', cmd: (e) => liftCurrentListItem(e), isActive: () => false },
-  { id: 'indent', icon: ICONS.indent, title: 'Indent', cmd: (e) => sinkCurrentListItem(e), isActive: () => false },
 ];
 
 function selectionVisibleInEditor(view: EditorView): boolean {
@@ -156,9 +125,16 @@ export const SelectionToolbar = Extension.create({
             isMouseDown = false;
             setTimeout(() => reconcile(editorView), 20);
           };
+          const onMouseLeave = () => {
+            if (isMouseDown) {
+              isMouseDown = false;
+              setTimeout(() => reconcile(editorView), 50);
+            }
+          };
 
           editorView.dom.addEventListener('mousedown', onMouseDown);
           document.addEventListener('mouseup', onMouseUp);
+          document.documentElement.addEventListener('mouseleave', onMouseLeave);
 
           function createToolbar(): HTMLElement {
             const el = document.createElement('div');
@@ -195,17 +171,18 @@ export const SelectionToolbar = Extension.create({
             return el;
           }
 
+          const INLINE_FORMAT_IDS = new Set(['bold', 'italic', 'strike', 'code', 'subscript', 'superscript', 'highlight', 'link']);
+
           function updateActiveState(el: HTMLElement) {
             const actionButtons = ACTIONS.filter((a) => !a.separator);
             const buttons = el.querySelectorAll<HTMLButtonElement>('.kivi-sel-btn');
-            const inList = editor.isActive('bulletList') || editor.isActive('orderedList') || editor.isActive('taskList');
+            const inCodeBlock = editor.isActive('codeBlock');
             buttons.forEach((btn, i) => {
               if (i >= actionButtons.length) return;
               const action = actionButtons[i];
               btn.classList.toggle('active', action.isActive(editor));
-              if (action.id === 'indent' || action.id === 'outdent') {
-                btn.style.display = inList ? '' : 'none';
-              }
+              const disabled = inCodeBlock && INLINE_FORMAT_IDS.has(action.id);
+              btn.classList.toggle('kivi-btn-disabled', disabled);
             });
           }
 
@@ -217,45 +194,50 @@ export const SelectionToolbar = Extension.create({
             }
             toolbar.style.visibility = 'visible';
             const { from, to } = view.state.selection;
-            const start = view.coordsAtPos(from);
-            const end = view.coordsAtPos(to);
-            const container = view.dom.parentElement;
-            const cr = container?.getBoundingClientRect()
-              ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
 
-            const midX = (start.left + end.left) / 2;
-            const topY = Math.min(start.top, end.top);
-            const bottomY = Math.max(start.bottom, end.bottom);
-
-            const tw = toolbar.offsetWidth || 180;
-            const th = toolbar.offsetHeight || 34;
-            const gap = 8;
-            const pad = 8;
-
-            const viewTop = Math.max(cr.top, 0);
-            const viewBottom = Math.min(cr.bottom, window.innerHeight);
-            const spaceAbove = topY - viewTop;
-            const spaceBelow = viewBottom - bottomY;
-
-            let top: number;
-            if (spaceAbove >= th + gap) {
-              top = topY - th - gap;
-            } else if (spaceBelow >= th + gap) {
-              top = bottomY + gap;
-            } else {
-              top = spaceAbove >= spaceBelow
-                ? topY - th - gap
-                : bottomY + gap;
+            const domSel = window.getSelection();
+            let selRect: { top: number; bottom: number; left: number; right: number } | null = null;
+            if (domSel && domSel.rangeCount > 0) {
+              const range = domSel.getRangeAt(0);
+              const rects = range.getClientRects();
+              if (rects.length > 0) {
+                let minT = Infinity, maxB = -Infinity, minL = Infinity, maxR = -Infinity;
+                for (let i = 0; i < rects.length; i++) {
+                  const r = rects[i];
+                  if (r.width === 0 && r.height === 0) continue;
+                  minT = Math.min(minT, r.top);
+                  maxB = Math.max(maxB, r.bottom);
+                  minL = Math.min(minL, r.left);
+                  maxR = Math.max(maxR, r.right);
+                }
+                if (minT < Infinity) selRect = { top: minT, bottom: maxB, left: minL, right: maxR };
+              }
             }
-            top = Math.max(viewTop + pad, Math.min(top, viewBottom - th - pad));
 
-            let left = midX - tw / 2;
-            const maxLeft = Math.min(cr.right, window.innerWidth) - tw - pad;
-            const minLeft = Math.max(cr.left, 0) + pad;
-            left = Math.max(minLeft, Math.min(left, maxLeft));
+            if (!selRect) {
+              const start = view.coordsAtPos(from);
+              const end = view.coordsAtPos(to);
+              selRect = {
+                top: Math.min(start.top, end.top),
+                bottom: Math.max(start.bottom, end.bottom),
+                left: Math.min(start.left, end.left),
+                right: Math.max(start.right, end.right),
+              };
+            }
 
-            toolbar.style.left = `${left}px`;
-            toolbar.style.top = `${top}px`;
+            const container = view.dom.parentElement;
+            const cr = container?.getBoundingClientRect() ?? null;
+
+            positionFixedPopup({
+              anchorRect: selRect,
+              popup: toolbar,
+              containerRect: cr,
+              gap: 8,
+              pad: 8,
+              alignX: 'center',
+              preferY: 'above',
+              anchorEl: view.dom as HTMLElement,
+            });
           }
 
           function showToolbar(view: EditorView) {
@@ -308,6 +290,7 @@ export const SelectionToolbar = Extension.create({
               removeToolbar();
               editorView.dom.removeEventListener('mousedown', onMouseDown);
               document.removeEventListener('mouseup', onMouseUp);
+              document.documentElement.removeEventListener('mouseleave', onMouseLeave);
             },
           };
         },

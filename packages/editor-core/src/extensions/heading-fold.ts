@@ -9,72 +9,72 @@ export const headingFoldKey = new PluginKey<FoldPluginState>('kiviHeadingFold');
 const SVG_CHEVRON_DOWN = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M7.976 10.072l4.357-4.357.62.618L7.976 11.31 2.93 6.333l.62-.618z"/></svg>`;
 const SVG_CHEVRON_RIGHT = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M5.7 13.7L5 13l4.6-4.6L5 3.7 5.7 3l5.3 5.4z"/></svg>`;
 
+interface HeadingInfo { level: number; nodeSize: number }
+
 interface FoldPluginState {
   foldedPositions: Set<number>;
+  headingIndex: Map<number, HeadingInfo>;
+}
+
+function buildHeadingIndex(doc: any): Map<number, HeadingInfo> {
+  const index = new Map<number, HeadingInfo>();
+  doc.forEach((node: any, offset: number) => {
+    if (node.type.name === 'heading') {
+      index.set(offset, { level: node.attrs?.level ?? 1, nodeSize: node.nodeSize });
+    }
+  });
+  return index;
 }
 
 function getSectionRange(
   doc: any,
   headingPos: number,
   headingLevel: number,
+  headingIndex: Map<number, HeadingInfo>,
 ): { start: number; end: number } {
+  const heading = headingIndex.get(headingPos);
+  if (!heading) return { start: headingPos, end: doc.content.size };
+
+  const startPos = headingPos + heading.nodeSize;
   let endPos = doc.content.size;
-  let pastHeading = false;
-  let startPos = headingPos;
 
-  doc.forEach((node: any, offset: number) => {
-    if (offset === headingPos) {
-      pastHeading = true;
-      startPos = offset + node.nodeSize;
-      return;
+  for (const [pos, info] of headingIndex) {
+    if (pos <= headingPos) continue;
+    if (info.level <= headingLevel) {
+      endPos = pos;
+      break;
     }
-    if (!pastHeading) return;
-    if (endPos < doc.content.size) return;
-
-    if (node.type.name === 'heading') {
-      const level = node.attrs?.level ?? 1;
-      if (level <= headingLevel) {
-        endPos = offset;
-      }
-    }
-  });
+  }
 
   return { start: startPos, end: endPos };
 }
 
-function findHeadingAtPos(doc: any, pos: number): { level: number; nodeSize: number } | null {
-  let result: { level: number; nodeSize: number } | null = null;
-  doc.forEach((node: any, offset: number) => {
-    if (result) return;
-    if (offset === pos && node.type.name === 'heading') {
-      result = { level: node.attrs?.level ?? 1, nodeSize: node.nodeSize };
-    }
-  });
-  return result;
-}
-
-function collectHeadingPositions(doc: any): Array<{ pos: number; level: number }> {
-  const headings: Array<{ pos: number; level: number }> = [];
-  doc.forEach((node: any, offset: number) => {
-    if (node.type.name === 'heading') {
-      headings.push({ pos: offset, level: node.attrs?.level ?? 1 });
-    }
-  });
-  return headings;
+function buildFoldRanges(
+  doc: any,
+  foldedPositions: Set<number>,
+  headingIndex: Map<number, HeadingInfo>,
+): Array<{ fpos: number; start: number; end: number }> {
+  const ranges: Array<{ fpos: number; start: number; end: number }> = [];
+  for (const fpos of foldedPositions) {
+    const heading = headingIndex.get(fpos);
+    if (!heading) continue;
+    ranges.push({
+      fpos,
+      ...getSectionRange(doc, fpos, heading.level, headingIndex),
+    });
+  }
+  return ranges;
 }
 
 function isInsideFoldedRegion(
   doc: any,
   cursorPos: number,
   foldedPositions: Set<number>,
+  headingIndex: Map<number, HeadingInfo>,
 ): number | null {
-  for (const fpos of foldedPositions) {
-    const heading = findHeadingAtPos(doc, fpos);
-    if (!heading) continue;
-    const range = getSectionRange(doc, fpos, heading.level);
-    if (cursorPos >= range.start && cursorPos < range.end) {
-      return fpos;
-    }
+  const ranges = buildFoldRanges(doc, foldedPositions, headingIndex);
+  for (const r of ranges) {
+    if (cursorPos >= r.start && cursorPos < r.end) return r.fpos;
   }
   return null;
 }
@@ -97,17 +97,16 @@ export const HeadingFold = Extension.create({
         () =>
         ({ tr, state, dispatch }: CommandProps) => {
           const { $from } = state.selection;
-          const headings = collectHeadingPositions(state.doc);
+          const pluginState = headingFoldKey.getState(state);
+          if (!pluginState) return false;
+
           let targetPos = -1;
-          for (let i = headings.length - 1; i >= 0; i--) {
-            if (headings[i].pos <= $from.pos) {
-              targetPos = headings[i].pos;
-              break;
-            }
+          for (const [pos] of pluginState.headingIndex) {
+            if (pos <= $from.pos) targetPos = pos;
+            else break;
           }
           if (targetPos < 0) return false;
-          const pluginState = headingFoldKey.getState(state);
-          if (pluginState?.foldedPositions.has(targetPos)) return false;
+          if (pluginState.foldedPositions.has(targetPos)) return false;
           if (dispatch) {
             tr.setMeta(headingFoldKey, { action: 'fold', pos: targetPos });
             dispatch(tr);
@@ -118,17 +117,16 @@ export const HeadingFold = Extension.create({
         () =>
         ({ tr, state, dispatch }: CommandProps) => {
           const { $from } = state.selection;
-          const headings = collectHeadingPositions(state.doc);
+          const pluginState = headingFoldKey.getState(state);
+          if (!pluginState) return false;
+
           let targetPos = -1;
-          for (let i = headings.length - 1; i >= 0; i--) {
-            if (headings[i].pos <= $from.pos) {
-              targetPos = headings[i].pos;
-              break;
-            }
+          for (const [pos] of pluginState.headingIndex) {
+            if (pos <= $from.pos) targetPos = pos;
+            else break;
           }
           if (targetPos < 0) return false;
-          const pluginState = headingFoldKey.getState(state);
-          if (!pluginState?.foldedPositions.has(targetPos)) return false;
+          if (!pluginState.foldedPositions.has(targetPos)) return false;
           if (dispatch) {
             tr.setMeta(headingFoldKey, { action: 'unfold', pos: targetPos });
             dispatch(tr);
@@ -169,12 +167,31 @@ export const HeadingFold = Extension.create({
         key: headingFoldKey,
 
         state: {
-          init(): FoldPluginState {
-            return { foldedPositions: new Set() };
+          init(_config, state): FoldPluginState {
+            return {
+              foldedPositions: new Set(),
+              headingIndex: buildHeadingIndex(state.doc),
+            };
           },
 
           apply(tr: Transaction, prev: FoldPluginState): FoldPluginState {
             const meta = tr.getMeta(headingFoldKey);
+
+            // Rebuild heading index only when the number of top-level nodes
+            // changes (insert/delete/split/join). For simple text edits inside
+            // a node, just remap positions — the heading set hasn't changed.
+            let headingIndex: Map<number, HeadingInfo>;
+            if (!tr.docChanged) {
+              headingIndex = prev.headingIndex;
+            } else if (tr.doc.childCount !== tr.before.childCount) {
+              headingIndex = buildHeadingIndex(tr.doc);
+            } else {
+              headingIndex = new Map();
+              for (const [pos, info] of prev.headingIndex) {
+                const mapped = tr.mapping.map(pos, 1);
+                headingIndex.set(mapped, info);
+              }
+            }
 
             if (meta) {
               const next = new Set(prev.foldedPositions);
@@ -188,13 +205,12 @@ export const HeadingFold = Extension.create({
               } else if (meta.action === 'unfold') {
                 next.delete(tr.mapping.map(meta.pos));
               } else if (meta.action === 'foldAll') {
-                const headings = collectHeadingPositions(tr.doc);
-                for (const h of headings) next.add(h.pos);
+                for (const pos of headingIndex.keys()) next.add(pos);
               } else if (meta.action === 'unfoldAll') {
                 next.clear();
               }
 
-              return { foldedPositions: next };
+              return { foldedPositions: next, headingIndex };
             }
 
             if (!tr.docChanged) return prev;
@@ -202,11 +218,11 @@ export const HeadingFold = Extension.create({
             const remapped = new Set<number>();
             for (const pos of prev.foldedPositions) {
               const newPos = tr.mapping.map(pos, 1);
-              if (findHeadingAtPos(tr.doc, newPos)) {
+              if (headingIndex.has(newPos)) {
                 remapped.add(newPos);
               }
             }
-            return { foldedPositions: remapped };
+            return { foldedPositions: remapped, headingIndex };
           },
         },
 
@@ -219,10 +235,11 @@ export const HeadingFold = Extension.create({
             newState.doc,
             $from.pos,
             pluginState.foldedPositions,
+            pluginState.headingIndex,
           );
 
           if (foldedParent !== null) {
-            const heading = findHeadingAtPos(newState.doc, foldedParent);
+            const heading = pluginState.headingIndex.get(foldedParent);
             if (heading) {
               const endOfHeading = foldedParent + heading.nodeSize - 1;
               const resolved = newState.doc.resolve(
@@ -237,21 +254,57 @@ export const HeadingFold = Extension.create({
 
         view() {
           let arrowsByPos = new Map<number, HTMLElement>();
+          let lastFoldedSnapshot = '';
+          let lastHeadingCount = -1;
+
+          function foldSnapshot(state: FoldPluginState): string {
+            if (state.foldedPositions.size === 0) return '';
+            return Array.from(state.foldedPositions).sort().join(',');
+          }
+
+          function arrowsAttached(): boolean {
+            for (const arrow of arrowsByPos.values()) {
+              if (!arrow.isConnected) return false;
+            }
+            return arrowsByPos.size > 0;
+          }
+
+          function createArrow(): HTMLElement {
+            const arrow = document.createElement('span');
+            arrow.className = 'kivi-fold-arrow';
+            arrow.setAttribute('role', 'button');
+            arrow.setAttribute('aria-label', 'Toggle fold');
+            arrow.addEventListener('mousedown', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            });
+            return arrow;
+          }
 
           function syncDOM(view: EditorView) {
             const pluginState = headingFoldKey.getState(view.state);
             if (!pluginState) return;
 
+            const snap = foldSnapshot(pluginState);
+            const hCount = pluginState.headingIndex.size;
+
+            const structureChanged = snap !== lastFoldedSnapshot || hCount !== lastHeadingCount;
+            const domStale = !arrowsAttached();
+
+            if (!structureChanged && !domStale) return;
+            lastFoldedSnapshot = snap;
+            lastHeadingCount = hCount;
+
             const { doc } = view.state;
-            const { foldedPositions } = pluginState;
+            const { foldedPositions, headingIndex } = pluginState;
 
             const newArrows = new Map<number, HTMLElement>();
 
             const hiddenRanges: Array<{ start: number; end: number }> = [];
             for (const fpos of foldedPositions) {
-              const heading = findHeadingAtPos(doc, fpos);
+              const heading = headingIndex.get(fpos);
               if (!heading) continue;
-              hiddenRanges.push(getSectionRange(doc, fpos, heading.level));
+              hiddenRanges.push(getSectionRange(doc, fpos, heading.level, headingIndex));
             }
 
             doc.forEach((node: any, pos: number) => {
@@ -262,27 +315,16 @@ export const HeadingFold = Extension.create({
                 const isFolded = foldedPositions.has(pos);
 
                 let arrow = arrowsByPos.get(pos);
-                if (!arrow) {
-                  for (const [oldPos, oldArrow] of arrowsByPos) {
-                    if (!newArrows.has(oldPos) && oldArrow.parentElement === dom) {
-                      arrow = oldArrow;
-                      break;
-                    }
-                  }
-                }
+
+                if (arrow && !arrow.isConnected) arrow = undefined;
+                if (arrow && arrow.parentElement !== dom) arrow = undefined;
 
                 if (!arrow) {
-                  arrow = document.createElement('span');
-                  arrow.className = 'kivi-fold-arrow';
-                  arrow.setAttribute('role', 'button');
-                  arrow.setAttribute('aria-label', 'Toggle fold');
-                  arrow.addEventListener('mousedown', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  });
-                  dom.insertBefore(arrow, dom.firstChild);
-                } else if (arrow.parentElement !== dom) {
-                  dom.insertBefore(arrow, dom.firstChild);
+                  const existing = dom.querySelector('.kivi-fold-arrow') as HTMLElement | null;
+                  arrow = existing || createArrow();
+                  if (!arrow.isConnected || arrow.parentElement !== dom) {
+                    dom.insertBefore(arrow, dom.firstChild);
+                  }
                 }
 
                 const capturedPos = pos;

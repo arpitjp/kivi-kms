@@ -1,6 +1,7 @@
 import { Extension, type Editor } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { positionFixedPopup } from '../zoom.js';
 
 export interface SlashCommandItem {
   id: string;
@@ -11,7 +12,10 @@ export interface SlashCommandItem {
   action: (editor: Editor) => void;
 }
 
-function buildDefaultItems(promptInput?: (msg: string, placeholder?: string) => Promise<string | null>): SlashCommandItem[] {
+function buildDefaultItems(
+  promptInput?: (msg: string, placeholder?: string) => Promise<string | null>,
+  createExcalidrawFile?: (name: string) => Promise<string | null>,
+): SlashCommandItem[] {
   return [
     { id: 'h1', label: 'Heading 1', aliases: ['h1', '#'], icon: 'H1', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
     { id: 'h2', label: 'Heading 2', aliases: ['h2', '##'], icon: 'H2', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
@@ -41,10 +45,22 @@ function buildDefaultItems(promptInput?: (msg: string, placeholder?: string) => 
       }
     }},
     { id: 'excalidraw', label: 'Excalidraw', aliases: ['excalidraw', 'draw', 'diagram', 'sketch'], icon: '✎', category: 'Insert', action: (e) => {
-      if (promptInput) {
-        promptInput('Excalidraw file path (leave empty for inline):', './assets/drawing.excalidraw').then(path => {
-          if (path) e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src: path, data: '{}' } }).run();
-          else e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { data: '{}' } }).run();
+      if (createExcalidrawFile && promptInput) {
+        promptInput('Excalidraw file name:', 'diagram').then(async (name) => {
+          if (!name) return;
+          const relPath = await createExcalidrawFile(name);
+          if (!relPath) return;
+          const alt = name.replace(/\.excalidraw$/i, '');
+          e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src: relPath, data: '{}', alt } }).run();
+        });
+      } else if (promptInput) {
+        promptInput('Excalidraw file name:', 'diagram').then(name => {
+          if (name) {
+            const fileName = name.endsWith('.excalidraw') ? name : `${name}.excalidraw`;
+            const src = `assets/${fileName}`;
+            const alt = name.replace(/\.excalidraw$/i, '');
+            e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src, data: '{}', alt } }).run();
+          }
         });
       } else {
         e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { data: '{}' } }).run();
@@ -59,6 +75,8 @@ export interface SlashCommandsOptions {
   onCreatePage?: () => void;
   /** Async input prompt — use instead of window.prompt() for sandboxed envs. */
   promptInput?: (message: string, placeholder?: string) => Promise<string | null>;
+  /** Create an .excalidraw file and return its relative path from the doc. */
+  createExcalidrawFile?: (name: string) => Promise<string | null>;
 }
 
 const slashPluginKey = new PluginKey('slashCommands');
@@ -72,7 +90,7 @@ export const SlashCommands = Extension.create<SlashCommandsOptions>({
 
   addProseMirrorPlugins() {
     const opts = this.options;
-    const baseItems = opts.items ?? buildDefaultItems(opts.promptInput);
+    const baseItems = opts.items ?? buildDefaultItems(opts.promptInput, opts.createExcalidrawFile);
 
     const items: SlashCommandItem[] = [...baseItems];
     if (opts.onCreatePage) {
@@ -89,9 +107,23 @@ export const SlashCommands = Extension.create<SlashCommandsOptions>({
 
     const editor = this.editor;
 
+    let pendingTimeout: ReturnType<typeof setTimeout> | null = null;
+
     return [
       new Plugin({
         key: slashPluginKey,
+        view() {
+          return {
+            destroy() {
+              if (pendingTimeout !== null) {
+                clearTimeout(pendingTimeout);
+                pendingTimeout = null;
+              }
+              const existing = document.querySelector('.kivi-slash-menu');
+              if (existing) existing.remove();
+            },
+          };
+        },
         props: {
           handleKeyDown(view: EditorView, event: KeyboardEvent) {
             if (event.key !== '/') return false;
@@ -102,7 +134,9 @@ export const SlashCommands = Extension.create<SlashCommandsOptions>({
 
             if (textBefore.trim() !== '') return false;
 
-            setTimeout(() => {
+            if (pendingTimeout !== null) clearTimeout(pendingTimeout);
+            pendingTimeout = setTimeout(() => {
+              pendingTimeout = null;
               if (!view.dom.isConnected) return;
               showSlashMenu(view, items, editor);
             }, 0);
@@ -145,34 +179,16 @@ function showSlashMenu(
 
   function positionSlashMenu(c: { left: number; top: number; bottom: number }) {
     const container = view.dom.parentElement;
-    const cr = container?.getBoundingClientRect()
-      ?? { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
-    const gap = 4;
-    const pad = 8;
-    const mh = menu.offsetHeight || 200;
-    const mw = menu.offsetWidth || 240;
-    const viewBottom = Math.min(cr.bottom, window.innerHeight);
-    const viewTop = Math.max(cr.top, 0);
-    const spaceBelow = viewBottom - c.bottom;
-    const spaceAbove = c.top - viewTop;
-
-    let top: number;
-    if (spaceBelow >= mh + gap) {
-      top = c.bottom + gap;
-    } else if (spaceAbove >= mh + gap) {
-      top = c.top - mh - gap;
-    } else {
-      top = spaceBelow >= spaceAbove ? c.bottom + gap : c.top - mh - gap;
-    }
-    top = Math.max(viewTop + pad, Math.min(top, viewBottom - mh - pad));
-
-    let left = c.left;
-    const maxLeft = Math.min(cr.right, window.innerWidth) - mw - pad;
-    if (left > maxLeft) left = maxLeft;
-    if (left < Math.max(cr.left, 0) + pad) left = Math.max(cr.left, 0) + pad;
-
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
+    const cr = container?.getBoundingClientRect() ?? null;
+    positionFixedPopup({
+      anchorRect: { top: c.top, bottom: c.bottom, left: c.left, right: c.left },
+      popup: menu,
+      containerRect: cr,
+      gap: 4,
+      pad: 8,
+      preferY: 'below',
+      anchorEl: view.dom as HTMLElement,
+    });
   }
 
   positionSlashMenu(coords);

@@ -1,6 +1,7 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { positionFixedPopup } from '../zoom.js';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -300,42 +301,21 @@ function renderPreviewContent(data: LinkPreviewData): string {
 function positionTooltip(tooltip: HTMLDivElement, anchor: HTMLElement, view: EditorView): void {
   const anchorRect = anchor.getBoundingClientRect();
   const container = view.dom.parentElement;
-  const cr = container?.getBoundingClientRect() ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+  const cr = container?.getBoundingClientRect() ?? null;
 
   tooltip.style.visibility = 'hidden';
   tooltip.style.display = 'block';
   void tooltip.offsetHeight;
 
-  const ttW = tooltip.offsetWidth;
-  const ttH = tooltip.offsetHeight;
-  const gap = 6;
-  const pad = 8;
-
-  const spaceAbove = anchorRect.top - Math.max(cr.top, 0);
-  const spaceBelow = Math.min(cr.bottom, window.innerHeight) - anchorRect.bottom;
-
-  let top: number;
-  if (spaceAbove >= ttH + gap) {
-    top = anchorRect.top - ttH - gap;
-  } else if (spaceBelow >= ttH + gap) {
-    top = anchorRect.bottom + gap;
-  } else if (spaceBelow >= spaceAbove) {
-    top = anchorRect.bottom + gap;
-  } else {
-    top = anchorRect.top - ttH - gap;
-  }
-
-  const maxTop = Math.min(cr.bottom, window.innerHeight) - ttH - pad;
-  const minTop = Math.max(cr.top, 0) + pad;
-  top = Math.max(minTop, Math.min(top, maxTop));
-
-  let left = anchorRect.left;
-  const maxLeft = Math.min(cr.right, window.innerWidth) - ttW - pad;
-  const minLeft = Math.max(cr.left, 0) + pad;
-  left = Math.max(minLeft, Math.min(left, maxLeft));
-
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
+  positionFixedPopup({
+    anchorRect,
+    popup: tooltip,
+    containerRect: cr,
+    gap: 6,
+    pad: 8,
+    preferY: 'above',
+    anchorEl: anchor,
+  });
   tooltip.style.visibility = 'visible';
 }
 
@@ -667,7 +647,7 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
         }
       }
 
-      if (currentLink !== link) return; // moved away during resolve
+      if (!currentLink || currentLink.kind !== link.kind || currentLink.target !== link.target) return;
 
       tt.innerHTML = renderPreviewContent(data);
       tt.style.display = 'block';

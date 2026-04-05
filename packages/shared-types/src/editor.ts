@@ -26,6 +26,8 @@ export interface EditorConfig {
   onCreatePage?: () => void;
   /** Async input prompt — used by slash commands in sandboxed webviews where window.prompt() is blocked */
   promptInput?: (message: string, placeholder?: string) => Promise<string | null>;
+  /** Create an .excalidraw file and return its relative path from the current document */
+  createExcalidrawFile?: (name: string) => Promise<string | null>;
   /** Callback to resolve link preview data (for hover tooltips) */
   onResolveLink?: (link: { kind: string; target: string; alias?: string }) => Promise<Record<string, unknown> | null>;
   /** Callback to navigate to a link target (Cmd/Ctrl+click) */
@@ -38,6 +40,11 @@ export interface EditorConfig {
   tagSuggestion?: { items: (query: string) => string[] | Promise<string[]> };
   /** When true, content is stored but not loaded synchronously; call loadMarkdownAsync() after creation */
   deferContent?: boolean;
+  /** Link autocomplete: returns workspace files for [[ and ]( triggers */
+  linkSuggest?: {
+    getFiles: () => Array<{ rel: string; name: string; relToDoc: string; fileType: string; ext: string }> |
+      Promise<Array<{ rel: string; name: string; relToDoc: string; fileType: string; ext: string }>>;
+  };
 }
 
 export type KiviTheme = 'dark' | 'light' | 'sepia' | 'nord';

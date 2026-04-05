@@ -297,12 +297,25 @@ export function activate(context: vscode.ExtensionContext) {
     if (filesRevealTimer) clearTimeout(filesRevealTimer);
     filesRevealTimer = setTimeout(async () => {
       if (!filesView.visible) return;
-      const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      const input = activeTab?.input as { uri?: vscode.Uri; viewType?: string } | undefined;
-      if (input?.viewType !== KiviEditorProvider.viewType || !input.uri) return;
 
-      const node = fileExplorerProvider.findNodeByUri(input.uri)
-        ?? await fileExplorerProvider.resolveNodeByPath(input.uri);
+      // Resolve the active file URI from any source:
+      // 1. Custom editor tab (Kivi, Excalidraw, etc.)
+      // 2. Regular text editor
+      let activeUri: vscode.Uri | undefined;
+      const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      const input = activeTab?.input as { uri?: vscode.Uri } | undefined;
+      if (input?.uri) {
+        activeUri = input.uri;
+      } else if (vscode.window.activeTextEditor) {
+        activeUri = vscode.window.activeTextEditor.document.uri;
+      }
+
+      if (!activeUri) return;
+      const fsPath = activeUri.fsPath;
+      if (!fsPath.endsWith('.md') && !fsPath.endsWith('.markdown')) return;
+
+      const node = fileExplorerProvider.findNodeByUri(activeUri)
+        ?? await fileExplorerProvider.resolveNodeByPath(activeUri);
       if (node) {
         filesView.reveal(node, { select: true, focus: false, expand: true });
       }
@@ -745,6 +758,13 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('setContext', 'kivi.editorFocused', isKivi);
     }
   };
+
+  // Reveal when the files tree becomes visible (e.g. user clicks the sidebar)
+  context.subscriptions.push(
+    filesView.onDidChangeVisibility((e) => {
+      if (e.visible) revealActiveFileInTree();
+    }),
+  );
 
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(() => handleTabOrEditorChange()),

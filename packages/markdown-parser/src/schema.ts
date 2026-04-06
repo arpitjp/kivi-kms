@@ -76,7 +76,7 @@ export function imageNode(
   src: string,
   alt?: string,
   title?: string,
-  extra?: { width?: number | null; 'data-align'?: string | null },
+  extra?: { width?: number | string | null; 'data-align'?: string | null },
 ): PMNodeJSON {
   const attrs: Record<string, unknown> = { src, alt: alt || null, title: title || null };
   if (extra?.width) attrs.width = extra.width;
@@ -138,10 +138,6 @@ export function linkMark(href: string, title?: string): PMMarkJSON {
 
 export function wikiLinkMark(target: string, alias?: string): PMMarkJSON {
   return { type: 'wikiLink', attrs: { target, alias: alias || null } };
-}
-
-export function hashTagNode(tag: string): PMNodeJSON {
-  return { type: 'hashTag', attrs: { tag } };
 }
 
 export function hashTagMark(tag: string): PMMarkJSON {

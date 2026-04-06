@@ -38,6 +38,9 @@ importers:
       '@kivi/editor-core':
         specifier: workspace:*
         version: link:../../packages/editor-core
+      '@kivi/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
       '@kivi/vault':
         specifier: workspace:*
         version: link:../../packages/vault

@@ -1,9 +1,144 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as cp from 'child_process';
+import * as https from 'https';
+import * as http from 'http';
 import { scanMarkdown } from '@kivi/vault';
+import { computeMinimalDiff } from '@kivi/shared-types';
 import { getNonce, resolveDocRelativeFolder, computeRelativePathFromDoc } from './utils.js';
 import { DevPanel } from './dev-panel.js';
+
+// ── Open Graph metadata fetcher ──
+
+interface OgMetadata {
+  title?: string;
+  description?: string;
+  image?: string;
+  siteName?: string;
+  type?: string;
+  favicon?: string;
+}
+
+const ogCache = new Map<string, { data: OgMetadata; ts: number }>();
+const OG_CACHE_MAX = 128;
+const OG_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const ogInFlight = new Map<string, Promise<OgMetadata>>();
+
+function pruneOgCache() {
+  if (ogCache.size <= OG_CACHE_MAX) return;
+  const entries = [...ogCache.entries()];
+  entries.sort((a, b) => a[1].ts - b[1].ts);
+  const toRemove = entries.slice(0, entries.length - OG_CACHE_MAX);
+  for (const [key] of toRemove) ogCache.delete(key);
+}
+
+function fetchOgMetadata(url: string): Promise<OgMetadata> {
+  const cached = ogCache.get(url);
+  if (cached && Date.now() - cached.ts < OG_CACHE_TTL) return Promise.resolve(cached.data);
+
+  const existing = ogInFlight.get(url);
+  if (existing) return existing;
+
+  const promise = doFetchOg(url).then(data => {
+    ogCache.set(url, { data, ts: Date.now() });
+    pruneOgCache();
+    ogInFlight.delete(url);
+    return data;
+  }).catch(() => {
+    ogInFlight.delete(url);
+    return {} as OgMetadata;
+  });
+
+  ogInFlight.set(url, promise);
+  return promise;
+}
+
+function doFetchOg(url: string, redirects = 0): Promise<OgMetadata> {
+  if (redirects > 3) return Promise.resolve({});
+  return new Promise((resolve) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, {
+      timeout: 4000,
+      headers: {
+        'User-Agent': 'Kivi-Link-Preview/1.0',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en',
+      },
+    }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        let next = res.headers.location;
+        if (next.startsWith('/')) {
+          try { next = new URL(next, url).href; } catch { resolve({}); return; }
+        }
+        res.resume();
+        doFetchOg(next, redirects + 1).then(resolve).catch(() => resolve({}));
+        return;
+      }
+      if (!res.statusCode || res.statusCode >= 400) { res.resume(); resolve({}); return; }
+
+      let body = '';
+      const maxBytes = 64 * 1024; // only read first 64KB for perf
+      let bytesRead = 0;
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        bytesRead += Buffer.byteLength(chunk);
+        body += chunk;
+        if (bytesRead > maxBytes) res.destroy();
+      });
+      res.on('end', () => resolve(parseOgFromHtml(body, url)));
+      res.on('error', () => resolve({}));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({}); });
+    req.on('error', () => resolve({}));
+  });
+}
+
+function parseOgFromHtml(html: string, pageUrl: string): OgMetadata {
+  const meta = (property: string): string | undefined => {
+    // Match <meta property="og:..." content="..."> or <meta name="..." content="...">
+    const re = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']*)["']`, 'i');
+    const m = re.exec(html);
+    if (m) return m[1];
+    // Also try reversed attribute order: content before property
+    const re2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${property}["']`, 'i');
+    const m2 = re2.exec(html);
+    return m2?.[1] || undefined;
+  };
+
+  const titleTag = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
+  const ogTitle = meta('og:title') || meta('twitter:title');
+  const ogDesc = meta('og:description') || meta('twitter:description') || meta('description');
+  let ogImage = meta('og:image') || meta('twitter:image');
+  const ogSite = meta('og:site_name');
+  const ogType = meta('og:type');
+
+  // Resolve relative og:image URLs
+  if (ogImage && !ogImage.startsWith('http')) {
+    try { ogImage = new URL(ogImage, pageUrl).href; } catch { /* leave as-is */ }
+  }
+
+  // Favicon: look for <link rel="icon" href="...">
+  let favicon: string | undefined;
+  const faviconMatch = /<link[^>]+rel=["'](?:icon|shortcut icon)["'][^>]+href=["']([^"']*)["']/i.exec(html);
+  if (faviconMatch) {
+    favicon = faviconMatch[1];
+    if (favicon && !favicon.startsWith('http')) {
+      try { favicon = new URL(favicon, pageUrl).href; } catch { /* skip */ }
+    }
+  }
+  if (!favicon) {
+    try { favicon = new URL('/favicon.ico', pageUrl).href; } catch { /* skip */ }
+  }
+
+  return {
+    title: ogTitle || titleTag?.[1]?.trim() || undefined,
+    description: ogDesc?.slice(0, 300) || undefined,
+    image: ogImage || undefined,
+    siteName: ogSite || undefined,
+    type: ogType || undefined,
+    favicon,
+  };
+}
 
 export interface KiviSettings {
   editorBackground: string;
@@ -183,8 +318,12 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       vscode.Uri.joinPath(this.context.extensionUri, 'images'),
       vscode.Uri.joinPath(document.uri, '..'),
     ];
-    const wsFolder = vscode.workspace.workspaceFolders?.[0];
-    if (wsFolder) roots.push(wsFolder.uri);
+    const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri)
+      ?? vscode.workspace.workspaceFolders?.[0];
+    // Include all workspace folders so cross-workspace asset refs resolve
+    for (const f of vscode.workspace.workspaceFolders ?? []) {
+      roots.push(f.uri);
+    }
 
     webviewPanel.webview.options = {
       enableScripts: true,
@@ -270,6 +409,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       vscode.workspace.onDidSaveTextDocument((doc) => {
         if (doc.uri.toString() === docUriStr) {
           postMessage({ type: 'flushEdits' });
+          this.sendGitDiff(document, postMessage);
         }
       }),
     );
@@ -364,6 +504,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           // Defer non-critical post-ready work to avoid blocking the first paint
           setTimeout(() => {
             this.sendGitBase(document, postMessage);
+            this.sendGitDiff(document, postMessage);
             if (KiviEditorProvider.workspaceTags.size > 0) {
               postMessage({ type: 'tagIndex', tags: Array.from(KiviEditorProvider.workspaceTags).sort() });
             }
@@ -510,10 +651,10 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const excReqId = msg.reqId as string | undefined;
           if (excName && excReqId) {
             try {
-              const wsFolder = vscode.workspace.workspaceFolders?.[0];
-              if (!wsFolder) throw new Error('No workspace folder');
+              const cfg = vscode.workspace.getConfiguration('kivi');
+              const assetsFolder = cfg.get<string>('folders.assets', 'assets');
               const fileName = excName.endsWith('.excalidraw') ? excName : `${excName}.excalidraw`;
-              const assetsDir = vscode.Uri.joinPath(wsFolder.uri, 'assets');
+              const assetsDir = resolveDocRelativeFolder(document.uri, assetsFolder);
               try { await vscode.workspace.fs.createDirectory(assetsDir); } catch { /* exists */ }
               const fileUri = vscode.Uri.joinPath(assetsDir, fileName);
               const emptyScene = JSON.stringify({
@@ -538,9 +679,6 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           if (excSrc) {
             const fileUri = this.resolveUnifiedPath(excSrc, document);
             if (fileUri) {
-              // Use vscode.openWith with the registered viewType for the
-              // excalidraw editor extension. Fall back to vscode.open which
-              // uses the default editor for the file type.
               try {
                 await vscode.commands.executeCommand(
                   'vscode.openWith', fileUri, 'editor.excalidraw',
@@ -548,6 +686,28 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
               } catch {
                 await vscode.commands.executeCommand('vscode.open', fileUri);
               }
+            }
+          }
+          break;
+        }
+
+        case 'openAsset': {
+          const assetSrc = msg.src as string | undefined;
+          if (!assetSrc) break;
+          if (assetSrc.startsWith('http://') || assetSrc.startsWith('https://')) {
+            vscode.env.openExternal(vscode.Uri.parse(assetSrc));
+            break;
+          }
+          const assetFileUri = this.resolveUnifiedPath(assetSrc, document);
+          if (assetFileUri) {
+            if (/\.excalidraw$/i.test(assetSrc)) {
+              try {
+                await vscode.commands.executeCommand('vscode.openWith', assetFileUri, 'editor.excalidraw');
+              } catch {
+                await vscode.commands.executeCommand('vscode.open', assetFileUri);
+              }
+            } else {
+              await vscode.commands.executeCommand('vscode.open', assetFileUri);
             }
           }
           break;
@@ -574,26 +734,12 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           if (newContent === lastKnownContent) break;
 
           const edit = new vscode.WorkspaceEdit();
-          const oldText = lastKnownContent;
-          const newText = newContent;
-
-          // Find minimal diff range
-          let start = 0;
-          while (start < oldText.length && start < newText.length && oldText[start] === newText[start]) {
-            start++;
-          }
-          let oldEnd = oldText.length;
-          let newEnd = newText.length;
-          while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === newText[newEnd - 1]) {
-            oldEnd--;
-            newEnd--;
-          }
+          const { start, oldEnd, replacement } = computeMinimalDiff(lastKnownContent, newContent);
 
           const range = new vscode.Range(
             document.positionAt(start),
             document.positionAt(oldEnd),
           );
-          const replacement = newText.slice(start, newEnd);
 
           edit.replace(document.uri, range, replacement);
           pendingOwnEdits++;
@@ -685,6 +831,35 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           break;
         }
 
+        case 'getFileHeadings': {
+          const targetRel = msg.relPath as string | undefined;
+          const reqId = msg.reqId as string | undefined;
+          if (!targetRel || !reqId) break;
+          try {
+            const fileUri = this.resolveUnifiedPath(targetRel, document);
+            if (!fileUri) { postMessage({ type: 'fileHeadings', reqId, headings: [] }); break; }
+            const data = await vscode.workspace.fs.readFile(fileUri);
+            const content = new TextDecoder().decode(data);
+            const fLines = content.split('\n');
+            const slugify = (t: string) => t.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+            const fHeadings: { name: string; slug: string; level: number }[] = [];
+            let inCB = false;
+            for (const l of fLines) {
+              if (l.trimStart().startsWith('```')) { inCB = !inCB; continue; }
+              if (inCB) continue;
+              const hm = /^(#{1,6})\s+(.+)$/.exec(l);
+              if (hm) {
+                const hText = hm[2].trim();
+                fHeadings.push({ name: hText, slug: slugify(hText), level: hm[1].length });
+              }
+            }
+            postMessage({ type: 'fileHeadings', reqId, headings: fHeadings });
+          } catch {
+            postMessage({ type: 'fileHeadings', reqId, headings: [] });
+          }
+          break;
+        }
+
         case 'listWorkspaceFiles': {
           if (!wsFolder) break;
           const IMAGE_EXTS_WS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'];
@@ -693,8 +868,10 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           const USEFUL_EXTS = ['.md', '.excalidraw', ...IMAGE_EXTS_WS, ...VIDEO_EXTS_WS, ...AUDIO_EXTS_WS,
             '.pdf', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.html', '.css', '.js', '.ts',
             '.py', '.go', '.rs', '.c', '.cpp', '.h', '.java', '.sh', '.bash', '.zsh'];
-          const globPattern = `**/*{${USEFUL_EXTS.join(',')}}`;
-          const allUris = await vscode.workspace.findFiles(globPattern, '{**/node_modules/**,**/.git/**}', 1000);
+          const allUris = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(wsFolder, `**/*{${USEFUL_EXTS.join(',')}}`),
+            '{**/node_modules/**,**/.git/**}', 1000,
+          );
           const docDir = path.dirname(document.uri.fsPath);
           const wsRoot = wsFolder.uri.fsPath;
           const currentRel = path.relative(wsRoot, document.uri.fsPath).replace(/\\/g, '/');
@@ -760,6 +937,87 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
           vscode.commands.executeCommand('vscode.openWith', fileUri, KiviEditorProvider.viewType);
           const relPath = computeRelativePathFromDoc(document.uri, fileUri);
           postMessage({ type: 'childPageCreated', path: relPath, name: safeName.replace(/\.md$/, '') });
+          break;
+        }
+
+        case 'pickAsset': {
+          const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.avif']);
+          const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogg']);
+          const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.weba']);
+          const MD_EXTS = new Set(['.md', '.markdown']);
+
+          const picks = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            openLabel: 'Insert',
+            title: 'Insert file as asset',
+            filters: {
+              'All Supported': ['md', 'markdown', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif', 'mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'excalidraw', 'pdf', '*'],
+              'Images': ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'],
+              'Video': ['mp4', 'webm', 'mov', 'avi', 'mkv'],
+              'Audio': ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'],
+            },
+          });
+          if (!picks?.length) break;
+
+          const cfg = vscode.workspace.getConfiguration('kivi');
+          const assetsFolder = cfg.get<string>('folders.assets', 'assets');
+          const pagesFolder = cfg.get<string>('folders.pages', 'pages');
+          const parts: string[] = [];
+
+          for (const uri of picks) {
+            const ext = path.extname(uri.fsPath).toLowerCase();
+            let fileType = 'file';
+            if (IMAGE_EXTS.has(ext)) fileType = 'image';
+            else if (VIDEO_EXTS.has(ext)) fileType = 'video';
+            else if (AUDIO_EXTS.has(ext)) fileType = 'audio';
+            else if (/\.excalidraw$/i.test(uri.fsPath)) fileType = 'excalidraw';
+            else if (MD_EXTS.has(ext)) fileType = 'markdown';
+
+            let targetUri = uri;
+            const inWorkspace = !!vscode.workspace.getWorkspaceFolder(uri);
+
+            if (!inWorkspace) {
+              const destDirName = (fileType === 'markdown' || fileType === 'file' && MD_EXTS.has(ext))
+                ? pagesFolder : assetsFolder;
+              const folderUri = resolveDocRelativeFolder(document.uri, destDirName);
+              try { await vscode.workspace.fs.createDirectory(folderUri); } catch { /* exists */ }
+              targetUri = vscode.Uri.joinPath(folderUri, path.basename(uri.fsPath));
+              try {
+                await vscode.workspace.fs.copy(uri, targetUri, { overwrite: false });
+                DevPanel.log('info', 'asset', `Copied external file: ${path.basename(uri.fsPath)}`);
+              } catch {
+                DevPanel.log('warn', 'asset', `File already exists: ${path.basename(uri.fsPath)}`);
+              }
+            }
+
+            const relPath = computeRelativePathFromDoc(document.uri, targetUri);
+            const name = path.basename(relPath).replace(/\.[^.]+$/, '');
+
+            switch (fileType) {
+              case 'image':
+                parts.push(`![${name}](${relPath})`);
+                break;
+              case 'excalidraw':
+                parts.push(`![${name}](${relPath})`);
+                break;
+              case 'video':
+                parts.push(`<video src="${relPath}" controls style="max-width:100%"></video>`);
+                break;
+              case 'audio':
+                parts.push(`<audio src="${relPath}" controls></audio>`);
+                break;
+              case 'markdown':
+                parts.push(`[${name}](${relPath})`);
+                break;
+              default:
+                parts.push(`[${name}](${relPath})`);
+                break;
+            }
+          }
+
+          if (parts.length > 0) {
+            postMessage({ type: 'assetInserted', content: parts.join('\n\n') });
+          }
           break;
         }
 
@@ -915,7 +1173,8 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     webview: vscode.Webview,
   ): Promise<Record<string, unknown> | null> {
     try {
-      const folder = vscode.workspace.workspaceFolders?.[0];
+      const folder = vscode.workspace.getWorkspaceFolder(currentDoc.uri)
+        ?? vscode.workspace.workspaceFolders?.[0];
       if (!folder) return null;
 
       const kind = link.kind;
@@ -955,14 +1214,23 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
 
       if (kind === 'external-url') {
         let domain = '';
-        try { domain = new URL(target).hostname; } catch { /* */ }
+        try { domain = new URL(target).hostname; } catch { /* malformed URL */ }
+
+        // Fetch Open Graph metadata (cached, non-blocking)
+        let og: OgMetadata = {};
+        try { og = await fetchOgMetadata(target); } catch { /* skip on error */ }
+
         return {
           kind: 'external-url',
           target,
-          title: link.alias || target,
-          domain,
+          title: og.title || link.alias || target,
+          snippet: og.description || undefined,
+          thumbnailUrl: og.image || undefined,
+          domain: og.siteName || domain,
           exists: true,
-        };
+          favicon: og.favicon,
+          ogType: og.type,
+        } as Record<string, unknown>;
       }
 
       if (kind === 'heading-ref') {
@@ -1023,7 +1291,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
               try {
                 const bytes = await vscode.workspace.fs.readFile(resolved);
                 result.snippet = new TextDecoder().decode(bytes).split('\n').slice(0, 6).join('\n');
-              } catch { /* */ }
+              } catch { /* snippet is optional; file may be unreadable */ }
             }
           }
           return result;
@@ -1080,7 +1348,8 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     currentDoc: vscode.TextDocument,
     beside = false,
   ): Promise<void> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = vscode.workspace.getWorkspaceFolder(currentDoc.uri)
+      ?? vscode.workspace.workspaceFolders?.[0];
     if (!folder) return;
 
     if (link.kind === 'external-url') {
@@ -1235,9 +1504,10 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     if (!cleaned) return null;
 
     if (cleaned.startsWith('/')) {
-      const wsFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!wsFolder) return null;
-      return vscode.Uri.joinPath(wsFolder.uri, cleaned.slice(1));
+      const rootFolder = vscode.workspace.getWorkspaceFolder(currentDoc.uri)
+        ?? vscode.workspace.workspaceFolders?.[0];
+      if (!rootFolder) return null;
+      return vscode.Uri.joinPath(rootFolder.uri, cleaned.slice(1));
     }
 
     if (cleaned.startsWith('~/')) {
@@ -1267,6 +1537,51 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     } catch {
       // No git info available (new file, not in repo, etc.)
     }
+  }
+
+  // ── Accurate git diff hunks (matches VS Code SCM gutters) ──
+
+  private sendGitDiff(
+    document: vscode.TextDocument,
+    postMessage: (msg: Record<string, unknown>) => void,
+  ): void {
+    const fsPath = document.uri.fsPath;
+    const dir = path.dirname(fsPath);
+    const file = path.basename(fsPath);
+
+    const cmd = `git diff HEAD --unified=0 -- "${file}"`;
+    cp.exec(cmd, { cwd: dir, timeout: 5000 }, (err, stdout) => {
+      if (err && !stdout) {
+        // If git diff fails entirely (not in repo, etc.), try detecting
+        // if the file is untracked (all lines are "added")
+        cp.exec(`git ls-files -- "${file}"`, { cwd: dir, timeout: 3000 }, (lsErr, lsOut) => {
+          if (!lsErr && lsOut.trim() === '') {
+            // Untracked file: count lines and mark all as added
+            const lines = document.getText().split('\n');
+            if (lines.length > 0) {
+              postMessage({
+                type: 'gitDiffHunks',
+                hunks: [{ oldStart: 0, oldCount: 0, newStart: 1, newCount: lines.length }],
+              });
+            }
+          }
+        });
+        return;
+      }
+
+      const hunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number }> = [];
+      const hunkRe = /@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/g;
+      let match: RegExpExecArray | null;
+      while ((match = hunkRe.exec(stdout)) !== null) {
+        const oldStart = parseInt(match[1], 10);
+        const oldCount = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+        const newStart = parseInt(match[3], 10);
+        const newCount = match[4] !== undefined ? parseInt(match[4], 10) : 1;
+        hunks.push({ oldStart, oldCount, newStart, newCount });
+      }
+
+      postMessage({ type: 'gitDiffHunks', hunks });
+    });
   }
 
   // ── Git blame for author info ──

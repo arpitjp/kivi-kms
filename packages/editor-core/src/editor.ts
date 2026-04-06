@@ -49,6 +49,8 @@ import { LinkSuggest } from './extensions/link-suggest.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
+const _PERF_LOG = typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__KIVI_DEV__ === true;
+
 export class KiviEditor {
   private editor: Editor;
   private kiviDoc: KiviDocument | null = null;
@@ -85,7 +87,7 @@ export class KiviEditor {
                 if (!codeType || !codeType.isInSet($from.marks())) return false;
 
                 const afterHasCode = $from.nodeAfter?.marks.some(
-                  (m: any) => m.type === codeType,
+                  (m) => m.type === codeType,
                 ) ?? false;
                 if (afterHasCode) return false;
 
@@ -103,7 +105,9 @@ export class KiviEditor {
                 tr.setStoredMarks(
                   $from.marks().filter((m: any) => m.type !== codeType),
                 );
-                this.editor.view.dispatch(tr);
+                tr.setMeta('kiviSmartTypoHandled', true);
+                tr.setMeta('smartTypoContinue', null);
+                this.editor.view.dispatch(tr.scrollIntoView());
                 return true;
               },
 
@@ -128,7 +132,9 @@ export class KiviEditor {
                 tr.setStoredMarks(
                   $from.marks().filter((m: any) => m.type !== codeType),
                 );
-                this.editor.view.dispatch(tr);
+                tr.setMeta('kiviSmartTypoHandled', true);
+                tr.setMeta('smartTypoContinue', null);
+                this.editor.view.dispatch(tr.scrollIntoView());
                 return true;
               },
             };
@@ -190,10 +196,13 @@ export class KiviEditor {
                 default: null,
                 parseHTML: (el: HTMLElement) => {
                   const w = el.getAttribute('width');
-                  return w ? parseInt(w, 10) || null : null;
+                  if (!w) return null;
+                  if (w === '100%') return '100%';
+                  return parseInt(w, 10) || null;
                 },
                 renderHTML: (attrs: Record<string, unknown>) => {
                   if (!attrs.width) return {};
+                  if (attrs.width === '100%') return { width: '100%', style: 'width:100%' };
                   return { width: String(attrs.width) };
                 },
               },
@@ -215,7 +224,7 @@ export class KiviEditor {
           addInputRules() {
             return [
               new InputRule({
-                find: /^\s*-?\s*\[([( |x])?\]\s$/,
+                find: /^\s*-?\s*\[([ xX])?\]\s$/,
                 handler: ({ state, range, match }) => {
                   const checked = match[1] === 'x';
                   const { schema, tr } = state;
@@ -223,8 +232,16 @@ export class KiviEditor {
                   const taskListType = schema.nodes.taskList;
                   if (!taskItemType || !taskListType) return;
 
-                  // Resolve the block boundaries BEFORE any mutations
                   const $start = state.doc.resolve(range.from);
+
+                  // If already inside a listItem (e.g. user typed `- [ ] `),
+                  // bail — tryBulletToTask in SmartTypography handles the
+                  // bulletList → taskList conversion without creating a nested list.
+                  for (let d = $start.depth; d >= 0; d--) {
+                    const name = $start.node(d).type.name;
+                    if (name === 'listItem' || name === 'taskItem') return;
+                  }
+
                   const blockFrom = $start.before($start.depth);
                   const blockTo = $start.after($start.depth);
 
@@ -233,7 +250,6 @@ export class KiviEditor {
                   const taskList = taskListType.create(null, taskItem);
 
                   tr.replaceWith(blockFrom, blockTo, taskList);
-                  // After replace: taskList(+1) > taskItem(+1) > paragraph(+1) > cursor
                   tr.setSelection(TextSelection.create(tr.doc, blockFrom + 3));
                   tr.scrollIntoView();
                 },
@@ -298,6 +314,7 @@ export class KiviEditor {
         TocBlock,
         SlashCommands.configure({
           onCreatePage: options.onCreatePage,
+          onInsertAsset: options.onInsertAsset,
           promptInput: options.promptInput,
           createExcalidrawFile: options.createExcalidrawFile,
         }),
@@ -384,7 +401,7 @@ export class KiviEditor {
     const t2 = typeof performance !== 'undefined' ? performance.now() : 0;
     resetDirtyTracking(this.editor);
     this.suppressUpdates = false;
-    if (t0) {
+    if (t0 && _PERF_LOG) {
       console.log(`[kivi-perf] parseMarkdown: ${(t1 - t0).toFixed(1)}ms, setContent: ${(t2 - t1).toFixed(1)}ms`);
     }
   }
@@ -408,7 +425,7 @@ export class KiviEditor {
     const t2 = typeof performance !== 'undefined' ? performance.now() : 0;
     resetDirtyTracking(this.editor);
     this.suppressUpdates = false;
-    if (t0) {
+    if (t0 && _PERF_LOG) {
       console.log(`[kivi-perf] async parseMarkdown: ${(t1 - t0).toFixed(1)}ms, setContent: ${(t2 - t1).toFixed(1)}ms`);
     }
   }

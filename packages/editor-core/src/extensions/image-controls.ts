@@ -13,10 +13,14 @@ const ICONS = {
   alignLeft: svg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="2" y1="7" x2="10" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'),
   alignCenter: svg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'),
   alignRight: svg('<line x1="2" y1="3" x2="14" y2="3"/><line x1="6" y1="7" x2="14" y2="7"/><line x1="2" y1="11" x2="14" y2="11"/>'),
+  fullWidth: svg('<path d="M2 4h12M2 12h12"/><path d="M4.5 7.5L2 8l2.5.5"/><path d="M11.5 7.5L14 8l-2.5.5"/>'),
+  resetWidth: svg('<path d="M5 4h6M5 12h6"/><path d="M6.5 7.5L9 8l-2.5.5"/><path d="M9.5 7.5L7 8l2.5.5"/>'),
   trash: svg('<polyline points="3,4 13,4"/><path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1"/><path d="M4 4l.7 9.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L12 4"/>'),
   copy: svg('<rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5H11"/>'),
-  link: svg('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'),
-  alt: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><text x="5" y="10" font-size="7" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">A</text>'),
+  caption: svg('<rect x="2" y="2" width="12" height="7" rx="1"/><line x1="3" y1="11.5" x2="13" y2="11.5"/><line x1="4.5" y1="14" x2="11.5" y2="14"/>'),
+  openExt: svg('<path d="M10 2h4v4"/><path d="M14 2L8 8"/><path d="M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"/>'),
+  play: svg('<polygon points="5,3 13,8 5,13" fill="currentColor" stroke="none"/>'),
+  pause: svg('<rect x="4" y="3" width="3" height="10" rx="0.5" fill="currentColor" stroke="none"/><rect x="9" y="3" width="3" height="10" rx="0.5" fill="currentColor" stroke="none"/>'),
 };
 
 type HandlePosition = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -126,6 +130,41 @@ export const ImageControls = Extension.create({
     return [
       new Plugin({
         key: mediaControlsKey,
+        props: {
+          handleDOMEvents: {
+            dblclick(view, event) {
+              const target = event.target as HTMLElement;
+              if (!target.closest('img')) return false;
+              const pos = view.posAtCoords({ left: event.clientX, top: event.clientY });
+              if (!pos) return false;
+              const node = view.state.doc.nodeAt(pos.inside >= 0 ? pos.inside : pos.pos);
+              if (!node || !MEDIA_NODE_NAMES.has(node.type.name)) return false;
+              const src = node.attrs.src as string | undefined;
+              if (src && !src.startsWith('data:')) {
+                event.preventDefault();
+                document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src } }));
+                return true;
+              }
+              return false;
+            },
+            click(view, event) {
+              if (!(event.metaKey || event.ctrlKey)) return false;
+              const target = event.target as HTMLElement;
+              if (!target.closest('img, video, audio, .kivi-excalidraw-block')) return false;
+              const pos = view.posAtCoords({ left: event.clientX, top: event.clientY });
+              if (!pos) return false;
+              const node = view.state.doc.nodeAt(pos.inside >= 0 ? pos.inside : pos.pos);
+              if (!node || !MEDIA_NODE_NAMES.has(node.type.name)) return false;
+              const src = node.attrs.src as string | undefined;
+              if (src && !src.startsWith('data:')) {
+                event.preventDefault();
+                document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src } }));
+                return true;
+              }
+              return false;
+            },
+          },
+        },
         view(_initialView: EditorView) {
           let panel: HTMLElement | null = null;
           let activeEl: HTMLElement | null = null;
@@ -343,48 +382,37 @@ export const ImageControls = Extension.create({
             return s;
           }
 
-          function toggleEditRow(mode: 'src' | 'alt') {
+          function toggleEditRow(mode: 'alt') {
             if (!panel) return;
-            const currentMode = editRow?.dataset.mode;
             if (editRow) {
               editRow.remove();
               editRow = null;
-              if (currentMode === mode) { repositionFloating(); return; }
+              repositionFloating();
+              return;
             }
 
             editRow = document.createElement('div');
             editRow.className = 'kivi-img-ctrl-edit-row';
-            editRow.dataset.mode = mode;
             editRow.style.pointerEvents = 'auto';
-
-            const labels: Record<string, string> = { src: 'URL', alt: 'Alt' };
-            const attrKeys: Record<string, string> = { src: 'src', alt: 'alt' };
-            const placeholders: Record<string, string> = { src: 'Source URL or path...', alt: 'Alt text...' };
 
             const label = document.createElement('span');
             label.className = 'kivi-img-ctrl-edit-label';
-            label.textContent = labels[mode];
+            label.textContent = 'Alt';
             editRow.appendChild(label);
 
             const input = document.createElement('input');
             input.type = 'text';
             input.className = 'kivi-img-ctrl-edit-input';
-            const currentVal = getNodeAttr(attrKeys[mode]);
+            const currentVal = getNodeAttr(mode);
             input.value = currentVal != null ? String(currentVal) : '';
-            input.placeholder = placeholders[mode];
+            input.placeholder = 'Describe this image…';
             input.addEventListener('mousedown', (e) => e.stopPropagation());
             input.addEventListener('keydown', (e) => {
               e.stopPropagation();
-              if (e.key === 'Enter') {
-                updateNodeAttr(attrKeys[mode], input.value);
-                if (mode === 'src' && activeEl) (activeEl as HTMLMediaElement).src = input.value;
-              }
+              if (e.key === 'Enter') updateNodeAttr(mode, input.value);
               if (e.key === 'Escape') { editRow?.remove(); editRow = null; repositionFloating(); }
             });
-            input.addEventListener('change', () => {
-              updateNodeAttr(attrKeys[mode], input.value);
-              if (mode === 'src' && activeEl) (activeEl as HTMLMediaElement).src = input.value;
-            });
+            input.addEventListener('change', () => updateNodeAttr(mode, input.value));
             editRow.appendChild(input);
 
             panel.appendChild(editRow);
@@ -454,42 +482,101 @@ export const ImageControls = Extension.create({
                 buttonRow.appendChild(b);
               }
               buttonRow.appendChild(makeSep());
+
+              const isFullWidth = getNodeAttr('width') === '100%';
+              const fwBtn = makeBtn(
+                isFullWidth ? ICONS.resetWidth : ICONS.fullWidth,
+                isFullWidth ? 'Reset to natural size' : 'Full width',
+                () => {
+                  const currentlyFull = getNodeAttr('width') === '100%';
+                  updateNodeAttr('width', currentlyFull ? null : '100%');
+                  reattachAfterTransaction(view);
+                  requestAnimationFrame(() => {
+                    if (activeEl && activeView) {
+                      const m = detectMediaAtSelection(activeView);
+                      if (m) showOverlay(activeView, m.el, m.pos, m.kind);
+                    }
+                  });
+                },
+              );
+              if (isFullWidth) fwBtn.classList.add('active');
+              buttonRow.appendChild(fwBtn);
+              buttonRow.appendChild(makeSep());
             }
 
-            buttonRow.appendChild(makeBtn(ICONS.link, 'Edit source URL', () => toggleEditRow('src')));
-
             if (kind === 'image') {
-              buttonRow.appendChild(makeBtn(ICONS.alt, 'Edit alt text', () => toggleEditRow('alt')));
+              buttonRow.appendChild(makeBtn(ICONS.caption, 'Edit alt text', () => toggleEditRow('alt')));
               const imgSrc = (getNodeAttr('src') as string) || '';
-              if (/\.excalidraw\.(png|svg)$/i.test(imgSrc)) {
-                buttonRow.appendChild(makeSep());
+              if (/\.gif(\?|$)/i.test(imgSrc)) {
+                const img = el as HTMLImageElement;
+                const isPaused = !!img.dataset.kiviGifPaused;
                 buttonRow.appendChild(makeBtn(
-                  svg('<path d="M14.5 1.5l-13 13M1.5 1.5l13 13M8 1v14M1 8h14"/>'),
-                  'Open in Excalidraw',
-                  () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: imgSrc } })),
+                  isPaused ? ICONS.play : ICONS.pause,
+                  isPaused ? 'Play GIF' : 'Pause GIF',
+                  () => {
+                    if (img.dataset.kiviGifPaused) {
+                      if (img.dataset.kiviOrigSrc) {
+                        img.src = img.dataset.kiviOrigSrc;
+                        delete img.dataset.kiviOrigSrc;
+                      }
+                      delete img.dataset.kiviGifPaused;
+                    } else {
+                      const cw = img.naturalWidth || img.width;
+                      const ch = img.naturalHeight || img.height;
+                      if (cw > 0 && ch > 0) {
+                        const c = document.createElement('canvas');
+                        c.width = cw;
+                        c.height = ch;
+                        const ctx = c.getContext('2d');
+                        if (ctx) {
+                          ctx.drawImage(img, 0, 0, c.width, c.height);
+                          img.dataset.kiviOrigSrc = img.src;
+                          img.src = c.toDataURL('image/png');
+                          img.dataset.kiviGifPaused = '1';
+                        }
+                      }
+                    }
+                    requestAnimationFrame(() => {
+                      if (activeEl && activeView) {
+                        const m = detectMediaAtSelection(activeView);
+                        if (m) showOverlay(activeView, m.el, m.pos, m.kind);
+                      }
+                    });
+                  },
                 ));
+              }
+              if (/\.excalidraw\.(png|svg)$/i.test(imgSrc)) {
+                buttonRow.appendChild(makeBtn(ICONS.openExt, 'Open in Excalidraw',
+                  () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: imgSrc } }))));
               }
             }
 
             if (kind === 'excalidrawBlock') {
               const excSrc = getNodeAttr('src') as string | null;
               if (excSrc) {
-                buttonRow.appendChild(makeBtn(
-                  svg('<path d="M14.5 1.5l-13 13M1.5 1.5l13 13M8 1v14M1 8h14"/>'),
-                  'Open in Excalidraw',
-                  () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: excSrc } })),
-                ));
+                buttonRow.appendChild(makeBtn(ICONS.openExt, 'Edit in Excalidraw',
+                  () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: excSrc } }))));
               }
+            }
+
+            // "Open file" button — consistent across all media types
+            const mediaSrc = (getNodeAttr('src') as string) || '';
+            if (mediaSrc) {
+              const openLabel = kind === 'excalidrawBlock' ? 'Open source file'
+                : kind === 'image' ? 'Open image' : kind === 'video' ? 'Open video' : 'Open audio';
+              buttonRow.appendChild(makeBtn(ICONS.openExt, openLabel, () => {
+                document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src: mediaSrc } }));
+              }));
             }
 
             buttonRow.appendChild(makeSep());
 
-            buttonRow.appendChild(makeBtn(ICONS.copy, 'Copy asset path', () => {
+            buttonRow.appendChild(makeBtn(ICONS.copy, 'Copy path', () => {
               const src = (getNodeAttr('src') as string) || '';
               document.dispatchEvent(new CustomEvent('kivi-copy-asset-path', { detail: { src } }));
             }));
 
-            buttonRow.appendChild(makeBtn(ICONS.trash, `Delete ${kind}`, () => {
+            buttonRow.appendChild(makeBtn(ICONS.trash, 'Delete', () => {
               const node = view.state.doc.nodeAt(pos);
               if (node) {
                 const src = node.attrs.src as string | undefined;

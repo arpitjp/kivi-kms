@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { Vault } from '@kivi/vault';
-import { getNonce } from './utils.js';
+import { getNonce, getTabUri } from './utils.js';
 
 export class GraphPanel {
   private static instance: GraphPanel | undefined;
@@ -51,19 +51,21 @@ export class GraphPanel {
       this.disposables.forEach((d) => d.dispose());
     });
 
-    panel.webview.onDidReceiveMessage(async (msg) => {
-      if (msg.type === 'ready') {
-        await this.indexWorkspace();
-        this.sendGraphData();
-      } else if (msg.type === 'openFile') {
-        const uri = this.resolvePathToUri(msg.path);
-        if (uri) {
-          vscode.commands.executeCommand('vscode.openWith', uri, 'kivi.markdownEditor');
+    this.disposables.push(
+      panel.webview.onDidReceiveMessage(async (msg) => {
+        if (msg.type === 'ready') {
+          await this.indexWorkspace();
+          this.sendGraphData();
+        } else if (msg.type === 'openFile') {
+          const uri = await this.resolvePathToUri(msg.path);
+          if (uri) {
+            vscode.commands.executeCommand('vscode.openWith', uri, 'kivi.markdownEditor');
+          }
+        } else if (msg.type === 'closeGraph') {
+          panel.dispose();
         }
-      } else if (msg.type === 'closeGraph') {
-        panel.dispose();
-      }
-    });
+      }),
+    );
 
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.md');
     this.disposables.push(
@@ -78,11 +80,17 @@ export class GraphPanel {
   private debouncedRefresh() {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = setTimeout(async () => {
-      await this.indexWorkspace();
-      this.sendGraphData();
+      try {
+        await this.indexWorkspace();
+        this.sendGraphData();
+      } catch (err) {
+        console.error('[kivi] graph refresh failed:', err);
+      }
     }, 500);
   }
 
+  // PERF: This re-reads all markdown files independently of the main extension
+  // indexer in extension.ts. Consider sharing indexed content to avoid duplicate I/O.
   private async indexWorkspace() {
     const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 2000);
     const vault = new Vault();
@@ -112,7 +120,7 @@ export class GraphPanel {
       if (editor && editor.document.fileName.endsWith('.md')) {
         focusNode = vscode.workspace.asRelativePath(editor.document.uri, false);
       } else {
-        const tabUri = (vscode.window.tabGroups.activeTabGroup.activeTab?.input as any)?.uri as vscode.Uri | undefined;
+        const tabUri = getTabUri(vscode.window.tabGroups.activeTabGroup.activeTab);
         if (tabUri && tabUri.fsPath.endsWith('.md')) {
           focusNode = vscode.workspace.asRelativePath(tabUri, false);
         }
@@ -148,10 +156,15 @@ export class GraphPanel {
     });
   }
 
-  private resolvePathToUri(relativePath: string): vscode.Uri | undefined {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) return undefined;
-    return vscode.Uri.joinPath(folder.uri, relativePath);
+  private async resolvePathToUri(relativePath: string): Promise<vscode.Uri | undefined> {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const uri = vscode.Uri.joinPath(folder.uri, relativePath);
+      try {
+        await vscode.workspace.fs.stat(uri);
+        return uri;
+      } catch { /* not in this folder */ }
+    }
+    return undefined;
   }
 
   private getHtml(webview: vscode.Webview): string {

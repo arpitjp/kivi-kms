@@ -24,6 +24,8 @@ export interface EditorConfig {
   lineHeight?: number;
   /** Callback for "New Page" slash command */
   onCreatePage?: () => void;
+  /** Callback for "Insert File" — opens native picker, copies external files, inserts markdown */
+  onInsertAsset?: () => void;
   /** Async input prompt — used by slash commands in sandboxed webviews where window.prompt() is blocked */
   promptInput?: (message: string, placeholder?: string) => Promise<string | null>;
   /** Create an .excalidraw file and return its relative path from the current document */

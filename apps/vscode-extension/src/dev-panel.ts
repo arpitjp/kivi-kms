@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { KiviEditorProvider } from './editor-provider.js';
-import { getNonce } from './utils.js';
+import { getNonce, getTabViewType } from './utils.js';
 
 interface LogEntry {
   timestamp: number;
@@ -105,23 +105,25 @@ export class DevPanel {
       this.disposables.forEach(d => d.dispose());
     });
 
-    panel.webview.onDidReceiveMessage(msg => {
-      switch (msg.type) {
-        case 'ready':
-          this.sendFullState();
-          break;
-        case 'clearLogs':
-          DevPanel.logs = [];
-          this.sendToPanel({ type: 'logs', logs: [] });
-          break;
-        case 'refreshState':
-          this.sendFullState();
-          break;
-        case 'runDiag':
-          this.runDiagnostics();
-          break;
-      }
-    });
+    this.disposables.push(
+      panel.webview.onDidReceiveMessage(msg => {
+        switch (msg.type) {
+          case 'ready':
+            this.sendFullState();
+            break;
+          case 'clearLogs':
+            DevPanel.logs = [];
+            this.sendToPanel({ type: 'logs', logs: [] });
+            break;
+          case 'refreshState':
+            this.sendFullState();
+            break;
+          case 'runDiag':
+            this.runDiagnostics();
+            break;
+        }
+      }),
+    );
 
     this.disposables.push(
       vscode.workspace.onDidChangeConfiguration(() => this.sendSettings()),
@@ -184,7 +186,7 @@ export class DevPanel {
 
     const workspaceTags = KiviEditorProvider.workspaceTags;
     const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-    const isKivi = activeTab && (activeTab.input as any)?.viewType === KiviEditorProvider.viewType;
+    const isKivi = activeTab && getTabViewType(activeTab) === KiviEditorProvider.viewType;
 
     this.sendToPanel({
       type: 'editorState',

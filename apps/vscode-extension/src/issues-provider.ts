@@ -30,7 +30,9 @@ export class IssuesProvider implements vscode.TreeDataProvider<IssueNode> {
   private scanning = false;
 
   refresh(): void {
-    this.scan().then(() => this._onDidChangeTreeData.fire());
+    this.scan()
+      .then(() => this._onDidChangeTreeData.fire())
+      .catch(err => console.error('[kivi] issue scan failed:', err));
   }
 
   getTreeItem(element: IssueNode): vscode.TreeItem {
@@ -78,7 +80,8 @@ export class IssuesProvider implements vscode.TreeDataProvider<IssueNode> {
     if (this.scanning) return;
     this.scanning = true;
 
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folders = vscode.workspace.workspaceFolders;
+    const folder = folders?.[0];
     if (!folder) {
       this.categories = [];
       this.scanning = false;

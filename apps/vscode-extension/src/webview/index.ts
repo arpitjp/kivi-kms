@@ -70,6 +70,7 @@ let isUpdatingFromExtension = false;
 let lastRawEditTimestamp = 0;
 let lastSentContent = '';
 let savedBaseLines: string[] = [];
+let savedGitDiffHunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number }> | null = null;
 let pendingBlameCallback: ((entries: Array<{ line: number; author: string; date: string; summary: string; hash: string }>) => void) | null = null;
 
 // ── Inline Git Blame (GitLens-style) ──
@@ -109,12 +110,14 @@ function ensureRawMonaco(): MonacoRawEditor {
     onGutterClick: (lineNumber) => handleMonacoGutterClick(rawMonaco!, lineNumber),
   });
   rawMonaco.setTheme(isDark);
+  rawMonaco.setOnToggleBlame(() => toggleBlame());
 
   rawMonaco.onDidChangeContent((content) => {
     if (isUpdatingFromExtension) return;
     vscode.postMessage({ type: 'edit', content });
     if (viewMode === 'source') detectActiveHeadingMonaco();
-    // Refresh diff marks after edits
+    // Invalidate authoritative git hunks (stale after edit) and use LCS fallback
+    savedGitDiffHunks = null;
     applyDiffToMonaco();
   });
 
@@ -169,26 +172,80 @@ function requestWorkspaceFiles() {
   vscode.postMessage({ type: 'listWorkspaceFiles' });
 }
 
+const pendingHeadingCallbacks = new Map<string, (h: Array<{ name: string; slug: string; level: number }>) => void>();
+let headingReqCounter = 0;
+
+function fetchFileHeadings(relPath: string): Promise<Array<{ rel: string; name: string; relToDoc: string; fileType: string; ext: string }>> {
+  return new Promise((resolve) => {
+    const reqId = `h_${++headingReqCounter}`;
+    const timer = setTimeout(() => { pendingHeadingCallbacks.delete(reqId); resolve([]); }, 3000);
+    pendingHeadingCallbacks.set(reqId, (headings) => {
+      clearTimeout(timer);
+      const slugify = (t: string) => t.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+      resolve(headings.map(h => ({
+        rel: relPath + '#' + (h.slug || slugify(h.name)),
+        name: h.name,
+        relToDoc: relPath + '#' + (h.slug || slugify(h.name)),
+        fileType: 'heading',
+        ext: String(h.level),
+      })));
+    });
+    vscode.postMessage({ type: 'getFileHeadings', relPath, reqId });
+  });
+}
+
 function handleWorkspaceFiles(files: WorkspaceFile[]) {
   cachedWorkspaceFiles = files;
   if (linkInputEl) refreshLinkSuggestions();
 }
 
-function showLinkInput(anchorRect: DOMRect, currentUrl?: string): Promise<string | null> {
+interface LinkInputResult {
+  url: string;
+  text?: string;
+}
+
+function showLinkInput(
+  anchorRect: DOMRect,
+  currentUrl?: string,
+  currentText?: string,
+): Promise<LinkInputResult | null> {
   closeLinkInput();
   return new Promise((resolve) => {
-    linkInputResolve = resolve;
+    linkInputResolve = resolve as (v: unknown) => void;
 
     const container = document.createElement('div');
     container.className = 'kivi-link-input-popup';
     container.addEventListener('mousedown', (e) => e.stopPropagation());
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'kivi-link-input';
-    input.placeholder = 'URL, [[wiki-link]], or filename...';
-    input.value = currentUrl || '';
-    container.appendChild(input);
+    // Text field — pre-filled with selection or existing link text
+    const textRow = document.createElement('div');
+    textRow.className = 'kivi-link-input-row';
+    const textLabel = document.createElement('span');
+    textLabel.className = 'kivi-link-input-label';
+    textLabel.textContent = 'Text';
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    textInput.className = 'kivi-link-input';
+    textInput.placeholder = 'Display text...';
+    textInput.value = currentText || '';
+    textRow.appendChild(textLabel);
+    textRow.appendChild(textInput);
+    container.appendChild(textRow);
+
+    // URL field — with autocomplete
+    const urlRow = document.createElement('div');
+    urlRow.className = 'kivi-link-input-row';
+    const urlLabel = document.createElement('span');
+    urlLabel.className = 'kivi-link-input-label';
+    urlLabel.textContent = 'Link';
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'kivi-link-input';
+    urlInput.placeholder = 'URL, [[wiki-link]], or filename...';
+    urlInput.value = currentUrl || '';
+    urlRow.appendChild(urlLabel);
+    urlRow.appendChild(urlInput);
+    container.appendChild(urlRow);
 
     const list = document.createElement('ul');
     list.className = 'kivi-link-suggestions';
@@ -202,7 +259,7 @@ function showLinkInput(anchorRect: DOMRect, currentUrl?: string): Promise<string
     const zc = editorDom ? getRectZoomCorrection(editorDom) : 1;
     let linkLeft = Math.max(8, anchorRect.left * zc);
     const maxRight = window.innerWidth - 8;
-    if (linkLeft + 320 > maxRight) linkLeft = maxRight - 320;
+    if (linkLeft + 340 > maxRight) linkLeft = maxRight - 340;
     container.style.left = `${linkLeft / bz}px`;
     container.style.top = `${(anchorRect.bottom * zc + 4) / bz}px`;
 
@@ -211,7 +268,7 @@ function showLinkInput(anchorRect: DOMRect, currentUrl?: string): Promise<string
     let selectedIdx = -1;
 
     function getSuggestions(): { label: string; value: string; kind: string }[] {
-      const q = input.value.trim().toLowerCase();
+      const q = urlInput.value.trim().toLowerCase();
       const results: { label: string; value: string; kind: string }[] = [];
 
       for (const f of cachedWorkspaceFiles) {
@@ -219,7 +276,7 @@ function showLinkInput(anchorRect: DOMRect, currentUrl?: string): Promise<string
         if (!q || match) {
           results.push({ label: f.name, value: `[[${f.name}]]`, kind: 'wiki' });
         }
-        if (results.length >= 12) break;
+        if (results.length >= 10) break;
       }
 
       if (q && /^https?:\/\//.test(q)) {
@@ -242,55 +299,71 @@ function showLinkInput(anchorRect: DOMRect, currentUrl?: string): Promise<string
         li.textContent = `${kindIcon} ${suggestions[i].label}`;
         li.addEventListener('mousedown', (e) => {
           e.preventDefault();
-          commitLink(suggestions[i].value);
+          pickSuggestion(suggestions[i]);
         });
         list.appendChild(li);
       }
     }
 
-    function commitLink(val: string) {
+    function pickSuggestion(s: { label: string; value: string; kind: string }) {
+      urlInput.value = s.value;
+      if (!textInput.value.trim() && s.kind === 'wiki') {
+        textInput.value = s.label;
+      }
+      commit();
+    }
+
+    function commit() {
+      const url = urlInput.value.trim();
+      if (!url) return;
       closeLinkInput();
-      linkInputResolve?.(val || null);
+      const text = textInput.value.trim() || undefined;
+      (linkInputResolve as (v: LinkInputResult | null) => void)?.({ url, text });
       linkInputResolve = null;
     }
 
-    input.addEventListener('input', () => renderSuggestions());
-    input.addEventListener('keydown', (e) => {
+    urlInput.addEventListener('input', () => renderSuggestions());
+    const handleKeyDown = (e: KeyboardEvent) => {
       const items = list.querySelectorAll('.kivi-link-suggestion-item');
-      if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown' && document.activeElement === urlInput) {
         e.preventDefault();
         selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
         items.forEach((el, i) => el.classList.toggle('selected', i === selectedIdx));
-      } else if (e.key === 'ArrowUp') {
+      } else if (e.key === 'ArrowUp' && document.activeElement === urlInput) {
         e.preventDefault();
-        selectedIdx = Math.max(selectedIdx - 1, 0);
+        selectedIdx = Math.max(selectedIdx - 1, -1);
         items.forEach((el, i) => el.classList.toggle('selected', i === selectedIdx));
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        if (selectedIdx >= 0 && items[selectedIdx]) {
+        if (selectedIdx >= 0 && document.activeElement === urlInput) {
           const suggestions = getSuggestions();
-          commitLink(suggestions[selectedIdx].value);
-        } else if (input.value.trim()) {
-          commitLink(input.value.trim());
+          if (suggestions[selectedIdx]) { pickSuggestion(suggestions[selectedIdx]); return; }
         }
+        commit();
       } else if (e.key === 'Escape') {
         closeLinkInput();
-        linkInputResolve?.(null);
+        (linkInputResolve as (v: LinkInputResult | null) => void)?.(null);
         linkInputResolve = null;
       }
-    });
+    };
+    textInput.addEventListener('keydown', handleKeyDown);
+    urlInput.addEventListener('keydown', handleKeyDown);
 
     const onClickOutside = (ev: MouseEvent) => {
       if (container.contains(ev.target as Node)) return;
       closeLinkInput();
-      linkInputResolve?.(null);
+      (linkInputResolve as (v: LinkInputResult | null) => void)?.(null);
       linkInputResolve = null;
-      document.removeEventListener('mousedown', onClickOutside, true);
     };
+    _linkInputClickOutside = onClickOutside;
     setTimeout(() => document.addEventListener('mousedown', onClickOutside, true), 50);
 
     renderSuggestions();
-    requestAnimationFrame(() => input.focus());
+    // Focus URL field if no text to edit, otherwise text field first
+    requestAnimationFrame(() => {
+      if (currentUrl) textInput.focus();
+      else urlInput.focus();
+    });
   });
 }
 
@@ -300,7 +373,12 @@ function refreshLinkSuggestions() {
   if (input) input.dispatchEvent(new Event('input'));
 }
 
+let _linkInputClickOutside: ((ev: MouseEvent) => void) | null = null;
 function closeLinkInput() {
+  if (_linkInputClickOutside) {
+    document.removeEventListener('mousedown', _linkInputClickOutside, true);
+    _linkInputClickOutside = null;
+  }
   linkInputEl?.remove();
   linkInputEl = null;
 }
@@ -400,13 +478,12 @@ function applySettings(s: KiviSettings) {
     css += `#editor { line-height: var(--kivi-line-height) !important; }\n`;
   }
 
-  // Track font settings for Monaco editors.
-  // The live editor (#editor) gets CSS zoom applied directly on its container,
-  // so its effective visual size = fontSize * cssZoom.
-  // Monaco is NOT under CSS zoom, so we use the raw base font size — no zoom multiplier.
-  // The user can still scale Monaco via the Kivi zoom setting if desired.
-  const monacoFontSize = computedSize ?? s.vscodeEditorFontSize ?? 14;
-  _lastFontSize = Math.round(monacoFontSize);
+  // The live editor (#editor) gets CSS zoom on its container, so its effective
+  // visual body font size = baseFontSize * cssZoom.  Monaco editors live outside
+  // that zoom container, so we must multiply the base size by the zoom factor to
+  // keep them visually consistent.
+  const baseFontSize = computedSize ?? s.vscodeEditorFontSize ?? 14;
+  _lastFontSize = Math.round(baseFontSize * cssZoom);
   _lastFontFamily = s.fontFamily || s.vscodeEditorFontFamily || '';
 
   // Word wrap — delegated to applyWordWrap for consistency
@@ -434,7 +511,7 @@ function applySettings(s: KiviSettings) {
 
   const toolbar = document.getElementById('kivi-toolbar');
   if (toolbar) {
-    toolbar.style.display = s.showToolbar ? '' : 'none';
+    toolbar.classList.toggle('kivi-toolbar-collapsed', !s.showToolbar);
   }
 
   if (typeof (globalThis as any).__kiviUpdateStickyScrollSettings === 'function') {
@@ -565,6 +642,9 @@ function init() {
     onCreatePage: () => {
       vscode.postMessage({ type: 'promptCreateChildPage' });
     },
+    onInsertAsset: () => {
+      vscode.postMessage({ type: 'pickAsset' });
+    },
     promptInput: (message, placeholder) => requestInput(message, placeholder),
     createExcalidrawFile: (name: string) => {
       return new Promise<string | null>((resolve) => {
@@ -581,34 +661,28 @@ function init() {
       });
     },
     linkSuggest: {
+      getFileHeadings: (relPath: string) => fetchFileHeadings(relPath),
       getFiles: () => {
+        const mapFiles = () => cachedWorkspaceFiles.map(f => ({
+          rel: f.rel,
+          name: f.name,
+          relToDoc: f.relToDoc,
+          fileType: f.fileType || 'file',
+          ext: f.ext || '',
+        }));
         try {
-          if (cachedWorkspaceFiles.length > 0) {
-            return cachedWorkspaceFiles.map(f => ({
-              rel: f.rel,
-              name: f.name,
-              relToDoc: f.relToDoc,
-              fileType: f.fileType || 'file',
-              ext: f.ext || '',
-            }));
-          }
+          if (cachedWorkspaceFiles.length > 0) return mapFiles();
           requestWorkspaceFiles();
           return new Promise<Array<{ rel: string; name: string; relToDoc: string; fileType: string; ext: string }>>((resolve) => {
-            const check = () => {
-              if (cachedWorkspaceFiles.length > 0) {
-                resolve(cachedWorkspaceFiles.map(f => ({
-                  rel: f.rel,
-                  name: f.name,
-                  relToDoc: f.relToDoc,
-                  fileType: f.fileType || 'file',
-                  ext: f.ext || '',
-                })));
-              } else {
-                setTimeout(check, 100);
+            const onMsg = (ev: MessageEvent) => {
+              if (ev.data?.type === 'workspaceFiles') {
+                window.removeEventListener('message', onMsg);
+                clearTimeout(fallback);
+                resolve(mapFiles());
               }
             };
-            setTimeout(check, 100);
-            setTimeout(() => resolve([]), 3000);
+            window.addEventListener('message', onMsg);
+            const fallback = setTimeout(() => { window.removeEventListener('message', onMsg); resolve([]); }, 3000);
           });
         } catch { return []; }
       },
@@ -814,42 +888,44 @@ function init() {
     if (!detail || !editor) return;
     const tiptap = editor.getTiptapEditor();
     const { from, to, currentUrl, editMode } = detail;
+    const selectedText = tiptap.state.doc.textBetween(from, to, ' ');
     const coords = tiptap.view.coordsAtPos(from);
     const rect = new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top);
-    const result = await showLinkInput(rect, currentUrl);
+    const result = await showLinkInput(rect, currentUrl, selectedText || undefined);
     if (!result) {
       tiptap.chain().focus().setTextSelection({ from, to }).run();
       return;
     }
 
+    const { url, text } = result;
+    const displayText = text || selectedText;
+
     if (editMode) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (tiptap.chain().focus().extendMarkRange('link').setLink({ href: result }) as any).run();
+      (tiptap.chain().focus().extendMarkRange('link').setLink({ href: url }) as any).run();
       return;
     }
 
-    const selectedText = tiptap.state.doc.textBetween(from, to, ' ');
-
-    // Wiki-link: [[target]] or [[target|alias]]
-    const wikiMatch = result.match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/);
+    const wikiMatch = url.match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/);
     if (wikiMatch) {
-      const alias = wikiMatch[2] || selectedText || wikiMatch[1];
+      const label = displayText || wikiMatch[2] || wikiMatch[1];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const chain = tiptap.chain().focus().setTextSelection({ from, to }) as any;
-      if (selectedText) {
-        chain.setLink({ href: result }).run();
+      if (selectedText && !text) {
+        chain.setLink({ href: url }).run();
       } else {
-        chain.insertContent({ type: 'text', text: alias, marks: [{ type: 'link', attrs: { href: result } }] }).run();
+        chain.insertContent({ type: 'text', text: label, marks: [{ type: 'link', attrs: { href: url } }] }).run();
       }
       return;
     }
 
+    const label = displayText || url;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chain = tiptap.chain().focus().setTextSelection({ from, to }) as any;
-    if (selectedText) {
-      chain.setLink({ href: result }).run();
+    if (selectedText && !text) {
+      chain.setLink({ href: url }).run();
     } else {
-      chain.insertContent({ type: 'text', text: result, marks: [{ type: 'link', attrs: { href: result } }] }).run();
+      chain.insertContent({ type: 'text', text: label, marks: [{ type: 'link', attrs: { href: url } }] }).run();
     }
   });
 
@@ -869,6 +945,11 @@ function init() {
   document.addEventListener('kivi-copy-asset-path', (e) => {
     const detail = (e as CustomEvent).detail as { src: string } | undefined;
     if (detail?.src) vscode.postMessage({ type: 'copyAssetPath', src: detail.src });
+  });
+
+  document.addEventListener('kivi-open-asset', (e) => {
+    const detail = (e as CustomEvent).detail as { src: string } | undefined;
+    if (detail?.src) vscode.postMessage({ type: 'openAsset', src: detail.src });
   });
 
   // ── Sticky scroll container ──
@@ -1110,9 +1191,19 @@ function init() {
         if (msg.content !== undefined) {
           savedBaseLines = msg.content.split('\n');
           refreshAllGutters();
-          applyDiffToMonaco();
+          // Only apply LCS-based diff if we don't have authoritative git hunks
+          if (!savedGitDiffHunks) applyDiffToMonaco();
         }
         break;
+
+      case 'gitDiffHunks': {
+        const hunks = (msg as Record<string, unknown>).hunks as typeof savedGitDiffHunks;
+        if (hunks) {
+          savedGitDiffHunks = hunks;
+          applyGitDiffHunksToMonaco();
+        }
+        break;
+      }
 
       case 'blameResult': {
         const entries = msg.entries as Array<{ line: number; author: string; date: string; summary: string; hash: string }> | undefined;
@@ -1134,6 +1225,18 @@ function init() {
         }
         break;
       }
+
+      case 'find':
+        toggleSearchBar();
+        break;
+
+      case 'findReplace':
+        toggleSearchBar(true);
+        break;
+
+      case 'toggleBlame':
+        toggleBlame();
+        break;
 
       case 'excalidrawExtensionStatus': {
         _hasExcalidrawExtension = !!msg.installed;
@@ -1167,6 +1270,17 @@ function init() {
       case 'workspaceFiles': {
         const files = (msg as unknown as { files: WorkspaceFile[] }).files;
         if (files) handleWorkspaceFiles(files);
+        break;
+      }
+
+      case 'fileHeadings': {
+        const reqId = (msg as Record<string, unknown>).reqId as string | undefined;
+        const headings = (msg as Record<string, unknown>).headings as Array<{ name: string; slug: string; level: number }> | undefined;
+        if (reqId && pendingHeadingCallbacks.has(reqId)) {
+          const cb = pendingHeadingCallbacks.get(reqId)!;
+          pendingHeadingCallbacks.delete(reqId);
+          cb(headings || []);
+        }
         break;
       }
 
@@ -1299,8 +1413,15 @@ function init() {
       }
 
       case 'childPageCreated': {
-        // The new page was created and opened by the extension host.
-        // No additional action needed in the source webview.
+        break;
+      }
+
+      case 'assetInserted': {
+        const content = msg.content as string | undefined;
+        if (content && editor) {
+          const tiptap = editor.getTiptapEditor();
+          tiptap.chain().focus().insertContent(content).run();
+        }
         break;
       }
 
@@ -1352,19 +1473,17 @@ function init() {
   // ── Keyboard shortcuts ──
 
   document.addEventListener('keydown', (e) => {
-    // Cmd+F: search — use Monaco's built-in find in raw/split modes
-    if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-      if (viewMode === 'source' && rawMonaco) {
-        e.preventDefault();
-        rawMonaco.openFind();
-        return;
-      } else if (viewMode === 'split' && splitMonaco) {
-        e.preventDefault();
-        splitMonaco.openFind();
-        return;
-      }
+    // Cmd+F: search
+    if ((e.metaKey || e.ctrlKey) && e.key === 'f' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       toggleSearchBar();
+      return;
+    }
+    // Cmd+H / Cmd+Alt+F: find and replace
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'h' || (e.key === 'f' && e.altKey))) {
+      e.preventDefault();
+      toggleSearchBar(true);
+      return;
     }
     // Cmd+Shift+E: reveal in explorer
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'e') {
@@ -1662,10 +1781,12 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
       onGutterClick: (lineNumber) => handleMonacoGutterClick(splitMonaco!, lineNumber),
     });
     splitMonaco.setTheme(isDark);
+    splitMonaco.setOnToggleBlame(() => toggleBlame());
 
     let splitDebounce: ReturnType<typeof setTimeout> | null = null;
     splitMonaco.onDidChangeContent((content) => {
       if (isUpdatingFromExtension) return;
+      savedGitDiffHunks = null;
       if (splitDebounce) clearTimeout(splitDebounce);
       splitDebounce = setTimeout(() => {
         if (content === lastSentContent) return;
@@ -1675,6 +1796,7 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
         editor?.loadMarkdown(content);
         isUpdatingFromExtension = false;
         vscode.postMessage({ type: 'edit', content });
+        applyDiffToMonaco();
       }, 150);
     });
 
@@ -1906,16 +2028,11 @@ function computeGutterInfo(baseLines: string[], currentLines: string[]): GutterI
     const insertedCount = h.newEnd - h.newStart;
 
     if (insertedCount > 0 && deletedCount > 0) {
-      // Lines that replace existing base lines are 'modified' (blue),
-      // extra lines beyond the replacement count are 'added' (green)
-      const modCount = Math.min(deletedCount, insertedCount);
-      for (let i = 0; i < modCount; i++) marks[h.newStart + i] = 'm';
-      for (let i = modCount; i < insertedCount; i++) marks[h.newStart + i] = 'a';
+      // VS Code marks the entire replacement span as 'modified' (blue)
+      for (let i = h.newStart; i < h.newEnd; i++) marks[i] = 'm';
     } else if (insertedCount > 0) {
       for (let i = h.newStart; i < h.newEnd; i++) marks[i] = 'a';
-    }
-    // Pure deletions: show red triangle indicator on the line before
-    if (deletedCount > 0 && insertedCount === 0) {
+    } else if (deletedCount > 0) {
       const markerLine = h.newStart > 0 ? h.newStart - 1 : 0;
       if (marks[markerLine] === 'u') marks[markerLine] = 'd';
     }
@@ -1969,7 +2086,31 @@ function buildCurrentToBaseMap(hunks: DiffHunk[], currentLineCount: number): Int
   return map;
 }
 
+function applyGitDiffHunksToMonaco() {
+  if (!savedGitDiffHunks) return;
+  const marks: DiffMark[] = [];
+
+  for (const h of savedGitDiffHunks) {
+    if (h.oldCount === 0 && h.newCount > 0) {
+      marks.push({ type: 'added', startLine: h.newStart, endLine: h.newStart + h.newCount - 1 });
+    } else if (h.oldCount > 0 && h.newCount === 0) {
+      marks.push({ type: 'deleted', startLine: h.newStart, endLine: h.newStart });
+    } else if (h.oldCount > 0 && h.newCount > 0) {
+      marks.push({ type: 'modified', startLine: h.newStart, endLine: h.newStart + h.newCount - 1 });
+    }
+  }
+
+  rawMonaco?.setDiffMarks(marks);
+  splitMonaco?.setDiffMarks(marks);
+}
+
 function applyDiffToMonaco() {
+  // Prefer authoritative git diff hunks when available
+  if (savedGitDiffHunks) {
+    applyGitDiffHunksToMonaco();
+    return;
+  }
+
   if (!savedBaseLines.length) return;
   const applyToEditor = (monacoInst: MonacoRawEditor | null) => {
     if (!monacoInst) return;
@@ -2672,10 +2813,47 @@ function showDiffPopup(textarea: HTMLTextAreaElement, gutterEl: HTMLElement, lin
   document.addEventListener('keydown', escHandler);
 }
 
-function handleMonacoGutterClick(monacoInst: MonacoRawEditor, lineNumber: number) {
-  if (!savedBaseLines.length) return;
+function gitHunksToDiffHunks(gitHunks: typeof savedGitDiffHunks): DiffHunk[] {
+  if (!gitHunks) return [];
+  return gitHunks.map(h => {
+    const isDel = h.newCount === 0;
+    const isAdd = h.oldCount === 0;
+    return {
+      oldStart: isAdd ? h.oldStart : h.oldStart - 1,
+      oldEnd: isAdd ? h.oldStart : h.oldStart - 1 + h.oldCount,
+      newStart: isDel ? h.newStart : h.newStart - 1,
+      newEnd: isDel ? h.newStart : h.newStart - 1 + h.newCount,
+    };
+  });
+}
+
+function getGutterInfoForMonaco(monacoInst: MonacoRawEditor): GutterInfo | null {
   const currentLines = monacoInst.getValue().split('\n');
-  const info = computeGutterInfo(savedBaseLines, currentLines);
+  if (savedGitDiffHunks) {
+    const hunks = gitHunksToDiffHunks(savedGitDiffHunks);
+    const n = currentLines.length;
+    const marks: GutterMark[] = new Array(n).fill('u');
+    for (const h of hunks) {
+      const deleted = h.oldEnd - h.oldStart;
+      const inserted = h.newEnd - h.newStart;
+      if (inserted > 0 && deleted > 0) {
+        for (let i = h.newStart; i < h.newEnd && i < n; i++) marks[i] = 'm';
+      } else if (inserted > 0) {
+        for (let i = h.newStart; i < h.newEnd && i < n; i++) marks[i] = 'a';
+      } else if (deleted > 0) {
+        const marker = h.newStart > 0 ? h.newStart - 1 : 0;
+        if (marker < n && marks[marker] === 'u') marks[marker] = 'd';
+      }
+    }
+    return { marks, hunks };
+  }
+  if (!savedBaseLines.length) return null;
+  return computeGutterInfo(savedBaseLines, currentLines);
+}
+
+function handleMonacoGutterClick(monacoInst: MonacoRawEditor, lineNumber: number) {
+  const info = getGutterInfoForMonaco(monacoInst);
+  if (!info || info.hunks.length === 0) return;
   const lineIndex = lineNumber - 1;
   const hunkIdx = findHunkForLine(info.hunks, lineIndex);
   if (hunkIdx < 0) return;
@@ -2748,8 +2926,8 @@ function showMonacoDiffPopup(monacoInst: MonacoRawEditor, lineIndex: number, inf
   prevBtn.disabled = hunkIdx === 0;
   prevBtn.addEventListener('click', () => {
     if (hunkIdx > 0) {
-      const newInfo = computeGutterInfo(savedBaseLines, monacoInst.getValue().split('\n'));
-      if (hunkIdx - 1 < newInfo.hunks.length) {
+      const newInfo = getGutterInfoForMonaco(monacoInst);
+      if (newInfo && hunkIdx - 1 < newInfo.hunks.length) {
         const target = newInfo.hunks[hunkIdx - 1];
         const targetLine = target.newEnd > target.newStart ? target.newStart : Math.max(0, target.newStart - 1);
         monacoInst.revealLine(targetLine + 1);
@@ -2764,8 +2942,8 @@ function showMonacoDiffPopup(monacoInst: MonacoRawEditor, lineIndex: number, inf
   nextBtn.disabled = hunkIdx >= info.hunks.length - 1;
   nextBtn.addEventListener('click', () => {
     if (hunkIdx < info.hunks.length - 1) {
-      const newInfo = computeGutterInfo(savedBaseLines, monacoInst.getValue().split('\n'));
-      if (hunkIdx + 1 < newInfo.hunks.length) {
+      const newInfo = getGutterInfoForMonaco(monacoInst);
+      if (newInfo && hunkIdx + 1 < newInfo.hunks.length) {
         const target = newInfo.hunks[hunkIdx + 1];
         const targetLine = target.newEnd > target.newStart ? target.newStart : Math.max(0, target.newStart - 1);
         monacoInst.revealLine(targetLine + 1);
@@ -2900,17 +3078,26 @@ function initToolbar(el: HTMLElement) {
   const _s = (d: string) =>
     `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
-  // Wrapper that holds the context-sensitive format buttons
+  // Scrollable zone for format + extras; right-side items stay pinned
+  const scrollZone = document.createElement('div');
+  scrollZone.className = 'kivi-toolbar-scroll';
+  el.appendChild(scrollZone);
+
   const formatGroup = document.createElement('div');
   formatGroup.id = 'kivi-toolbar-format';
-  el.appendChild(formatGroup);
+  scrollZone.appendChild(formatGroup);
 
   type ToolbarAction = { id: string; svg?: string; title?: string; cmd?: (...args: any[]) => void; active?: () => boolean };
 
+  // Toolbar layout:
+  //   [B I S] | [<> hl] | [H1 H2 H3] | [UL OL Task] | [Quote Code HR] | [Link]
+  // Inline marks first (most used), then structure, then insert actions.
+  // Sub/superscript are niche — kept but grouped with code/highlight.
   const textActions: ToolbarAction[] = [
     { id: 'bold', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5h4.5a3 3 0 0 1 2.12 5.12A3.25 3.25 0 0 1 9 13.5H4V2.5zM4 8h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`, title: 'Bold (⌘B)', cmd: () => cmd().toggleBold().run(), active: () => tiptap.isActive('bold') },
     { id: 'italic', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="10" y1="2.5" x2="6" y2="13.5"/><line x1="7.5" y1="2.5" x2="11.5" y2="2.5"/><line x1="4.5" y1="13.5" x2="8.5" y2="13.5"/></svg>`, title: 'Italic (⌘I)', cmd: () => cmd().toggleItalic().run(), active: () => tiptap.isActive('italic') },
     { id: 'strike', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="8" x2="14" y2="8" stroke-width="1.5"/><path d="M10.2 4.8C9.7 3.6 8.6 3 7.5 3 5.8 3 4.5 4 4.5 5.5c0 1 .5 1.7 1.3 2.2" stroke-width="1.6" fill="none"/><path d="M5.8 11.2c.5 1.2 1.6 1.8 2.7 1.8 1.7 0 3-1 3-2.5 0-.7-.3-1.3-.8-1.7" stroke-width="1.6" fill="none"/></svg>`, title: 'Strikethrough (⌘⇧X)', cmd: () => cmd().toggleStrike().run(), active: () => tiptap.isActive('strike') },
+    { id: 'sep' },
     { id: 'code', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="5,3.5 1.5,8 5,12.5"/><polyline points="11,3.5 14.5,8 11,12.5"/></svg>`, title: 'Code (⌘E)', cmd: () => cmd().toggleCode().run(), active: () => tiptap.isActive('code') },
     { id: 'subscript', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="2" x2="10" y2="11"/><line x1="10" y1="2" x2="2" y2="11"/><text x="11" y="15" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text></svg>`, title: 'Subscript', cmd: () => cmd().toggleSubscript().run(), active: () => tiptap.isActive('subscript') },
     { id: 'superscript', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="5" x2="9" y2="14"/><line x1="9" y1="5" x2="1" y2="14"/><text x="11" y="6" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text></svg>`, title: 'Superscript', cmd: () => cmd().toggleSuperscript().run(), active: () => tiptap.isActive('superscript') },
@@ -2927,6 +3114,7 @@ function initToolbar(el: HTMLElement) {
     { id: 'quote', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round"><line x1="1.5" y1="2.5" x2="1.5" y2="13.5" stroke-width="2.5"/><line x1="5" y1="4" x2="14" y2="4" stroke-width="1.5"/><line x1="5" y1="8" x2="11" y2="8" stroke-width="1.5"/><line x1="5" y1="12" x2="13" y2="12" stroke-width="1.5"/></svg>`, title: 'Blockquote', cmd: () => cmd().toggleBlockquote().run(), active: () => tiptap.isActive('blockquote') },
     { id: 'codeblock', svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="1" width="13" height="14" rx="2"/><polyline points="5.5,5.5 3.5,8 5.5,10.5"/><polyline points="10.5,5.5 12.5,8 10.5,10.5"/></svg>`, title: 'Code Block', cmd: () => cmd().toggleCodeBlock().run(), active: () => tiptap.isActive('codeBlock') },
     { id: 'hr', svg: _s('<line x1="2" y1="8" x2="14" y2="8" stroke-width="1.5" stroke-dasharray="3,2"/>'), title: 'Horizontal Rule', cmd: () => cmd().setHorizontalRule().run(), active: () => false },
+    { id: 'sep' },
     { id: 'link', svg: _s('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'), title: 'Insert Link (⌘K)', cmd: (_e: unknown, btn: HTMLElement) => { insertLinkAtCursor(btn.getBoundingClientRect()); }, active: () => tiptap.isActive('link') },
   ];
 
@@ -3006,99 +3194,85 @@ function initToolbar(el: HTMLElement) {
     if (currentContext === 'text') {
       const inCodeBlock = tiptap.isActive('codeBlock');
       const buttons = formatGroup.querySelectorAll<HTMLButtonElement>('.kivi-toolbar-btn');
+      const seps = formatGroup.querySelectorAll<HTMLElement>('.kivi-toolbar-sep');
       let i = 0;
+      let sepIdx = 0;
+      let groupAllHidden = true;
       for (const action of textActions) {
-        if (action.id === 'sep') continue;
+        if (action.id === 'sep') {
+          const sep = seps[sepIdx++];
+          if (sep) sep.style.display = groupAllHidden ? 'none' : '';
+          groupAllHidden = true;
+          continue;
+        }
         const btn = buttons[i++];
         if (!btn) continue;
         if (action.active) btn.classList.toggle('active', action.active());
         const disabled = inCodeBlock && INLINE_FORMAT_IDS.has(action.id);
         btn.classList.toggle('kivi-btn-disabled', disabled);
+        btn.style.display = disabled ? 'none' : '';
         btn.setAttribute('aria-disabled', String(disabled));
+        if (!disabled) groupAllHidden = false;
       }
     }
   };
   tiptap.on('selectionUpdate', update);
   tiptap.on('update', update);
 
-  // ── Right-aligned controls ──
-  const spacer = document.createElement('span');
-  spacer.style.flex = '1';
-  el.appendChild(spacer);
-
-  // ── Word Wrap toggle ──
-  appendWordWrapToggle(el);
-  appendSep(el);
-
-  // ── Zoom controls ──
-  appendZoomControls(el);
-  appendSep(el);
-
-  appendViewModeGroup(el);
-  appendSep(el);
-  appendGraphButton(el);
-  appendSep(el);
-
-  // Reveal in explorer button
+  // ── Collapsible extras: zoom, word-wrap, graph, reveal ──
+  const extras = document.createElement('div');
+  extras.className = 'kivi-toolbar-extras';
+  appendWordWrapToggle(extras);
+  appendSep(extras);
+  appendZoomControls(extras);
+  appendSep(extras);
+  appendGraphButton(extras);
+  appendSep(extras);
   const revealBtn = document.createElement('button');
   revealBtn.className = 'kivi-toolbar-btn';
   revealBtn.title = 'Reveal in Explorer';
   revealBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V10"/><path d="M14 2l-5 5"/><path d="M10 2h4v4"/></svg>`;
   revealBtn.addEventListener('click', () => vscode.postMessage({ type: 'revealInExplorer' }));
   addDelayedTooltip(revealBtn);
-  el.appendChild(revealBtn);
+  extras.appendChild(revealBtn);
+  el.appendChild(extras);
+
+  // ── Quick actions: New Page, Insert File ──
+  appendSep(extras);
+  const newPageBtn = document.createElement('button');
+  newPageBtn.className = 'kivi-toolbar-btn';
+  newPageBtn.title = 'New Page';
+  newPageBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6L9 2z"/><polyline points="9,2 9,6 13,6"/><line x1="8" y1="9" x2="8" y2="13"/><line x1="6" y1="11" x2="10" y2="11"/></svg>`;
+  newPageBtn.addEventListener('click', () => vscode.postMessage({ type: 'promptCreateChildPage' }));
+  addDelayedTooltip(newPageBtn);
+  extras.appendChild(newPageBtn);
+
+  const insertFileBtn = document.createElement('button');
+  insertFileBtn.className = 'kivi-toolbar-btn';
+  insertFileBtn.title = 'Insert File';
+  insertFileBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8.5L8.3 14.3a2.83 2.83 0 0 1-4-4L10.7 4a1.89 1.89 0 0 1 2.7 2.7L7 13"/></svg>`;
+  insertFileBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAsset' }));
+  addDelayedTooltip(insertFileBtn);
+  extras.appendChild(insertFileBtn);
+
+  scrollZone.appendChild(extras);
+
+  appendViewModeGroup(el);
   appendSep(el);
 
-  const hideBtn = document.createElement('button');
-  hideBtn.className = 'kivi-toolbar-btn kivi-hide-toolbar-btn';
-  hideBtn.title = 'Hide Toolbar';
-  hideBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,10 8,6 12,10"/></svg>`;
-  hideBtn.addEventListener('click', () => setToolbarVisible(false));
-  addDelayedTooltip(hideBtn);
-  el.appendChild(hideBtn);
-}
-
-// ─── Floating bar ───
-
-type FloatItemDef = { id: string; label: string; build: (parent: HTMLElement) => void };
-
-const FLOAT_ITEM_DEFS: FloatItemDef[] = [
-  { id: 'viewmode', label: 'View Mode (L/S/R)', build: (p) => appendViewModeGroup(p) },
-  { id: 'wordwrap', label: 'Word Wrap', build: (p) => appendWordWrapToggle(p) },
-  { id: 'graph', label: 'Graph', build: (p) => appendGraphButton(p) },
-];
-
-function buildFloatingBar(bar: HTMLElement) {
-  bar.innerHTML = '';
-
-  for (let i = 0; i < FLOAT_ITEM_DEFS.length; i++) {
-    const def = FLOAT_ITEM_DEFS[i];
-    const wrapper = document.createElement('span');
-    wrapper.className = 'kivi-float-item';
-    def.build(wrapper);
-    bar.appendChild(wrapper);
-    if (i < FLOAT_ITEM_DEFS.length - 1) appendSep(bar);
-  }
-
-  appendSep(bar);
-
-  const showBtn = document.createElement('button');
-  showBtn.className = 'kivi-toolbar-btn kivi-show-toolbar-btn';
-  showBtn.title = 'Show Toolbar';
-  showBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,6 8,10 12,6"/></svg>`;
-  showBtn.addEventListener('click', () => setToolbarVisible(true));
-  addDelayedTooltip(showBtn);
-  bar.appendChild(showBtn);
+  const toggleBtn = document.createElement('button');
+  toggleBtn.className = 'kivi-toolbar-btn kivi-toolbar-toggle-btn';
+  toggleBtn.title = 'Hide Toolbar';
+  toggleBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,10 8,6 12,10"/></svg>`;
+  toggleBtn.addEventListener('click', () => {
+    setToolbarVisible(el.classList.contains('kivi-toolbar-collapsed'));
+  });
+  addDelayedTooltip(toggleBtn);
+  el.appendChild(toggleBtn);
 }
 
 function initFloatingBar() {
-  const bar = document.createElement('div');
-  bar.id = 'kivi-floating-bar';
-  const toolbar = document.getElementById('kivi-toolbar');
-  const toolbarHidden = toolbar && toolbar.style.display === 'none';
-  bar.style.display = toolbarHidden ? 'flex' : 'none';
-  document.body.appendChild(bar);
-  buildFloatingBar(bar);
+  // Floating bar replaced by toolbar collapse mode — no separate element needed.
 }
 
 // ─── Context Menu ───
@@ -3346,7 +3520,6 @@ async function insertLinkAtCursor(anchorRect?: DOMRect) {
   const { from, to } = tiptap.state.selection;
   const selectedText = tiptap.state.doc.textBetween(from, to, ' ');
 
-  // Detect if cursor is inside an existing link
   const $from = tiptap.state.doc.resolve(from);
   const linkMark = $from.marks().find(m => m.type.name === 'link');
   const existingHref = linkMark?.attrs.href as string | undefined;
@@ -3356,49 +3529,70 @@ async function insertLinkAtCursor(anchorRect?: DOMRect) {
     anchorRect = new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top);
   }
 
-  const result = await showLinkInput(anchorRect, existingHref || undefined);
+  const result = await showLinkInput(anchorRect, existingHref || undefined, selectedText || undefined);
   if (!result) {
     tiptap.chain().focus().setTextSelection({ from, to }).run();
     return;
   }
 
-  // If editing an existing link, extend the mark range and update href
+  const { url, text } = result;
+  const displayText = text || selectedText;
+
   if (existingHref) {
+    // Editing an existing link — update href (and text if changed)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (tiptap.chain().focus().extendMarkRange('link').setLink({ href: result }) as any).run();
+    const chain = tiptap.chain().focus().extendMarkRange('link') as any;
+    chain.setLink({ href: url });
+    if (text && text !== selectedText) {
+      chain.command(({ tr, state }: { tr: any; state: any }) => {
+        const { from: mFrom, to: mTo } = state.selection;
+        tr.insertText(text, mFrom, mTo);
+        return true;
+      });
+    }
+    chain.run();
     return;
   }
 
   // Wiki-link: [[target]] or [[target|alias]]
-  const wikiMatch = result.match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/);
+  const wikiMatch = url.match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/);
   if (wikiMatch) {
     const target = wikiMatch[1];
-    const alias = wikiMatch[2] || selectedText || target;
+    const label = displayText || wikiMatch[2] || target;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chain = tiptap.chain().focus().setTextSelection({ from, to }) as any;
-    if (selectedText) {
-      chain.setLink({ href: result }).run();
+    if (selectedText && !text) {
+      chain.setLink({ href: url }).run();
     } else {
-      chain.insertContent({ type: 'text', text: alias, marks: [{ type: 'link', attrs: { href: result } }] }).run();
+      chain.insertContent({ type: 'text', text: label, marks: [{ type: 'link', attrs: { href: url } }] }).run();
     }
     return;
   }
 
   // Regular URL
+  const label = displayText || url;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chain = tiptap.chain().focus().setTextSelection({ from, to }) as any;
-  if (selectedText) {
-    chain.setLink({ href: result }).run();
+  if (selectedText && !text) {
+    chain.setLink({ href: url }).run();
   } else {
-    chain.insertContent({ type: 'text', text: result, marks: [{ type: 'link', attrs: { href: result } }] }).run();
+    chain.insertContent({ type: 'text', text: label, marks: [{ type: 'link', attrs: { href: url } }] }).run();
   }
 }
 
 function setToolbarVisible(visible: boolean, persist = true) {
   const toolbar = document.getElementById('kivi-toolbar');
-  const floatingBar = document.getElementById('kivi-floating-bar');
-  if (toolbar) toolbar.style.display = visible ? '' : 'none';
-  if (floatingBar) floatingBar.style.display = visible ? 'none' : 'flex';
+  if (toolbar) {
+    toolbar.classList.toggle('kivi-toolbar-collapsed', !visible);
+    const btn = toolbar.querySelector('.kivi-toolbar-toggle-btn') as HTMLElement | null;
+    if (btn) {
+      btn.innerHTML = visible
+        ? `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,10 8,6 12,10"/></svg>`
+        : `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,6 8,10 12,6"/></svg>`;
+      btn.title = visible ? 'Hide Toolbar' : 'Show Toolbar';
+      btn.setAttribute('data-tooltip', visible ? 'Hide Toolbar' : 'Show Toolbar');
+    }
+  }
   if (persist) vscode.postMessage({ type: 'persistSetting', key: 'toolbarVisible', value: visible });
 }
 
@@ -3832,28 +4026,38 @@ function createSearchBar() {
   });
 }
 
-function toggleSearchBar() {
+function toggleSearchBar(openReplace = false) {
   // In source/split mode, delegate to Monaco's built-in find
   if (viewMode === 'source' && rawMonaco) {
-    rawMonaco.openFind();
+    if (openReplace) rawMonaco.openReplace(); else rawMonaco.openFind();
     return;
   }
   if (viewMode === 'split' && splitMonaco) {
-    splitMonaco.openFind();
+    if (openReplace) splitMonaco.openReplace(); else splitMonaco.openFind();
     return;
   }
   const bar = document.getElementById('kivi-search-bar');
   if (!bar) return;
-  searchBarVisible = !searchBarVisible;
-  bar.style.display = searchBarVisible ? '' : 'none';
-  if (searchBarVisible) {
-    const input = bar.querySelector<HTMLInputElement>('#kivi-search-input');
-    input?.focus();
-    input?.select();
-  } else {
+  // If already visible and not toggling replace, close
+  if (searchBarVisible && !openReplace) {
+    searchBarVisible = false;
+    bar.style.display = 'none';
     editor?.clearSearch();
     editor?.focus();
+    saveState();
+    return;
   }
+  searchBarVisible = true;
+  bar.style.display = '';
+  if (openReplace) {
+    const replaceRow = bar.querySelector<HTMLElement>('#ks-replace-row');
+    const toggleBtn = bar.querySelector<HTMLButtonElement>('#ks-toggle-replace');
+    if (replaceRow) replaceRow.style.display = 'flex';
+    if (toggleBtn) toggleBtn.innerHTML = SEARCH_ICONS.chevronDown;
+  }
+  const input = bar.querySelector<HTMLInputElement>('#kivi-search-input');
+  input?.focus();
+  input?.select();
   saveState();
 }
 

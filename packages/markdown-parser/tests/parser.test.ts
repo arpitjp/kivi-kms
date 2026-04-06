@@ -302,6 +302,131 @@ describe('hashtags', () => {
   });
 });
 
+describe('frontmatter', () => {
+  it('parses YAML frontmatter into a frontmatter node', () => {
+    const md = '---\ntitle: Hello\ntags: [a, b]\n---\n\n# Heading';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: PMNode[] }[] };
+    expect(doc.content[0].type).toBe('frontmatter');
+    const text = (doc.content[0].content?.[0] as PMText)?.text;
+    expect(text).toContain('title: Hello');
+    expect(doc.content[1].type).toBe('heading');
+  });
+});
+
+describe('math', () => {
+  it('parses display math $$ into mathBlock', () => {
+    const md = '$$\n\\sum_{i=0}^n i\n$$';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: PMNode[] }[] };
+    expect(doc.content[0].type).toBe('mathBlock');
+    const text = (doc.content[0].content?.[0] as PMText)?.text;
+    expect(text).toContain('\\sum');
+  });
+
+  it('parses inline math $ into mathInline', () => {
+    const md = 'Energy is $E=mc^2$ always.';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: PMNode[] }[] };
+    const para = doc.content[0];
+    expect(para.type).toBe('paragraph');
+    const mathNode = para.content?.find((n: PMNode) => (n as { type: string }).type === 'mathInline');
+    expect(mathNode).toBeDefined();
+  });
+});
+
+describe('footnotes', () => {
+  it('parses [^1] reference into footnoteRef', () => {
+    const md = 'Some claim[^1] here.\n\n[^1]: The source.';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: PMNode[] }[] };
+    const para = doc.content[0];
+    const fnRef = para.content?.find((n: PMNode) => (n as { type: string }).type === 'footnoteRef');
+    expect(fnRef).toBeDefined();
+    expect((fnRef as { attrs?: { label: string } })?.attrs?.label).toBe('1');
+  });
+
+  it('parses [^1]: definition into footnoteDef', () => {
+    const md = 'Text[^note].\n\n[^note]: This is the definition.';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; attrs?: { label: string } }[] };
+    const fnDef = doc.content.find(n => n.type === 'footnoteDef');
+    expect(fnDef).toBeDefined();
+    expect(fnDef?.attrs?.label).toBe('note');
+  });
+});
+
+describe('advanced block structures', () => {
+  it('parses nested blockquotes', () => {
+    const md = '> Outer\n>\n> > Inner nested';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: { type: string }[] }[] };
+    expect(doc.content[0].type).toBe('blockquote');
+    const innerBq = doc.content[0].content?.find(n => n.type === 'blockquote');
+    expect(innerBq).toBeDefined();
+  });
+
+  it('parses deeply nested lists (4 levels, mixed)', () => {
+    const md = '- L1\n  1. L2\n     - L3\n       1. L4';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: PMNode[] };
+    expect(doc.content[0].type).toBe('bulletList');
+  });
+
+  it('parses ordered list with start != 1', () => {
+    const md = '3. Third\n4. Fourth\n5. Fifth';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; attrs?: { start: number } }[] };
+    expect(doc.content[0].type).toBe('orderedList');
+    expect(doc.content[0].attrs?.start).toBe(3);
+  });
+});
+
+describe('inline elements', () => {
+  it('parses inline code', () => {
+    const md = 'Use `console.log` for output.';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: PMNode[] };
+    const nodes = paragraphContent(doc);
+    const codeNode = nodes.find(
+      (n) => n.type === 'text' && (n as PMText).marks?.some(m => m.type === 'code'),
+    ) as PMText | undefined;
+    expect(codeNode?.text).toBe('console.log');
+  });
+
+  it('parses hard breaks (trailing double space)', () => {
+    const md = 'Line one  \nLine two';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: PMNode[] }[] };
+    const para = doc.content[0];
+    const hardBreak = para.content?.find((n: PMNode) => (n as { type: string }).type === 'hardBreak');
+    expect(hardBreak).toBeDefined();
+  });
+
+  it('parses links with titles', () => {
+    const md = '[Example](https://example.com "A title")';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; content?: PMNode[] }[] };
+    const nodes = doc.content[0].content ?? [];
+    const linkNode = nodes.find(
+      (n: PMNode) => (n as PMText).marks?.some(m => m.type === 'link'),
+    );
+    expect(linkNode).toBeDefined();
+    const linkMark = (linkNode as PMText).marks?.find(m => m.type === 'link');
+    expect((linkMark?.attrs as Record<string, unknown>)?.href).toBe('https://example.com');
+  });
+});
+
+describe('HTML blocks', () => {
+  it('parses <img> with poster attribute', () => {
+    const md = '<img src="thumb.jpg" alt="Video" poster="poster.jpg" />';
+    const result = parseMarkdown(md);
+    const doc = result.doc as { type: string; content: { type: string; attrs?: Record<string, unknown> }[] };
+    expect(doc.content[0].type).toBe('image');
+    expect(doc.content[0].attrs?.src).toBe('thumb.jpg');
+  });
+});
+
 describe('TOC marker', () => {
   it('parses standalone [TOC] paragraph into tocBlock', () => {
     const result = parseMarkdown('[TOC]');

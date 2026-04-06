@@ -497,8 +497,13 @@ function convertAudioHtml(attrStr: string): PMNodeJSON {
   };
 }
 
+const _attrRegexCache = new Map<string, RegExp>();
 function extractHtmlAttr(attrs: string, name: string): string | null {
-  const re = new RegExp(`${name}="([^"]*)"`, 'i');
+  let re = _attrRegexCache.get(name);
+  if (!re) {
+    re = new RegExp(`${name}="([^"]*)"`, 'i');
+    _attrRegexCache.set(name, re);
+  }
   const m = attrs.match(re);
   return m ? m[1] : null;
 }
@@ -508,7 +513,7 @@ function convertImgHtml(attrStr: string): PMNodeJSON {
   const alt = extractHtmlAttr(attrStr, 'alt') || undefined;
   const widthStr = extractHtmlAttr(attrStr, 'width');
   const align = extractHtmlAttr(attrStr, 'data-align');
-  const width = widthStr ? parseInt(widthStr, 10) || null : null;
+  const width = widthStr === '100%' ? '100%' : widthStr ? parseInt(widthStr, 10) || null : null;
   if (isExcalidrawUrl(src)) {
     return { type: 'excalidrawBlock', attrs: { src, data: '{}', alt: alt || null, width, 'data-align': align || null } };
   }

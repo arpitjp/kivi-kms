@@ -15,13 +15,11 @@ const ICONS = {
   italic: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="10" y1="2.5" x2="6" y2="13.5"/><line x1="7.5" y1="2.5" x2="11.5" y2="2.5"/><line x1="4.5" y1="13.5" x2="8.5" y2="13.5"/></svg>`,
   strike: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="8" x2="14" y2="8" stroke-width="1.5"/><path d="M10.2 4.8C9.7 3.6 8.6 3 7.5 3 5.8 3 4.5 4 4.5 5.5c0 1 .5 1.7 1.3 2.2" stroke-width="1.6" fill="none"/><path d="M5.8 11.2c.5 1.2 1.6 1.8 2.7 1.8 1.7 0 3-1 3-2.5 0-.7-.3-1.3-.8-1.7" stroke-width="1.6" fill="none"/></svg>`,
   code: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="5,3.5 1.5,8 5,12.5"/><polyline points="11,3.5 14.5,8 11,12.5"/></svg>`,
-  subscript: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="2" x2="10" y2="11"/><line x1="10" y1="2" x2="2" y2="11"/><text x="11" y="15" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text></svg>`,
-  superscript: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="5" x2="9" y2="14"/><line x1="9" y1="5" x2="1" y2="14"/><text x="11" y="6" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text></svg>`,
-  highlight: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="8" height="11" rx="1" fill="#fde68a" fill-opacity="0.4"/><path d="M12 11l-2 4h4l-2-4z" fill="currentColor" stroke="none"/></svg>`,
+  highlight: `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2L3.5 10h4l-1 4 6-8h-4l1-4z" fill="#fde68a" fill-opacity="0.35"/></svg>`,
   link: svg('<path d="M6.5 9.5a3 3 0 0 1-.5-4l1.5-1.5a3 3 0 0 1 4.2 4.2L10.5 9.5"/><path d="M9.5 6.5a3 3 0 0 1 .5 4l-1.5 1.5a3 3 0 0 1-4.2-4.2L5.5 6.5"/>'),
-  bullet: svg('<line x1="3" y1="4" x2="3" y2="4" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="4" x2="14" y2="4"/><line x1="3" y1="8" x2="3" y2="8" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="8" x2="14" y2="8"/><line x1="3" y1="12" x2="3" y2="12" stroke-width="2.5" stroke-linecap="round"/><line x1="6" y1="12" x2="14" y2="12"/>'),
-  ordered: svg('<text x="1" y="5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">1</text><line x1="6" y1="4" x2="14" y2="4"/><text x="1" y="9.5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text><line x1="6" y1="8" x2="14" y2="8"/><text x="1" y="13.5" font-size="5.5" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">3</text><line x1="6" y1="12" x2="14" y2="12"/>'),
-  task: svg('<rect x="1.5" y="2" width="4.5" height="4.5" rx="1" stroke-width="1.3"/><polyline points="2.5,4 3.5,5.2 5.2,3" stroke-width="1.2"/><line x1="8" y1="4" x2="14" y2="4"/><rect x="1.5" y="9.5" width="4.5" height="4.5" rx="1" stroke-width="1.3"/><line x1="8" y1="12" x2="14" y2="12"/>'),
+  bullet: svg('<circle cx="3" cy="4" r="1.2" fill="currentColor" stroke="none"/><line x1="6" y1="4" x2="14" y2="4"/><circle cx="3" cy="8" r="1.2" fill="currentColor" stroke="none"/><line x1="6" y1="8" x2="14" y2="8"/><circle cx="3" cy="12" r="1.2" fill="currentColor" stroke="none"/><line x1="6" y1="12" x2="14" y2="12"/>'),
+  ordered: svg('<text x="1" y="5.5" font-size="6" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">1</text><line x1="6" y1="4" x2="14" y2="4"/><text x="1" y="9.5" font-size="6" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">2</text><line x1="6" y1="8" x2="14" y2="8"/><text x="1" y="13.5" font-size="6" font-family="system-ui" font-weight="700" fill="currentColor" stroke="none">3</text><line x1="6" y1="12" x2="14" y2="12"/>'),
+  task: svg('<rect x="2" y="2.5" width="4" height="4" rx="0.8" stroke-width="1.3"/><polyline points="3,4.5 3.8,5.5 5.3,3.5" stroke-width="1.2"/><line x1="8" y1="4.5" x2="14" y2="4.5"/><rect x="2" y="9.5" width="4" height="4" rx="0.8" stroke-width="1.3"/><line x1="8" y1="11.5" x2="14" y2="11.5"/>'),
 };
 
 type FormatAction = {
@@ -38,8 +36,6 @@ const ACTIONS: FormatAction[] = [
   { id: 'italic', icon: ICONS.italic, title: 'Italic', cmd: (e) => e.chain().focus().toggleItalic().run(), isActive: (e) => e.isActive('italic') },
   { id: 'strike', icon: ICONS.strike, title: 'Strikethrough', cmd: (e) => e.chain().focus().toggleStrike().run(), isActive: (e) => e.isActive('strike') },
   { id: 'code', icon: ICONS.code, title: 'Code', cmd: (e) => e.chain().focus().toggleCode().run(), isActive: (e) => e.isActive('code') },
-  { id: 'subscript', icon: ICONS.subscript, title: 'Subscript', cmd: (e) => e.chain().focus().toggleSubscript().run(), isActive: (e) => e.isActive('subscript') },
-  { id: 'superscript', icon: ICONS.superscript, title: 'Superscript', cmd: (e) => e.chain().focus().toggleSuperscript().run(), isActive: (e) => e.isActive('superscript') },
   { id: 'highlight', icon: ICONS.highlight, title: 'Highlight', cmd: (e) => e.chain().focus().toggleHighlight().run(), isActive: (e) => e.isActive('highlight') },
   { id: 'link', icon: ICONS.link, title: 'Link (⌘K)', cmd: (e) => {
     if (e.isActive('link')) {
@@ -52,9 +48,9 @@ const ACTIONS: FormatAction[] = [
     }
   }, isActive: (e) => e.isActive('link') },
   { id: 'sep-list', icon: '', title: '', separator: true, cmd: () => {}, isActive: () => false },
-  { id: 'bullet', icon: ICONS.bullet, title: 'Bullet List', cmd: (e) => e.chain().focus().toggleBulletList().run(), isActive: (e) => e.isActive('bulletList') },
-  { id: 'ordered', icon: ICONS.ordered, title: 'Numbered List', cmd: (e) => e.chain().focus().toggleOrderedList().run(), isActive: (e) => e.isActive('orderedList') },
-  { id: 'task', icon: ICONS.task, title: 'Task List', cmd: (e) => e.chain().focus().toggleTaskList().run(), isActive: (e) => e.isActive('taskList') },
+  { id: 'bullet', icon: ICONS.bullet, title: 'Bullet list', cmd: (e) => e.chain().focus().toggleBulletList().run(), isActive: (e) => e.isActive('bulletList') },
+  { id: 'ordered', icon: ICONS.ordered, title: 'Numbered list', cmd: (e) => e.chain().focus().toggleOrderedList().run(), isActive: (e) => e.isActive('orderedList') },
+  { id: 'task', icon: ICONS.task, title: 'Task list', cmd: (e) => e.chain().focus().toggleTaskList().run(), isActive: (e) => e.isActive('taskList') },
 ];
 
 function selectionVisibleInEditor(view: EditorView): boolean {
@@ -171,7 +167,7 @@ export const SelectionToolbar = Extension.create({
             return el;
           }
 
-          const INLINE_FORMAT_IDS = new Set(['bold', 'italic', 'strike', 'code', 'subscript', 'superscript', 'highlight', 'link']);
+          const INLINE_FORMAT_IDS = new Set(['bold', 'italic', 'strike', 'code', 'highlight', 'link']);
 
           function updateActiveState(el: HTMLElement) {
             const actionButtons = ACTIONS.filter((a) => !a.separator);

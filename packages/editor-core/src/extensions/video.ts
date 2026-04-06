@@ -20,10 +20,13 @@ export const Video = Node.create({
         default: null,
         parseHTML: (el: HTMLElement) => {
           const w = el.getAttribute('width');
-          return w ? parseInt(w, 10) : null;
+          if (!w) return null;
+          if (w === '100%') return '100%';
+          return parseInt(w, 10) || null;
         },
         renderHTML: (attrs: Record<string, unknown>) => {
           if (!attrs.width) return {};
+          if (attrs.width === '100%') return { width: '100%', style: 'width:100%' };
           return { width: String(attrs.width), style: `width:${attrs.width}px;max-width:100%` };
         },
       },
@@ -54,6 +57,7 @@ export const Video = Node.create({
 
   addNodeView() {
     return ({ node, editor, getPos }) => {
+      let currentVideoNode = node;
       const wrapper = document.createElement('div');
       wrapper.className = 'kivi-video-wrapper';
       wrapper.draggable = true;
@@ -68,7 +72,9 @@ export const Video = Node.create({
       video.playsInline = true;
 
       if (node.attrs.src) video.src = node.attrs.src;
-      if (node.attrs.width) {
+      if (node.attrs.width === '100%') {
+        video.style.width = '100%';
+      } else if (node.attrs.width) {
         video.style.width = `${node.attrs.width}px`;
         video.style.maxWidth = '100%';
       } else {
@@ -100,6 +106,12 @@ export const Video = Node.create({
       });
 
       video.addEventListener('dblclick', (e) => {
+        if (e.metaKey || e.ctrlKey) {
+          e.stopPropagation();
+          const src = currentVideoNode.attrs.src;
+          if (src) document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src } }));
+          return;
+        }
         e.stopPropagation();
         if (video.paused) {
           video.play().catch(() => {});
@@ -116,6 +128,7 @@ export const Video = Node.create({
 
         update(updatedNode) {
           if (updatedNode.type.name !== 'video') return false;
+          currentVideoNode = updatedNode;
 
           const newSrc = updatedNode.attrs.src;
           if (newSrc !== video.getAttribute('src')) {
@@ -125,7 +138,10 @@ export const Video = Node.create({
 
           video.controls = updatedNode.attrs.controls !== false;
 
-          if (updatedNode.attrs.width) {
+          if (updatedNode.attrs.width === '100%') {
+            video.style.width = '100%';
+            video.style.maxWidth = '';
+          } else if (updatedNode.attrs.width) {
             video.style.width = `${updatedNode.attrs.width}px`;
             video.style.maxWidth = '100%';
           } else {
@@ -198,10 +214,13 @@ export const Audio = Node.create({
         default: null,
         parseHTML: (el: HTMLElement) => {
           const w = el.getAttribute('width');
-          return w ? parseInt(w, 10) : null;
+          if (!w) return null;
+          if (w === '100%') return '100%';
+          return parseInt(w, 10) || null;
         },
         renderHTML: (attrs: Record<string, unknown>) => {
           if (!attrs.width) return {};
+          if (attrs.width === '100%') return { width: '100%', style: 'width:100%' };
           return { width: String(attrs.width), style: `width:${attrs.width}px;max-width:100%` };
         },
       },
@@ -224,6 +243,7 @@ export const Audio = Node.create({
 
   addNodeView() {
     return ({ node, editor, getPos }) => {
+      let currentNode = node;
       const wrapper = document.createElement('div');
       wrapper.className = 'kivi-audio-wrapper';
 
@@ -233,7 +253,9 @@ export const Audio = Node.create({
       audio.controls = node.attrs.controls !== false;
 
       if (node.attrs.src) audio.src = node.attrs.src;
-      if (node.attrs.width) {
+      if (node.attrs.width === '100%') {
+        audio.style.width = '100%';
+      } else if (node.attrs.width) {
         audio.style.width = `${node.attrs.width}px`;
         audio.style.maxWidth = '100%';
       } else {
@@ -249,6 +271,12 @@ export const Audio = Node.create({
         }
       });
 
+      audio.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        const src = currentNode.attrs.src;
+        if (src) document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src } }));
+      });
+
       wrapper.appendChild(audio);
 
       return {
@@ -257,6 +285,7 @@ export const Audio = Node.create({
 
         update(updatedNode) {
           if (updatedNode.type.name !== 'audio') return false;
+          currentNode = updatedNode;
 
           const newSrc = updatedNode.attrs.src;
           if (newSrc !== audio.getAttribute('src')) {
@@ -266,7 +295,10 @@ export const Audio = Node.create({
 
           audio.controls = updatedNode.attrs.controls !== false;
 
-          if (updatedNode.attrs.width) {
+          if (updatedNode.attrs.width === '100%') {
+            audio.style.width = '100%';
+            audio.style.maxWidth = '';
+          } else if (updatedNode.attrs.width) {
             audio.style.width = `${updatedNode.attrs.width}px`;
             audio.style.maxWidth = '100%';
           } else {
@@ -286,7 +318,7 @@ export const Audio = Node.create({
         },
 
         stopEvent(event) {
-          if (event.type === 'mousedown' || event.type === 'click') {
+          if (event.type === 'mousedown' || event.type === 'click' || event.type === 'dblclick') {
             return true;
           }
           if (event.type === 'play' || event.type === 'pause' ||

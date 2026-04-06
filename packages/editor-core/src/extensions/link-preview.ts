@@ -1,6 +1,7 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import type { Node as PMNode } from '@tiptap/pm/model';
 import { positionFixedPopup } from '../zoom.js';
 
 // ── Types ──────────────────────────────────────────────────
@@ -61,6 +62,10 @@ export interface LinkPreviewData {
   exists: boolean;
   /** File size in bytes (optional) */
   fileSize?: number;
+  /** Favicon URL for external sites */
+  favicon?: string;
+  /** OG type (article, video, etc.) */
+  ogType?: string;
 }
 
 export type LinkResolver = (link: DetectedLink) => Promise<LinkPreviewData | null>;
@@ -240,6 +245,29 @@ function renderPreviewContent(data: LinkPreviewData): string {
     return html;
   }
 
+  // ── Rich card for external URLs with OG metadata ──
+  if (data.kind === 'external-url' && (data.thumbnailUrl || data.snippet)) {
+    if (data.thumbnailUrl) {
+      html += `<div class="klp-og-thumb"><img src="${esc(data.thumbnailUrl)}" alt="" loading="lazy" /></div>`;
+    }
+    html += '<div class="klp-og-body">';
+    // Site identity line: favicon + siteName/domain
+    const siteLine = data.domain || '';
+    if (siteLine) {
+      const faviconHtml = data.favicon
+        ? `<img class="klp-og-favicon" src="${esc(data.favicon)}" alt="" width="14" height="14" loading="lazy" onerror="this.style.display='none'" />`
+        : '';
+      html += `<div class="klp-og-site">${faviconHtml}<span>${esc(siteLine)}</span></div>`;
+    }
+    html += `<div class="klp-og-title">${esc(data.title)}</div>`;
+    if (data.snippet) {
+      html += `<div class="klp-og-desc">${esc(data.snippet)}</div>`;
+    }
+    html += '</div>';
+    html += '<div class="klp-hint">⌘+Hover to preview · Click to open</div>';
+    return html;
+  }
+
   // Thumbnail for images
   if (data.thumbnailUrl && data.kind === 'image') {
     html += `<div class="klp-thumb"><img src="${esc(data.thumbnailUrl)}" alt="${esc(data.title)}" /></div>`;
@@ -327,13 +355,13 @@ const LINK_PREVIEW_CSS = `
   max-width: 320px;
   min-width: 180px;
   max-height: 400px;
-  background: var(--vscode-editorWidget-background, rgba(30, 30, 34, 0.96));
+  background: var(--vscode-editorWidget-background, rgba(37, 37, 38, 0.97));
   color: var(--vscode-editor-foreground, #d4d4d4);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.06));
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3), 0 0 0 1px rgba(0,0,0,0.08);
   font-size: 11px;
   font-family: var(--vscode-font-family, -apple-system, sans-serif);
   overflow-y: auto;
@@ -484,6 +512,55 @@ const LINK_PREVIEW_CSS = `
   opacity: 0.4;
   font-size: 9px;
   margin-right: 3px;
+}
+
+/* ── External URL rich card (OG metadata) ── */
+.klp-og-thumb {
+  max-height: 160px;
+  overflow: hidden;
+  border-radius: 7px 7px 0 0;
+}
+.klp-og-thumb img {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: cover;
+  max-height: 160px;
+}
+.klp-og-body {
+  padding: 10px 12px 6px;
+}
+.klp-og-site {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #888);
+  margin-bottom: 4px;
+}
+.klp-og-favicon {
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.klp-og-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--vscode-editor-foreground, #e0e0e0);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.klp-og-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--vscode-descriptionForeground, #999);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .klp-hint {
@@ -793,6 +870,9 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
             click(view, event) {
               if (!opts.onNavigate) return false;
               const me = event as MouseEvent;
+              // Only navigate on Cmd/Ctrl+click — plain click places caret and
+              // lets LinkPopup show the edit UI (Notion/Confluence model).
+              if (!(me.metaKey || me.ctrlKey)) return false;
               const link = detectLinkAtPos(view, me);
               if (!link) return false;
 
@@ -801,6 +881,17 @@ export const LinkPreviewExtension = Extension.create<LinkPreviewOptions>({
               opts.onNavigate(link);
               return true;
             },
+
+            handleDoubleClickOn: ((view: EditorView, _pos: number, _node: PMNode, _nodePos: number, event: MouseEvent) => {
+              if (!opts.onNavigate) return false;
+              const link = detectLinkAtPos(view, event);
+              if (!link) return false;
+
+              event.preventDefault();
+              hideTooltip();
+              opts.onNavigate(link);
+              return true;
+            }) as unknown as (view: EditorView, event: MouseEvent) => boolean | void,
           },
         },
       }),

@@ -44,7 +44,9 @@ export class AssetsProvider implements vscode.TreeDataProvider<AssetNode> {
   private scanning = false;
 
   refresh(): void {
-    this.scan().then(() => this._onDidChangeTreeData.fire());
+    this.scan()
+      .then(() => this._onDidChangeTreeData.fire())
+      .catch(err => console.error('[kivi] asset scan failed:', err));
   }
 
   getTreeItem(element: AssetNode): vscode.TreeItem {
@@ -93,8 +95,8 @@ export class AssetsProvider implements vscode.TreeDataProvider<AssetNode> {
     if (this.scanning) return;
     this.scanning = true;
 
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders?.length) {
       this.categories = [];
       this.scanning = false;
       return;

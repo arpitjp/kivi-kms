@@ -46,7 +46,8 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
     const cached = this.nodesByUri.get(uri.toString());
     if (cached) return cached;
 
-    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const wsFolder = vscode.workspace.getWorkspaceFolder(uri);
+    const wsRoot = wsFolder?.uri;
     if (!wsRoot) return undefined;
 
     const rel = posix.relative(wsRoot.path, uri.path);
@@ -54,8 +55,17 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
 
     const segments = rel.split('/');
 
-    // Load root level first, then walk each directory segment
+    // Load root level first
     await this.getChildren(undefined);
+
+    // For multi-root workspaces, also expand the workspace folder node
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders && folders.length > 1) {
+      const rootNode = this.nodesByUri.get(wsRoot.toString());
+      if (rootNode && rootNode.kind === 'folder') {
+        await this.getChildren(rootNode);
+      }
+    }
 
     let parentNode: TreeNode | undefined;
     for (let i = 0; i < segments.length; i++) {
@@ -101,11 +111,35 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   async getChildren(element?: TreeNode): Promise<TreeNode[]> {
-    if (!vscode.workspace.workspaceFolders?.length) return [];
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders?.length) return [];
 
-    const parentFolder = element?.kind === 'folder' ? element : undefined;
-    const searchDir = parentFolder?.uri ?? vscode.workspace.workspaceFolders[0].uri;
+    // Root level
+    if (!element) {
+      if (folders.length === 1) {
+        return this.loadDirectoryChildren(folders[0].uri, undefined);
+      }
+      // Multi-root: show workspace folders as top-level entries
+      const nodes: TreeNode[] = [];
+      for (const folder of folders) {
+        const hasMarkdown = await this.containsMarkdown(folder.uri);
+        if (hasMarkdown) {
+          const node: FolderNode = { kind: 'folder', uri: folder.uri, label: folder.name };
+          nodes.push(node);
+          this.nodesByUri.set(folder.uri.toString(), node);
+        }
+      }
+      return nodes;
+    }
 
+    if (element.kind === 'folder') {
+      return this.loadDirectoryChildren(element.uri, element as FolderNode);
+    }
+
+    return [];
+  }
+
+  private async loadDirectoryChildren(searchDir: vscode.Uri, parent: FolderNode | undefined): Promise<TreeNode[]> {
     try {
       const entries = await vscode.workspace.fs.readDirectory(searchDir);
       const nodes: TreeNode[] = [];
@@ -123,7 +157,7 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
         if (type === vscode.FileType.Directory) {
           const hasMarkdown = await this.containsMarkdown(uri);
           if (hasMarkdown) {
-            const node: FolderNode = { kind: 'folder', uri, label: name, parent: parentFolder };
+            const node: FolderNode = { kind: 'folder', uri, label: name, parent };
             nodes.push(node);
             this.nodesByUri.set(uri.toString(), node);
           }
@@ -131,7 +165,7 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
           const node: FileNode = {
             kind: 'file', uri,
             label: name.replace(/\.(md|markdown)$/, ''),
-            parent: parentFolder,
+            parent,
           };
           nodes.push(node);
           this.nodesByUri.set(uri.toString(), node);
@@ -153,18 +187,20 @@ export class FileExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
 
     this.mdDirSetPromise = (async () => {
       const dirs = new Set<string>();
-      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!wsRoot) return dirs;
+      const wsRoots = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
+      if (wsRoots.length === 0) return dirs;
 
       const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**', 5000);
       for (const uri of files) {
         let dir = path.dirname(uri.fsPath);
-        while (dir && dir.length >= wsRoot.length) {
+        const root = wsRoots.find(r => dir.startsWith(r));
+        if (!root) continue;
+        while (dir && dir.length >= root.length) {
           if (dirs.has(dir)) break;
           dirs.add(dir);
-          const parent = path.dirname(dir);
-          if (parent === dir) break;
-          dir = parent;
+          const parentDir = path.dirname(dir);
+          if (parentDir === dir) break;
+          dir = parentDir;
         }
       }
       this.mdDirSet = dirs;

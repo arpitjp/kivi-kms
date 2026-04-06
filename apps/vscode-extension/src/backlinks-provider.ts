@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getTabUri } from './utils.js';
 
 type TreeNode = CategoryItem | BacklinkItem;
 
@@ -85,7 +86,8 @@ export class BacklinksProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   private getRelativePath(filePath: string): string {
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))
+      ?? vscode.workspace.workspaceFolders?.[0];
     if (!folder) return '';
     const rel = filePath.replace(folder.uri.fsPath, '').replace(/^[\\/]/, '');
     const parts = rel.split(/[\\/]/);
@@ -105,7 +107,7 @@ export class BacklinksProvider implements vscode.TreeDataProvider<TreeNode> {
     if (editor) {
       currentPath = editor.document.uri.fsPath;
     } else {
-      const tabUri = (vscode.window.tabGroups.activeTabGroup.activeTab?.input as any)?.uri as vscode.Uri | undefined;
+      const tabUri = getTabUri(vscode.window.tabGroups.activeTabGroup.activeTab);
       if (tabUri) currentPath = tabUri.fsPath;
     }
     if (!currentPath) return [];
@@ -144,7 +146,8 @@ export class BacklinksProvider implements vscode.TreeDataProvider<TreeNode> {
 
   private getOutgoing(currentPath: string): BacklinkItem[] {
     const links = this.fileOutgoing.get(currentPath) || [];
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(currentPath))
+      ?? vscode.workspace.workspaceFolders?.[0];
     if (!folder || links.length === 0) return [];
 
     const results: BacklinkItem[] = [];

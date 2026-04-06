@@ -6,6 +6,7 @@ import { positionFixedPopup } from '../zoom.js';
 export interface SlashCommandItem {
   id: string;
   label: string;
+  description?: string;
   aliases?: string[];
   icon: string;
   category: string;
@@ -15,64 +16,118 @@ export interface SlashCommandItem {
 function buildDefaultItems(
   promptInput?: (msg: string, placeholder?: string) => Promise<string | null>,
   createExcalidrawFile?: (name: string) => Promise<string | null>,
+  onInsertAsset?: () => void,
 ): SlashCommandItem[] {
-  return [
-    { id: 'h1', label: 'Heading 1', aliases: ['h1', '#'], icon: 'H1', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
-    { id: 'h2', label: 'Heading 2', aliases: ['h2', '##'], icon: 'H2', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
-    { id: 'h3', label: 'Heading 3', aliases: ['h3', '###'], icon: 'H3', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
-    { id: 'bullet', label: 'Bullet List', aliases: ['ul', 'bullet'], icon: '•', category: 'Basic', action: (e) => e.chain().focus().toggleBulletList().run() },
-    { id: 'ordered', label: 'Numbered List', aliases: ['ol', 'num'], icon: '1.', category: 'Basic', action: (e) => e.chain().focus().toggleOrderedList().run() },
-    { id: 'task', label: 'Task List', aliases: ['todo', 'task', 'check'], icon: '☑', category: 'Basic', action: (e) => e.chain().focus().toggleTaskList().run() },
-    { id: 'quote', label: 'Blockquote', aliases: ['quote', 'bq'], icon: '❝', category: 'Basic', action: (e) => e.chain().focus().toggleBlockquote().run() },
-    { id: 'code', label: 'Code Block', aliases: ['code', 'cb'], icon: '{ }', category: 'Basic', action: (e) => e.chain().focus().toggleCodeBlock().run() },
-    { id: 'hr', label: 'Horizontal Rule', aliases: ['hr', 'divider', '---'], icon: '—', category: 'Basic', action: (e) => e.chain().focus().setHorizontalRule().run() },
-    { id: 'table', label: 'Table', aliases: ['table'], icon: '⊞', category: 'Advanced', action: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3 }).run() },
-    { id: 'math', label: 'Math Block', aliases: ['math', 'latex', 'equation'], icon: '∑', category: 'Advanced', action: (e) => e.chain().focus().insertContent({ type: 'mathBlock', content: [{ type: 'text', text: 'E = mc^2' }] }).run() },
-    { id: 'image', label: 'Image', aliases: ['img', 'image', 'pic'], icon: '🖼', category: 'Insert', action: (e) => {
+  const items: SlashCommandItem[] = [
+    // ── Basic blocks ─────────────────────────────────────────
+    { id: 'h1', label: 'Heading 1', description: 'Large section heading', aliases: ['h1', 'heading1', '#'], icon: 'H1', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
+    { id: 'h2', label: 'Heading 2', description: 'Medium section heading', aliases: ['h2', 'heading2', '##'], icon: 'H2', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
+    { id: 'h3', label: 'Heading 3', description: 'Small section heading', aliases: ['h3', 'heading3', '###'], icon: 'H3', category: 'Basic', action: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
+    { id: 'bullet', label: 'Bullet List', description: 'Unordered list with bullets', aliases: ['ul', 'bullet', 'list', '-'], icon: '•', category: 'Basic', action: (e) => e.chain().focus().toggleBulletList().run() },
+    { id: 'ordered', label: 'Numbered List', description: 'Ordered list with numbers', aliases: ['ol', 'num', 'numbered', '1.'], icon: '1.', category: 'Basic', action: (e) => e.chain().focus().toggleOrderedList().run() },
+    { id: 'task', label: 'Task List', description: 'Checklist with checkboxes', aliases: ['todo', 'task', 'check', 'checkbox', '[]'], icon: '☑', category: 'Basic', action: (e) => e.chain().focus().toggleTaskList().run() },
+    { id: 'quote', label: 'Blockquote', description: 'Quoted text block', aliases: ['quote', 'blockquote', 'bq', '>'], icon: '❝', category: 'Basic', action: (e) => e.chain().focus().toggleBlockquote().run() },
+    { id: 'code', label: 'Code Block', description: 'Fenced code with syntax highlighting', aliases: ['code', 'codeblock', 'cb', 'fence', '```'], icon: '{ }', category: 'Basic', action: (e) => e.chain().focus().toggleCodeBlock().run() },
+    { id: 'hr', label: 'Divider', description: 'Horizontal rule separator', aliases: ['hr', 'divider', 'line', 'separator', '---'], icon: '—', category: 'Basic', action: (e) => e.chain().focus().setHorizontalRule().run() },
+    { id: 'callout', label: 'Callout', description: 'Highlighted note, tip, or warning', aliases: ['callout', 'note', 'tip', 'warning', 'info', 'admonition'], icon: '💡', category: 'Basic', action: (e) => {
+      e.chain().focus().toggleBlockquote().run();
+      requestAnimationFrame(() => {
+        const { from } = e.state.selection;
+        const $pos = e.state.doc.resolve(from);
+        if ($pos.parent.textContent === '') {
+          e.chain().insertContentAt(from, '[!note] ').run();
+        }
+      });
+    }},
+
+    // ── Media ─────────────────────────────────────────────────
+  ];
+
+  // Unified asset picker — opens native file dialog, auto-detects type,
+  // copies external files into workspace, inserts the right markdown.
+  if (onInsertAsset) {
+    const cb = onInsertAsset;
+    items.push({
+      id: 'asset', label: 'Insert File', description: 'Image, video, diagram, or any file from disk',
+      aliases: ['asset', 'file', 'image', 'img', 'video', 'pic', 'photo', 'attach', 'embed', 'media', 'upload'],
+      icon: '📎', category: 'Media', action: () => cb(),
+    });
+  }
+
+  // Individual media commands still available for URL/path input
+  items.push(
+    { id: 'image', label: 'Image (URL)', description: 'Embed an image by URL or path', aliases: ['img-url', 'image-url'], icon: '🖼', category: 'Media', action: (e) => {
       if (promptInput) {
-        promptInput('Image URL:', 'https://...').then(url => { if (url) e.chain().focus().setImage({ src: url }).run(); });
+        promptInput('Image URL or relative path:', 'https://... or assets/photo.png').then(url => { if (url) e.chain().focus().setImage({ src: url }).run(); });
       } else {
         const url = window.prompt('Image URL:');
         if (url) e.chain().focus().setImage({ src: url }).run();
       }
     }},
-    { id: 'video', label: 'Video', aliases: ['video', 'vid'], icon: '▶', category: 'Insert', action: (e) => {
+    { id: 'video', label: 'Video (URL)', description: 'Embed a video by URL or path', aliases: ['vid-url', 'video-url'], icon: '▶', category: 'Media', action: (e) => {
       if (promptInput) {
-        promptInput('Video URL or path:', 'https://...').then(url => { if (url) e.chain().focus().insertContent(`<video src="${url}" controls style="max-width:100%"></video>`).run(); });
+        promptInput('Video URL or path:', 'https://... or assets/clip.mp4').then(url => { if (url) e.chain().focus().insertContent(`<video src="${url}" controls style="max-width:100%"></video>`).run(); });
       } else {
         const url = window.prompt('Video URL or path:');
         if (url) e.chain().focus().insertContent(`<video src="${url}" controls style="max-width:100%"></video>`).run();
       }
     }},
-    { id: 'excalidraw', label: 'Excalidraw', aliases: ['excalidraw', 'draw', 'diagram', 'sketch'], icon: '✎', category: 'Insert', action: (e) => {
+    { id: 'excalidraw', label: 'Excalidraw', description: 'Create an Excalidraw diagram', aliases: ['excalidraw', 'draw', 'diagram', 'sketch', 'whiteboard'], icon: '✎', category: 'Media', action: (e) => {
       if (createExcalidrawFile && promptInput) {
-        promptInput('Excalidraw file name:', 'diagram').then(async (name) => {
-          if (!name) return;
+        promptInput('Diagram name (blank for auto):', 'diagram').then(async (raw) => {
+          if (raw === null) return;
+          const name = raw.trim() || `diagram-${Date.now()}`;
           const relPath = await createExcalidrawFile(name);
           if (!relPath) return;
           const alt = name.replace(/\.excalidraw$/i, '');
           e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src: relPath, data: '{}', alt } }).run();
         });
       } else if (promptInput) {
-        promptInput('Excalidraw file name:', 'diagram').then(name => {
-          if (name) {
-            const fileName = name.endsWith('.excalidraw') ? name : `${name}.excalidraw`;
-            const src = `assets/${fileName}`;
-            const alt = name.replace(/\.excalidraw$/i, '');
-            e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src, data: '{}', alt } }).run();
-          }
+        promptInput('Diagram name (blank for auto):', 'diagram').then(raw => {
+          if (raw === null) return;
+          const name = raw.trim() || `diagram-${Date.now()}`;
+          const fileName = name.endsWith('.excalidraw') ? name : `${name}.excalidraw`;
+          const alt = name.replace(/\.excalidraw$/i, '');
+          e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { src: fileName, data: '{}', alt } }).run();
         });
       } else {
         e.chain().focus().insertContent({ type: 'excalidrawBlock', attrs: { data: '{}' } }).run();
       }
     }},
-    { id: 'toc', label: 'Table of Contents', aliases: ['toc', 'contents'], icon: '☰', category: 'Insert', action: (e) => e.chain().focus().insertContent({ type: 'tocBlock' }).run() },
-  ];
+  );
+
+  // ── Advanced ──────────────────────────────────────────────
+  items.push(
+    { id: 'table', label: 'Table', description: 'Insert a 3x3 table', aliases: ['table', 'grid'], icon: '⊞', category: 'Advanced', action: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3 }).run() },
+    { id: 'math', label: 'Math Block', description: 'LaTeX math equation', aliases: ['math', 'latex', 'equation', 'formula', 'katex'], icon: '∑', category: 'Advanced', action: (e) => e.chain().focus().insertContent({ type: 'mathBlock', content: [{ type: 'text', text: 'E = mc^2' }] }).run() },
+    { id: 'toc', label: 'Table of Contents', description: 'Auto-generated from headings', aliases: ['toc', 'contents', 'outline'], icon: '☰', category: 'Advanced', action: (e) => e.chain().focus().insertContent({ type: 'tocBlock' }).run() },
+    { id: 'link', label: 'Link', description: 'Insert a hyperlink', aliases: ['link', 'url', 'href', 'a'], icon: '🔗', category: 'Advanced', action: (e) => {
+      if (promptInput) {
+        promptInput('Link URL:', 'https://...').then(url => {
+          if (!url) return;
+          promptInput('Link text (blank to use URL):', '').then(text => {
+            const label = text?.trim() || url;
+            e.chain().focus().insertContent(`<a href="${url}">${label}</a>`).run();
+          });
+        });
+      } else {
+        const url = window.prompt('Link URL:');
+        if (url) {
+          const text = window.prompt('Link text (blank to use URL):') || url;
+          e.chain().focus().insertContent(`<a href="${url}">${text}</a>`).run();
+        }
+      }
+    }},
+  );
+
+  return items;
 }
 
 export interface SlashCommandsOptions {
   items?: SlashCommandItem[];
   onCreatePage?: () => void;
+  /** Open native file picker, copy-if-external, and return markdown snippet to insert. */
+  onInsertAsset?: () => void;
   /** Async input prompt — use instead of window.prompt() for sandboxed envs. */
   promptInput?: (message: string, placeholder?: string) => Promise<string | null>;
   /** Create an .excalidraw file and return its relative path from the doc. */
@@ -90,17 +145,18 @@ export const SlashCommands = Extension.create<SlashCommandsOptions>({
 
   addProseMirrorPlugins() {
     const opts = this.options;
-    const baseItems = opts.items ?? buildDefaultItems(opts.promptInput, opts.createExcalidrawFile);
+    const baseItems = opts.items ?? buildDefaultItems(opts.promptInput, opts.createExcalidrawFile, opts.onInsertAsset);
 
     const items: SlashCommandItem[] = [...baseItems];
     if (opts.onCreatePage) {
       const cb = opts.onCreatePage;
       items.push({
         id: 'newpage',
-        label: 'New Page',
-        aliases: ['page', 'new', 'create'],
+        label: 'Child Page',
+        description: 'Create a new linked sub-page',
+        aliases: ['page', 'new', 'create', 'subpage', 'child'],
         icon: '📄',
-        category: 'Insert',
+        category: 'Advanced',
         action: () => cb(),
       });
     }
@@ -240,16 +296,28 @@ function showSlashMenu(
       const labelWrap = document.createElement('span');
       labelWrap.className = 'kivi-slash-label-wrap';
 
+      const topLine = document.createElement('span');
+      topLine.className = 'kivi-slash-label-line';
+
       const label = document.createElement('span');
       label.className = 'kivi-slash-label';
       label.textContent = item.label;
-      labelWrap.appendChild(label);
+      topLine.appendChild(label);
 
       if (item.aliases?.length) {
         const alias = document.createElement('span');
         alias.className = 'kivi-slash-alias';
         alias.textContent = '/' + item.aliases[0];
-        labelWrap.appendChild(alias);
+        topLine.appendChild(alias);
+      }
+
+      labelWrap.appendChild(topLine);
+
+      if (item.description) {
+        const desc = document.createElement('span');
+        desc.className = 'kivi-slash-desc';
+        desc.textContent = item.description;
+        labelWrap.appendChild(desc);
       }
 
       row.appendChild(icon);
@@ -296,6 +364,7 @@ function showSlashMenu(
       i.label.toLowerCase().includes(q) ||
       i.category.toLowerCase().includes(q) ||
       i.id.toLowerCase().includes(q) ||
+      (i.description?.toLowerCase().includes(q) ?? false) ||
       (i.aliases?.some((a) => a.toLowerCase().startsWith(q)) ?? false),
     );
     selectedIndex = 0;

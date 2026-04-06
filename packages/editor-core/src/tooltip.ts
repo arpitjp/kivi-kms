@@ -10,16 +10,18 @@ const TOOLTIP_CSS = `
   position: fixed;
   z-index: 10001;
   padding: 4px 8px;
-  background: var(--vscode-editorHoverWidget-background, #2d2d30);
+  background: var(--vscode-editorHoverWidget-background, rgba(45, 45, 48, 0.97));
   color: var(--vscode-editorHoverWidget-foreground, #cccccc);
-  border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
-  border-radius: 4px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--vscode-editorHoverWidget-border, rgba(255, 255, 255, 0.06));
+  border-radius: 6px;
   font-size: 11px;
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.12s ease-out;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08);
 }
 .kivi-tooltip.visible { opacity: 1; }
 `;

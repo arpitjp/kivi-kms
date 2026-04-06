@@ -2,7 +2,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorState } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
-import { getHostZoom, isScrollZoomed } from '../zoom.js';
+import { positionFixedPopup } from '../zoom.js';
 
 export interface LinkSuggestFileInfo {
   rel: string;
@@ -14,6 +14,7 @@ export interface LinkSuggestFileInfo {
 
 export interface LinkSuggestOptions {
   getFiles: () => LinkSuggestFileInfo[] | Promise<LinkSuggestFileInfo[]>;
+  getFileHeadings?: (relPath: string) => LinkSuggestFileInfo[] | Promise<LinkSuggestFileInfo[]>;
 }
 
 const linkSuggestKey = new PluginKey('linkSuggest');
@@ -25,17 +26,54 @@ interface TriggerMatch {
   from: number;
   to: number;
   query: string;
+  isImageContext: boolean;
 }
 
+const svgI = (d: string) =>
+  `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
 const FILE_TYPE_ICONS: Record<string, string> = {
-  note: '📄',
-  image: '🖼️',
-  video: '🎬',
-  audio: '🎵',
-  excalidraw: '✏️',
-  pdf: '📕',
-  file: '📎',
+  note: svgI('<path d="M4.5 1.5h4.5L13 5.5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1z"/><path d="M9 1.5V5.5h4"/><line x1="5.5" y1="8.5" x2="10.5" y2="8.5"/><line x1="5.5" y1="11" x2="9" y2="11"/>'),
+  image: svgI('<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><circle cx="5" cy="6.5" r="1.2" stroke-width="1.2"/><path d="M1.5 11l3-2.5 2 2 3-3.5L14.5 11"/>'),
+  video: svgI('<rect x="1.5" y="3" width="9" height="10" rx="1.5"/><path d="M10.5 6.5l4-2.5v8l-4-2.5"/>'),
+  audio: svgI('<path d="M6 4v8l-3-2H1V6h2l3-2z"/><path d="M9.5 6.5a2.5 2.5 0 0 1 0 3"/><path d="M11.5 5a5 5 0 0 1 0 6"/>'),
+  excalidraw: svgI('<path d="M11.5 2.5l2 2-8 8L2 14l1.5-3.5 8-8z"/><path d="M9.5 4.5l2 2"/>'),
+  pdf: svgI('<path d="M4.5 1.5h4.5L13 5.5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1z"/><path d="M9 1.5V5.5h4"/><text x="4.5" y="12" font-size="5" font-weight="700" fill="currentColor" stroke="none">PDF</text>'),
+  file: svgI('<path d="M4.5 1.5h4.5L13 5.5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1z"/><path d="M9 1.5V5.5h4"/>'),
+  heading: svgI('<path d="M3 2v12M13 2v12M3 8h10"/>'),
 };
+
+const MEDIA_FILE_TYPES = new Set(['image', 'video', 'audio', 'excalidraw']);
+
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+}
+
+function parentDir(relPath: string): string {
+  const idx = relPath.lastIndexOf('/');
+  if (idx < 0) return '';
+  return relPath.slice(0, idx + 1);
+}
+
+function extractDocHeadings(state: EditorState): LinkSuggestFileInfo[] {
+  const headings: LinkSuggestFileInfo[] = [];
+  state.doc.forEach((node) => {
+    if (node.type.name === 'heading') {
+      const text = node.textContent.trim();
+      if (!text) return;
+      const level = (node.attrs.level as number) || 1;
+      const slug = slugify(text);
+      headings.push({
+        rel: `#${slug}`,
+        name: text,
+        relToDoc: `#${slug}`,
+        fileType: 'heading',
+        ext: String(level),
+      });
+    }
+  });
+  return headings;
+}
 
 function detectTrigger(state: EditorState): TriggerMatch | null {
   const { selection } = state;
@@ -54,15 +92,16 @@ function detectTrigger(state: EditorState): TriggerMatch | null {
   if (wikiMatch) {
     const query = wikiMatch[1];
     const offset = $pos.parentOffset - query.length - 2;
-    return { kind: 'wiki', from: parentStart + offset, to: selection.from, query };
+    return { kind: 'wiki', from: parentStart + offset, to: selection.from, query, isImageContext: false };
   }
 
-  // ]( markdown link trigger — only when preceded by [text]
-  const mdMatch = textBefore.match(/\[[^\]]*\]\(([^)]*)$/);
+  // ]( markdown link trigger — only when preceded by [text] or ![alt]
+  const mdMatch = textBefore.match(/(!)?\[[^\]]*\]\(([^)]*)$/);
   if (mdMatch) {
-    const query = mdMatch[1];
+    const query = mdMatch[2];
+    const isImage = mdMatch[1] === '!';
     const offset = $pos.parentOffset - query.length;
-    return { kind: 'md', from: parentStart + offset, to: selection.from, query };
+    return { kind: 'md', from: parentStart + offset, to: selection.from, query, isImageContext: isImage };
   }
 
   return null;
@@ -280,6 +319,7 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
   addOptions() {
     return {
       getFiles: () => [],
+      getFileHeadings: undefined,
     };
   },
 
@@ -298,8 +338,46 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
     let lastRenderedSelected = -1;
     let fetchingFiles = false;
     let suppressUntil = 0;
+    let scrollListenerEl: HTMLElement | null = null;
+    let scrollHandler: (() => void) | null = null;
+
+    function attachScroll(view: EditorView) {
+      detachScroll();
+      const parent = view.dom.parentElement;
+      if (!parent) return;
+      scrollListenerEl = parent;
+      scrollHandler = () => { if (popupEl && activeTrigger) positionPopupEl(view); };
+      parent.addEventListener('scroll', scrollHandler, { passive: true });
+    }
+
+    function detachScroll() {
+      if (scrollListenerEl && scrollHandler) {
+        scrollListenerEl.removeEventListener('scroll', scrollHandler);
+      }
+      scrollListenerEl = null;
+      scrollHandler = null;
+    }
+
+    function positionPopupEl(view: EditorView) {
+      if (!popupEl || !activeTrigger) return;
+      try {
+        const coords = view.coordsAtPos(activeTrigger.from);
+        const container = view.dom.parentElement;
+        const cr = container?.getBoundingClientRect() ?? null;
+        positionFixedPopup({
+          anchorRect: { top: coords.top, bottom: coords.bottom, left: coords.left, right: coords.left },
+          popup: popupEl,
+          containerRect: cr,
+          gap: 4,
+          pad: 8,
+          preferY: 'below',
+          anchorEl: view.dom as HTMLElement,
+        });
+      } catch { /* view may be destroyed */ }
+    }
 
     function destroy() {
+      detachScroll();
       if (popupEl) { popupEl.remove(); popupEl = null; }
       items = [];
       selectedIndex = 0;
@@ -331,7 +409,7 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
 
     function renderPopup(view: EditorView) {
       if (!active || items.length === 0 || !activeTrigger) {
-        if (popupEl) { popupEl.remove(); popupEl = null; }
+        if (popupEl) { detachScroll(); popupEl.remove(); popupEl = null; }
         lastRenderedItems = null;
         return;
       }
@@ -346,8 +424,6 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
       if (!popupEl) {
         popupEl = document.createElement('div');
         popupEl.className = 'kivi-link-suggest';
-        popupEl.style.position = 'absolute';
-        popupEl.style.zIndex = '10000';
         popupEl.addEventListener('mousedown', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -367,28 +443,37 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
             }
           }
         });
-        view.dom.parentElement?.appendChild(popupEl);
+        document.body.appendChild(popupEl);
+        attachScroll(view);
       }
 
       if (itemsChanged) {
-        // Strip path prefixes for display highlighting
         let effectiveQ = query;
-        if (query.startsWith('/')) effectiveQ = query.slice(1);
-        else if (query.startsWith('~')) effectiveQ = query.slice(1).replace(/^\//, '');
-        else if (query.startsWith('./')) effectiveQ = query.slice(2);
-        // For ../ keep as-is — relToDoc uses same convention
-        // Extract just the filename part for name highlighting
+        const hashIdx = effectiveQ.indexOf('#');
+        if (hashIdx >= 0) effectiveQ = effectiveQ.slice(hashIdx + 1);
+        else if (effectiveQ.startsWith('/')) effectiveQ = effectiveQ.slice(1);
+        else if (effectiveQ.startsWith('~')) effectiveQ = effectiveQ.slice(1).replace(/^\//, '');
+        else if (effectiveQ.startsWith('./')) effectiveQ = effectiveQ.slice(2);
         const lastSlash = effectiveQ.lastIndexOf('/');
         const filePartQ = lastSlash >= 0 ? effectiveQ.slice(lastSlash + 1) : effectiveQ;
         popupEl.innerHTML = items.map((file, i) => {
-          const icon = FILE_TYPE_ICONS[file.fileType] || FILE_TYPE_ICONS.file;
+          const isHeading = file.fileType === 'heading';
+          const icon = isHeading
+            ? `<span class="kivi-link-suggest-hlevel">H${file.ext}</span>`
+            : FILE_TYPE_ICONS[file.fileType] || FILE_TYPE_ICONS.file;
           const cls = i === selectedIndex ? ' kivi-link-suggest-active' : '';
-          const nameHtml = highlightMatch(file.name, filePartQ);
-          const pathHtml = `<span class="kivi-link-suggest-path" title="${escHtml(file.rel)}">${highlightMatch(file.rel, effectiveQ)}</span>`;
+          const nameHtml = highlightMatch(file.name, isHeading ? effectiveQ : filePartQ);
+          let pathHint = '';
+          if (!isHeading) {
+            const dir = parentDir(file.relToDoc);
+            pathHint = dir
+              ? `<span class="kivi-link-suggest-path" title="${escHtml(file.rel)}">${escHtml(dir)}</span>`
+              : '';
+          }
           return `<div class="kivi-link-suggest-item${cls}" data-idx="${i}">` +
             `<span class="kivi-link-suggest-icon">${icon}</span>` +
             `<span class="kivi-link-suggest-label">${nameHtml}</span>` +
-            pathHtml +
+            pathHint +
             `</div>`;
         }).join('');
         lastRenderedItems = itemIds;
@@ -398,84 +483,38 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
         updateSelectedHighlight();
       }
 
-      const coords = view.coordsAtPos(activeTrigger.from);
-      const container = view.dom.parentElement;
-      if (!container) return;
-      const cr = container.getBoundingClientRect();
-      const z = getHostZoom(container);
-
-      // Counter-zoom the popup so it stays the same visual size
-      popupEl.style.transform = z !== 1 ? `scale(${1 / z})` : '';
-      popupEl.style.transformOrigin = 'top left';
-
-      const gap = 4;
-      const pad = 8;
-      const scrollZ = isScrollZoomed(container);
-      const rawPH = popupEl.offsetHeight || 200;
-      const rawPW = popupEl.offsetWidth || 280;
-      const ph = scrollZ ? rawPH / z : rawPH;
-      const pw = scrollZ ? rawPW / z : rawPW;
-      const scaledH = ph / z;
-      const scaledW = pw / z;
-      const lz = (v: number) => scrollZ ? v / z : v;
-      const coordTop = scrollZ
-        ? (coords.top - cr.top + container.scrollTop) / z
-        : (coords.top - cr.top) / z + container.scrollTop;
-      const coordBottom = scrollZ
-        ? (coords.bottom - cr.top + container.scrollTop) / z
-        : (coords.bottom - cr.top) / z + container.scrollTop;
-      const coordLeft = scrollZ
-        ? (coords.left - cr.left + container.scrollLeft) / z
-        : (coords.left - cr.left) / z + container.scrollLeft;
-
-      const viewH = lz(container.clientHeight);
-      const scrollTop = lz(container.scrollTop);
-      const spaceBelow = (scrollTop + viewH) - coordBottom;
-      const spaceAbove = coordTop - scrollTop;
-
-      let top: number;
-      if (spaceAbove >= scaledH + gap) {
-        top = coordTop - scaledH - gap;
-      } else if (spaceBelow >= scaledH + gap) {
-        top = coordBottom + gap;
-      } else {
-        top = spaceAbove >= spaceBelow ? coordTop - scaledH - gap : coordBottom + gap;
-      }
-      top = Math.max(scrollTop + pad, Math.min(top, scrollTop + viewH - scaledH - pad));
-
-      let left = coordLeft;
-      const scrollW = lz(container.scrollWidth);
-      if (left + scaledW + pad > scrollW) left = scrollW - scaledW - pad;
-      if (left < pad) left = pad;
-
-      popupEl.style.left = `${left}px`;
-      popupEl.style.top = `${top}px`;
+      positionPopupEl(view);
     }
 
-    function filterAndSort(files: LinkSuggestFileInfo[], query: string): LinkSuggestFileInfo[] {
+    function filterAndSort(files: LinkSuggestFileInfo[], query: string, isImageContext: boolean): LinkSuggestFileInfo[] {
+      let pool = files;
+      if (isImageContext) {
+        pool = files.filter(f => MEDIA_FILE_TYPES.has(f.fileType));
+      }
+
       // `/` prefix — browse from workspace root; match against `rel`
       if (query.startsWith('/')) {
-        return pathPrefixFilter(files, query.slice(1), 'rel');
+        return pathPrefixFilter(pool, query.slice(1), 'rel');
       }
 
       // `../` prefix — relative to current doc; relToDoc already uses `../`
       if (query.startsWith('../')) {
-        return pathPrefixFilter(files, query, 'relToDoc');
+        return pathPrefixFilter(pool, query, 'relToDoc');
       }
 
       // `./` prefix — relative to current doc; strip `./` since relToDoc
       // for same-directory files is just `filename.md` (no `./` prefix)
       if (query.startsWith('./')) {
-        return pathPrefixFilter(files, query.slice(2), 'relToDoc');
+        return pathPrefixFilter(pool, query.slice(2), 'relToDoc');
       }
 
       // `~` prefix — treat as workspace root shorthand
       if (query.startsWith('~')) {
-        return pathPrefixFilter(files, query.slice(1).replace(/^\//, ''), 'rel');
+        return pathPrefixFilter(pool, query.slice(1).replace(/^\//, ''), 'rel');
       }
 
       // No prefix — fuzzy match, but boost files closer to current doc
-      return fuzzyFilter(files, query);
+      return fuzzyFilter(pool, query);
     }
 
     /**
@@ -489,7 +528,6 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
       pathQuery: string,
       field: 'rel' | 'relToDoc',
     ): LinkSuggestFileInfo[] {
-      // Split into directory prefix and filename part
       const lastSlash = pathQuery.lastIndexOf('/');
       const dirPrefix = lastSlash >= 0 ? pathQuery.slice(0, lastSlash + 1) : '';
       const filePart = lastSlash >= 0 ? pathQuery.slice(lastSlash + 1) : pathQuery;
@@ -501,27 +539,32 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
         const target = f[field];
         const targetLower = target.toLowerCase();
 
-        // File must be under the typed directory prefix
         if (dirPrefixLower && !targetLower.startsWith(dirPrefixLower)) continue;
 
-        // The portion after the directory prefix
+        // For relToDoc with empty dirPrefix (e.g. `./` query), exclude
+        // files that navigate upward (../...) since those aren't in the
+        // current directory.
+        if (field === 'relToDoc' && !dirPrefixLower && target.startsWith('../')) continue;
+
         const remainder = target.slice(dirPrefix.length);
 
         if (!filePart) {
-          // Just a directory prefix (e.g. "/docs/") — show direct children
-          // Direct child = no additional `/` in remainder, or only one segment
-          const depth = remainder.split('/').length - 1;
-          // Prioritize direct children, then sub-items
-          scored.push({ file: f, score: 100 - depth * 10 + (f.fileType === 'note' ? 5 : 0) });
+          // Browsing a directory — only show direct children (files and
+          // immediate sub-folders), not deeply nested items.
+          const slashIdx = remainder.indexOf('/');
+          const isDirectChild = slashIdx < 0;
+          const isImmediateFolder = slashIdx >= 0 && remainder.indexOf('/', slashIdx + 1) < 0;
+          if (!isDirectChild && !isImmediateFolder) continue;
+          const depthPenalty = isDirectChild ? 0 : 5;
+          scored.push({ file: f, score: 100 - depthPenalty + (f.fileType === 'note' ? 3 : 0) });
         } else {
-          // Score the remainder against the file part
           const score = fuzzyScore(remainder, filePart);
           if (score > 0) scored.push({ file: f, score });
         }
       }
 
       scored.sort((a, b) => b.score - a.score);
-      return scored.slice(0, 20).map(s => s.file);
+      return scored.slice(0, 25).map(s => s.file);
     }
 
     /**
@@ -550,9 +593,95 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
       return scored.slice(0, 20).map(s => s.file);
     }
 
-    function refreshItems(query: string, view: EditorView) {
+    function showHeadings(headings: LinkSuggestFileInfo[], headingQuery: string, view: EditorView, filePrefix?: LinkSuggestFileInfo) {
+      let filtered: LinkSuggestFileInfo[];
+      if (!headingQuery) {
+        filtered = headings.slice(0, 25);
+      } else {
+        const scored = headings.map(h => ({
+          item: h,
+          score: Math.max(fuzzyScore(h.name, headingQuery), fuzzyScore(h.relToDoc.replace(/^[^#]*#/, ''), headingQuery)),
+        })).filter(s => s.score > 0);
+        scored.sort((a, b) => b.score - a.score);
+        filtered = scored.slice(0, 25).map(s => s.item);
+      }
+      items = filePrefix ? [filePrefix, ...filtered] : filtered;
+      selectedIndex = (filePrefix && filtered.length > 0) ? 1 : 0;
+      renderPopup(view);
+    }
+
+    function refreshItems(query: string, view: EditorView, isImageContext: boolean) {
+      // `#` prefix → show headings from current document (same-file)
+      if (query.startsWith('#') && !isImageContext) {
+        const headingQuery = query.slice(1);
+        showHeadings(extractDocHeadings(view.state), headingQuery, view);
+        return;
+      }
+
+      // Cross-file heading: `filename.md#heading` or `path/file.md#heading`
+      const hashPos = query.indexOf('#');
+      if (hashPos > 0 && !isImageContext) {
+        const filePart = query.slice(0, hashPos);
+        const headingQuery = query.slice(hashPos + 1);
+
+        const ensureFilesAndResolve = (files: LinkSuggestFileInfo[]) => {
+          const filePartLower = filePart.toLowerCase();
+          const match = files.find(f =>
+            (f.fileType === 'note') &&
+            (f.relToDoc.toLowerCase() === filePartLower ||
+             f.rel.toLowerCase() === filePartLower ||
+             f.name.toLowerCase() === filePartLower.replace(/\.md$/, '')),
+          );
+          if (!match) {
+            items = filterAndSort(files, query, isImageContext);
+            selectedIndex = 0;
+            renderPopup(view);
+            return;
+          }
+
+          const filePrefixItem: LinkSuggestFileInfo = { ...match };
+          const getHeadings = ext.options.getFileHeadings;
+          if (getHeadings) {
+            const result = getHeadings(match.relToDoc);
+            if (result instanceof Promise) {
+              result.then((headings) => {
+                if (!active || editorView !== view) return;
+                showHeadings(headings, headingQuery, view, filePrefixItem);
+              }).catch(() => {});
+            } else {
+              showHeadings(result, headingQuery, view, filePrefixItem);
+            }
+          } else {
+            items = [filePrefixItem];
+            selectedIndex = 0;
+            renderPopup(view);
+          }
+        };
+
+        if (cachedFiles) {
+          ensureFilesAndResolve(cachedFiles);
+        } else {
+          if (fetchingFiles) return;
+          fetchingFiles = true;
+          const result = ext.options.getFiles();
+          if (result instanceof Promise) {
+            result.then((files) => {
+              fetchingFiles = false;
+              cachedFiles = files;
+              if (!active || editorView !== view) return;
+              ensureFilesAndResolve(files);
+            }).catch(() => { fetchingFiles = false; });
+          } else {
+            fetchingFiles = false;
+            cachedFiles = result;
+            ensureFilesAndResolve(result);
+          }
+        }
+        return;
+      }
+
       if (cachedFiles) {
-        items = filterAndSort(cachedFiles, query);
+        items = filterAndSort(cachedFiles, query, isImageContext);
         selectedIndex = 0;
         renderPopup(view);
         return;
@@ -565,14 +694,14 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
           fetchingFiles = false;
           cachedFiles = files;
           if (!active || editorView !== view) return;
-          items = filterAndSort(files, query);
+          items = filterAndSort(files, query, isImageContext);
           selectedIndex = 0;
           renderPopup(view);
         }).catch(() => { fetchingFiles = false; });
       } else {
         fetchingFiles = false;
         cachedFiles = result;
-        items = filterAndSort(result, query);
+        items = filterAndSort(result, query, isImageContext);
         selectedIndex = 0;
         renderPopup(view);
       }
@@ -600,7 +729,7 @@ export const LinkSuggest = Extension.create<LinkSuggestOptions>({
               }
               active = true;
               activeTrigger = trigger;
-              refreshItems(trigger.query, view);
+              refreshItems(trigger.query, view, trigger.isImageContext);
             },
             destroy() {
               destroy();

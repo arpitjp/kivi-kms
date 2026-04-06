@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 
 export { computeKiviFontSize, detectToolbarContext } from './shared/font.js';
 export type { ToolbarContext } from './shared/font.js';
@@ -13,16 +14,114 @@ export function getNonce(): string {
   return text;
 }
 
+export function getTabUri(tab: vscode.Tab | undefined): vscode.Uri | undefined {
+  const input = tab?.input;
+  if (input && typeof input === 'object' && 'uri' in input) {
+    return (input as { uri: vscode.Uri }).uri;
+  }
+  return undefined;
+}
+
+export function getTabViewType(tab: vscode.Tab | undefined): string | undefined {
+  const input = tab?.input;
+  if (input && typeof input === 'object' && 'viewType' in input) {
+    return (input as { viewType: string }).viewType;
+  }
+  return undefined;
+}
+
 export function getActiveMarkdownUri(): vscode.Uri | undefined {
   const editor = vscode.window.activeTextEditor;
   if (editor && editor.document.fileName.endsWith('.md')) {
     return editor.document.uri;
   }
-  const tabUri = (vscode.window.tabGroups.activeTabGroup.activeTab?.input as any)?.uri as vscode.Uri | undefined;
+  const tabUri = getTabUri(vscode.window.tabGroups.activeTabGroup.activeTab);
   if (tabUri && (tabUri.fsPath.endsWith('.md') || tabUri.fsPath.endsWith('.markdown'))) {
     return tabUri;
   }
   return undefined;
+}
+
+// ── Workspace root detection ──
+// Handles monorepos, submodules, and non-git workspaces robustly.
+// Priority: VS Code workspace folder > .git ancestor > .vscode ancestor.
+// Results are cached per-directory for the lifetime of the session.
+
+const _rootCache = new Map<string, vscode.Uri | null>();
+
+/**
+ * Find the effective workspace root for a given file URI.
+ * 1. vscode.workspace.getWorkspaceFolder — canonical for VS Code
+ * 2. Walk up to find .git (handles submodules where .git is a file)
+ * 3. Walk up to find .vscode as a last-resort project indicator
+ * Returns null if none found (file is truly external).
+ */
+export function findEffectiveRoot(fileUri: vscode.Uri): vscode.Uri | null {
+  const wsFolder = vscode.workspace.getWorkspaceFolder(fileUri);
+  if (wsFolder) return wsFolder.uri;
+
+  const dir = path.dirname(fileUri.fsPath);
+  const cached = _rootCache.get(dir);
+  if (cached !== undefined) return cached;
+
+  const result = walkUpForRoot(dir);
+  _rootCache.set(dir, result);
+  return result;
+}
+
+function walkUpForRoot(startDir: string): vscode.Uri | null {
+  const root = path.parse(startDir).root;
+  let dir = startDir;
+  let vscodeDir: string | null = null;
+
+  while (dir !== root) {
+    // .git can be a directory (normal repo) or a file (submodule/worktree pointing to parent)
+    const gitPath = path.join(dir, '.git');
+    try {
+      const stat = fs.statSync(gitPath);
+      if (stat.isDirectory() || stat.isFile()) {
+        return vscode.Uri.file(dir);
+      }
+    } catch { /* not found, keep walking */ }
+
+    if (!vscodeDir) {
+      const vscodePath = path.join(dir, '.vscode');
+      try {
+        if (fs.statSync(vscodePath).isDirectory()) {
+          vscodeDir = dir;
+        }
+      } catch { /* not found */ }
+    }
+
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return vscodeDir ? vscode.Uri.file(vscodeDir) : null;
+}
+
+/**
+ * Determine whether a file URI is "inside" the effective workspace.
+ * Uses findEffectiveRoot and also checks all VS Code workspace folders.
+ */
+export function isInsideWorkspace(fileUri: vscode.Uri): boolean {
+  if (vscode.workspace.getWorkspaceFolder(fileUri)) return true;
+  const root = findEffectiveRoot(fileUri);
+  return root !== null;
+}
+
+/**
+ * Get the best workspace root for a document — used to anchor relative path calculations.
+ * Falls back to the first VS Code workspace folder if the document isn't in any.
+ */
+export function getWorkspaceRoot(docUri: vscode.Uri): vscode.Uri | undefined {
+  return (
+    vscode.workspace.getWorkspaceFolder(docUri)?.uri
+    ?? findEffectiveRoot(docUri)
+    ?? vscode.workspace.workspaceFolders?.[0]?.uri
+    ?? undefined
+  );
 }
 
 /**

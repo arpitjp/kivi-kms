@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 
 const URL = 'http://localhost:5484/';
-const SHOT_DIR = '/Users/arpit.jain/p/kivi/tests/ui/screenshots';
+const SHOT_DIR = new URL('./screenshots', import.meta.url).pathname;
 
 async function run() {
   const browser = await chromium.launch({ headless: true });

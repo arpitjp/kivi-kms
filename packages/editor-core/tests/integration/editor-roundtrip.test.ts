@@ -666,3 +666,48 @@ describe('deferContent and loadMarkdownAsync', () => {
     expect(md).toContain('- [x] checked');
   });
 });
+
+describe('footnote editor round-trip', () => {
+  let editor: Editor;
+  let el: HTMLElement;
+
+  beforeEach(() => {
+    const result = createTestEditor();
+    editor = result.editor;
+    el = result.el;
+  });
+
+  afterEach(() => {
+    editor.destroy();
+    el.remove();
+  });
+
+  it('round-trips footnote reference and definition through the editor', () => {
+    const source = 'Some claim[^1] here.\n\n[^1]: The source.';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('[^1]');
+    expect(markdown).toContain('The source');
+  });
+
+  it('round-trips named footnotes through the editor', () => {
+    const source = 'A statement[^note].\n\n[^note]: Citation text.';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('[^note]');
+    expect(markdown).toContain('Citation text');
+  });
+
+  it('round-trips frontmatter through the editor', () => {
+    const source = '---\ntitle: Test\n---\n\n# Hello';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('---');
+    expect(markdown).toContain('title: Test');
+    expect(markdown).toContain('# Hello');
+  });
+
+  it('round-trips math blocks through the editor', () => {
+    const source = '$$\n\\sum_{i=0}^n i^2\n$$';
+    const { markdown } = loadAndSerialize(editor, source);
+    expect(markdown).toContain('$$');
+    expect(markdown).toContain('\\sum');
+  });
+});

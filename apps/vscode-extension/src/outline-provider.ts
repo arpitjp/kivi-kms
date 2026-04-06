@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { getTabUri } from './utils.js';
 
 export interface OutlineItem {
   label: string;
@@ -112,7 +113,7 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
     this.collapsed = false;
     this.parseActiveDocument().then(() => {
       this._onDidChangeTreeData.fire();
-    });
+    }).catch(() => { /* parse failure is non-fatal; outline stays empty */ });
   }
 
   collapseAll(): void {
@@ -179,7 +180,7 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
     if (editor && (editor.document.languageId === 'markdown' || editor.document.fileName.endsWith('.md'))) {
       text = editor.document.getText();
     } else {
-      const tabUri = (vscode.window.tabGroups.activeTabGroup.activeTab?.input as any)?.uri as vscode.Uri | undefined;
+      const tabUri = getTabUri(vscode.window.tabGroups.activeTabGroup.activeTab);
       if (tabUri && (tabUri.fsPath.endsWith('.md') || tabUri.fsPath.endsWith('.markdown'))) {
         try {
           const doc = await vscode.workspace.openTextDocument(tabUri);

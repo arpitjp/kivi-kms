@@ -286,6 +286,80 @@ describe('serializeDocument hashtag round-trip', () => {
   });
 });
 
+describe('serializeDocument frontmatter round-trip', () => {
+  it('round-trips YAML frontmatter', () => {
+    const md = '---\ntitle: Hello\ntags:\n  - a\n  - b\n---\n\n# Heading';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument math round-trip', () => {
+  it('round-trips a display math block', () => {
+    const md = '$$\n\\sum_{i=0}^n i^2\n$$';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+
+  it('round-trips inline math in a paragraph', () => {
+    const md = 'Energy is $E=mc^2$ always.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument footnote round-trip', () => {
+  it('round-trips a footnote reference and definition', () => {
+    const md = 'Some claim[^1] here.\n\n[^1]: The source.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument postamble round-trip', () => {
+  it('preserves trailing whitespace after content', () => {
+    const md = '# Title\n\nParagraph\n\n';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument nested structures round-trip', () => {
+  it('round-trips nested blockquotes', () => {
+    const md = '> Outer\n>\n> > Inner nested';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+
+  it('round-trips deeply nested lists', () => {
+    const md = '- L1\n  - L2\n    - L3\n      - L4';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument TOC variant round-trip', () => {
+  it('round-trips [[toc]] marker', () => {
+    const md = '[[toc]]';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
+describe('serializeDocument multiple hashtags round-trip', () => {
+  it('round-trips multiple hashtags in one paragraph', () => {
+    const md = 'Tags: #first and #second here.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+
+  it('round-trips hierarchical hashtag', () => {
+    const md = 'Category #project/kivi tracked.';
+    const kiviDoc = parseMarkdown(md);
+    expect(serializeDocument(kiviDoc)).toBe(md);
+  });
+});
+
 describe('serializeNode wiki-link, hashtag, TOC, mermaid, excalidraw', () => {
   it('serializes a wiki-link mark as `[[target]]`', () => {
     const node = {

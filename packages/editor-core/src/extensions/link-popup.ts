@@ -10,6 +10,7 @@ const svg = (d: string) =>
   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
 const ICONS = {
+  open: svg('<path d="M10 2h4v4"/><path d="M14 2L8 8"/><path d="M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"/>'),
   edit: svg('<path d="M11.5 2.5a1.5 1.5 0 0 1 2 2L5 13l-3 1 1-3z"/>'),
   unlink: svg('<path d="M7 11l-1.5 1.5a2.5 2.5 0 0 1-3.5-3.5L3.5 7.5"/><path d="M9 5l1.5-1.5a2.5 2.5 0 0 1 3.5 3.5L12.5 8.5"/><line x1="4" y1="12" x2="12" y2="4" stroke-dasharray="1.5,2"/>'),
   copy: svg('<rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5V3.5A1.5 1.5 0 0 1 3.5 2h6A1.5 1.5 0 0 1 11 3.5V5"/>'),
@@ -96,7 +97,7 @@ export const LinkPopup = Extension.create({
 
             const urlSpan = document.createElement('span');
             urlSpan.className = 'kivi-link-popup-url';
-            urlSpan.textContent = href.length > 40 ? href.slice(0, 37) + '...' : href;
+            urlSpan.textContent = href.length > 50 ? href.slice(0, 47) + '…' : href;
             urlSpan.title = href;
             urlSpan.style.pointerEvents = 'auto';
             urlSpan.style.cursor = 'pointer';
@@ -105,47 +106,40 @@ export const LinkPopup = Extension.create({
             });
             popup.appendChild(urlSpan);
 
-            const editBtn = document.createElement('button');
-            editBtn.className = 'kivi-link-popup-btn';
-            editBtn.innerHTML = ICONS.edit;
-            editBtn.title = 'Edit link';
-            editBtn.style.pointerEvents = 'auto';
-            editBtn.addEventListener('mousedown', (e) => e.preventDefault());
-            editBtn.addEventListener('click', () => {
+            const makeBtn = (icon: string, title: string, action: () => void) => {
+              const b = document.createElement('button');
+              b.className = 'kivi-link-popup-btn';
+              b.innerHTML = icon;
+              b.title = title;
+              b.style.pointerEvents = 'auto';
+              b.addEventListener('mousedown', (e) => e.preventDefault());
+              b.addEventListener('click', action);
+              addDelayedTooltip(b);
+              return b;
+            };
+
+            popup.appendChild(makeBtn(ICONS.open, 'Open link', () => {
+              document.dispatchEvent(new CustomEvent('kivi-link-navigate', { detail: { href } }));
+            }));
+
+            popup.appendChild(makeBtn(ICONS.edit, 'Edit link', () => {
               const { from, to } = editor.state.selection;
               document.dispatchEvent(new CustomEvent('kivi-link-request', {
                 detail: { from, to, currentUrl: href, editMode: true },
               }));
               removePopup();
-            });
-            addDelayedTooltip(editBtn);
-            popup.appendChild(editBtn);
+            }));
 
-            const unlinkBtn = document.createElement('button');
-            unlinkBtn.className = 'kivi-link-popup-btn';
-            unlinkBtn.innerHTML = ICONS.unlink;
-            unlinkBtn.title = 'Remove link';
-            unlinkBtn.style.pointerEvents = 'auto';
-            unlinkBtn.addEventListener('mousedown', (e) => e.preventDefault());
-            unlinkBtn.addEventListener('click', () => {
+            popup.appendChild(makeBtn(ICONS.unlink, 'Remove link', () => {
               editor.chain().focus().extendMarkRange('link').unsetLink().run();
               removePopup();
-            });
-            addDelayedTooltip(unlinkBtn);
-            popup.appendChild(unlinkBtn);
+            }));
 
-            const copyBtn = document.createElement('button');
-            copyBtn.className = 'kivi-link-popup-btn';
-            copyBtn.innerHTML = ICONS.copy;
-            copyBtn.title = 'Copy link';
-            copyBtn.style.pointerEvents = 'auto';
-            copyBtn.addEventListener('mousedown', (e) => e.preventDefault());
-            copyBtn.addEventListener('click', () => {
+            const copyBtn = makeBtn(ICONS.copy, 'Copy URL', () => {
               navigator.clipboard.writeText(href).catch(() => {});
               copyBtn.innerHTML = ICONS.check;
               setTimeout(() => { copyBtn.innerHTML = ICONS.copy; }, 1200);
             });
-            addDelayedTooltip(copyBtn);
             popup.appendChild(copyBtn);
 
             document.body.appendChild(popup);

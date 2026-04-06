@@ -24,6 +24,7 @@ suite('User Actions', () => {
     test('cursor can be placed at beginning of document', async () => {
       await openWithCustomEditor('sample.md');
       const editor = vscode.window.activeTextEditor;
+      // activeTextEditor is undefined for custom webview editors; guard is intentional
       if (editor) {
         editor.selection = new vscode.Selection(0, 0, 0, 0);
         assert.strictEqual(editor.selection.start.line, 0);
@@ -34,6 +35,7 @@ suite('User Actions', () => {
     test('cursor can be placed at end of document', async () => {
       const doc = await openWithCustomEditor('sample.md');
       const editor = vscode.window.activeTextEditor;
+      // activeTextEditor is undefined for custom webview editors; guard is intentional
       if (editor) {
         const lastLine = doc.lineCount - 1;
         const lastChar = doc.lineAt(lastLine).text.length;
@@ -45,6 +47,7 @@ suite('User Actions', () => {
     test('text can be selected across multiple lines', async () => {
       const doc = await openWithCustomEditor('sample.md');
       const editor = vscode.window.activeTextEditor;
+      // activeTextEditor is undefined for custom webview editors; guard is intentional
       if (editor) {
         editor.selection = new vscode.Selection(0, 0, 2, 0);
         const selectedText = doc.getText(editor.selection);

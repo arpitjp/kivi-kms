@@ -50,6 +50,10 @@ export class TagTreeProvider implements vscode.TreeDataProvider<TagNode> {
     }
   }
 
+  getAllTags(): Set<string> {
+    return new Set(this.tagIndex.keys());
+  }
+
   removeFile(filePath: string): void {
     const oldTags = this.fileIndex.get(filePath);
     if (oldTags) {

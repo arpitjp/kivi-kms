@@ -672,6 +672,9 @@ export const CodeBlockEnhanced = Extension.create({
           repositionCollapseBars();
         }
 
+        let lastDocSize = editor.state.doc.content.size;
+        let lastDocChildCount = editor.state.doc.childCount;
+
         function update() {
           const { state } = editor;
           const { $from } = state.selection;
@@ -691,7 +694,14 @@ export const CodeBlockEnhanced = Extension.create({
           }
 
           reconcile();
-          syncCollapse();
+
+          const docSize = state.doc.content.size;
+          const childCount = state.doc.childCount;
+          if (docSize !== lastDocSize || childCount !== lastDocChildCount) {
+            lastDocSize = docSize;
+            lastDocChildCount = childCount;
+            syncCollapse();
+          }
         }
 
         return {

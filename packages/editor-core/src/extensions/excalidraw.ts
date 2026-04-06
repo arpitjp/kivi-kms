@@ -85,10 +85,13 @@ export const ExcalidrawBlock = Node.create({
         default: null,
         parseHTML: (el: HTMLElement) => {
           const w = el.getAttribute('width');
-          return w ? parseInt(w, 10) : null;
+          if (!w) return null;
+          if (w === '100%') return '100%';
+          return parseInt(w, 10) || null;
         },
         renderHTML: (attrs) => {
           if (!attrs.width) return {};
+          if (attrs.width === '100%') return { width: '100%', style: 'width:100%' };
           return { width: String(attrs.width), style: `width:${attrs.width}px;max-width:100%` };
         },
       },
@@ -145,6 +148,13 @@ export const ExcalidrawBlock = Node.create({
 
       const align = node.attrs['data-align'] as string | null;
       if (align) container.setAttribute('data-align', align);
+
+      if (node.attrs.width === '100%') {
+        container.style.width = '100%';
+      } else if (node.attrs.width) {
+        container.style.width = `${node.attrs.width}px`;
+        container.style.maxWidth = '100%';
+      }
 
       const header = document.createElement('div');
       header.className = 'kivi-excalidraw-header';
@@ -255,7 +265,10 @@ export const ExcalidrawBlock = Node.create({
             titleSpan.textContent = node.attrs.src
               ? node.attrs.src.split('/').pop() || 'Excalidraw'
               : 'Excalidraw Diagram';
-            if (node.attrs.width) {
+            if (node.attrs.width === '100%') {
+              container.style.width = '100%';
+              container.style.maxWidth = '';
+            } else if (node.attrs.width) {
               container.style.width = `${node.attrs.width}px`;
               container.style.maxWidth = '100%';
             } else {

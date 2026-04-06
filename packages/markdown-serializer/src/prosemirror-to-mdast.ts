@@ -158,8 +158,13 @@ function convertBlockNode(node: PMNode): RootContent[] {
       }];
     }
 
-    default:
+    default: {
+      const fallbackText = getTextContent(node);
+      if (fallbackText) {
+        return [{ type: 'paragraph', children: [{ type: 'text', value: fallbackText }] }];
+      }
       return [];
+    }
   }
 }
 
@@ -213,8 +218,13 @@ function convertTable(node: PMNode): import('mdast').Table {
   const rows = (node.content || []).map((row) => {
     const cells: import('mdast').TableCell[] = [];
     for (const cell of row.content || []) {
-      const paraContent = cell.content?.[0]?.content || [];
-      const children = convertInlineContent(paraContent);
+      const children: PhrasingContent[] = [];
+      const blocks = cell.content || [];
+      for (let bi = 0; bi < blocks.length; bi++) {
+        if (bi > 0) children.push({ type: 'html', value: '<br>' } as unknown as PhrasingContent);
+        const paraContent = blocks[bi].content || [];
+        children.push(...convertInlineContent(paraContent));
+      }
       cells.push({ type: 'tableCell' as const, children });
       const colspan = ((cell.attrs?.colspan as number) || 1) - 1;
       for (let i = 0; i < colspan; i++) {
@@ -273,6 +283,11 @@ function convertInlineContent(nodes: PMNode[]): PhrasingContent[] {
     } else if (node.type === 'mathInline') {
       const value = getTextContent(node);
       result.push({ type: 'inlineMath' as 'text', value } as unknown as PhrasingContent);
+    } else {
+      const fallback = getTextContent(node);
+      if (fallback) {
+        result.push({ type: 'text', value: fallback });
+      }
     }
   }
 

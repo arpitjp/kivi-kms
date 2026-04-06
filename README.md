@@ -19,7 +19,7 @@
 - Links, images, horizontal rules, footnotes, math (KaTeX), frontmatter
 - Smart clipboard (Markdown-aware paste/copy)
 - In-document search with regex, replace, and highlighting
-- Web Worker parsing for large files (>100KB)
+- Web Worker parsing for large files (>10KB)
 
 ### Knowledge Management (Phase 2)
 - **Wiki-links** — `[[page-name]]` and `[[page-name|alias]]` with Obsidian-compatible syntax

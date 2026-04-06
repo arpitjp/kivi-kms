@@ -3,7 +3,7 @@ import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { InputRule } from '@tiptap/core';
 import type { EditorView } from '@tiptap/pm/view';
-import { getHostZoom, isScrollZoomed } from '../zoom.js';
+import { positionFixedPopup } from '../zoom.js';
 import type { EditorState } from '@tiptap/pm/state';
 
 export interface HashTagOptions {
@@ -242,8 +242,46 @@ function createSuggestionPlugin(
   let lastRenderedItems: string[] | null = null;
   let lastRenderedSelected = -1;
   let lastRenderedQuery = '';
+  let scrollListenerEl: HTMLElement | null = null;
+  let scrollHandler: (() => void) | null = null;
+
+  function attachScroll(view: EditorView) {
+    detachScroll();
+    const parent = view.dom.parentElement;
+    if (!parent) return;
+    scrollListenerEl = parent;
+    scrollHandler = () => { if (popupEl && activeRange) positionPopupEl(view); };
+    parent.addEventListener('scroll', scrollHandler, { passive: true });
+  }
+
+  function detachScroll() {
+    if (scrollListenerEl && scrollHandler) {
+      scrollListenerEl.removeEventListener('scroll', scrollHandler);
+    }
+    scrollListenerEl = null;
+    scrollHandler = null;
+  }
+
+  function positionPopupEl(view: EditorView) {
+    if (!popupEl || !activeRange) return;
+    try {
+      const coords = view.coordsAtPos(activeRange.from);
+      const container = view.dom.parentElement;
+      const cr = container?.getBoundingClientRect() ?? null;
+      positionFixedPopup({
+        anchorRect: { top: coords.top, bottom: coords.bottom, left: coords.left, right: coords.left },
+        popup: popupEl,
+        containerRect: cr,
+        gap: 4,
+        pad: 8,
+        preferY: 'below',
+        anchorEl: view.dom as HTMLElement,
+      });
+    } catch { /* view may be destroyed */ }
+  }
 
   function destroy() {
+    detachScroll();
     if (popupEl) { popupEl.remove(); popupEl = null; }
     items = [];
     selectedIndex = 0;
@@ -287,7 +325,7 @@ function createSuggestionPlugin(
 
   function renderPopup(view: EditorView) {
     if (!active || items.length === 0 || !activeRange) {
-      if (popupEl) { popupEl.remove(); popupEl = null; }
+      if (popupEl) { detachScroll(); popupEl.remove(); popupEl = null; }
       lastRenderedItems = null;
       return;
     }
@@ -301,8 +339,6 @@ function createSuggestionPlugin(
     if (!popupEl) {
       popupEl = document.createElement('div');
       popupEl.className = 'kivi-tag-suggest';
-      popupEl.style.position = 'absolute';
-      popupEl.style.zIndex = '10000';
       popupEl.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -322,7 +358,8 @@ function createSuggestionPlugin(
           }
         }
       });
-      view.dom.parentElement?.appendChild(popupEl);
+      document.body.appendChild(popupEl);
+      attachScroll(view);
     }
 
     if (itemsChanged) {
@@ -337,60 +374,7 @@ function createSuggestionPlugin(
       updateSelectedHighlight();
     }
 
-    const coords = view.coordsAtPos(activeRange.from);
-    const container = view.dom.parentElement;
-    if (!container) return;
-    const cr = container.getBoundingClientRect();
-    const z = getHostZoom(container);
-
-    // Counter-zoom the popup so it stays the same visual size
-    popupEl.style.transform = z !== 1 ? `scale(${1 / z})` : '';
-    popupEl.style.transformOrigin = 'top left';
-
-    const gap = 4;
-    const pad = 8;
-    const scrollZ = isScrollZoomed(container);
-    const rawPH = popupEl.offsetHeight || 120;
-    const rawPW = popupEl.offsetWidth || 160;
-    const ph = scrollZ ? rawPH / z : rawPH;
-    const pw = scrollZ ? rawPW / z : rawPW;
-    const scaledH = ph / z;
-    const scaledW = pw / z;
-    const lz = (v: number) => scrollZ ? v / z : v;
-    const coordTop = scrollZ
-      ? (coords.top - cr.top + container.scrollTop) / z
-      : (coords.top - cr.top) / z + container.scrollTop;
-    const coordBottom = scrollZ
-      ? (coords.bottom - cr.top + container.scrollTop) / z
-      : (coords.bottom - cr.top) / z + container.scrollTop;
-    const coordLeft = scrollZ
-      ? (coords.left - cr.left + container.scrollLeft) / z
-      : (coords.left - cr.left) / z + container.scrollLeft;
-
-    const viewH = lz(container.clientHeight);
-    const scrollTop = lz(container.scrollTop);
-    const spaceBelow = (scrollTop + viewH) - coordBottom;
-    const spaceAbove = coordTop - scrollTop;
-
-    let top: number;
-    if (spaceAbove >= scaledH + gap) {
-      top = coordTop - scaledH - gap;
-    } else if (spaceBelow >= scaledH + gap) {
-      top = coordBottom + gap;
-    } else {
-      top = spaceAbove >= spaceBelow
-        ? coordTop - scaledH - gap
-        : coordBottom + gap;
-    }
-    top = Math.max(scrollTop + pad, Math.min(top, scrollTop + viewH - scaledH - pad));
-
-    let left = coordLeft;
-    const scrollW = lz(container.scrollWidth);
-    if (left + scaledW + pad > scrollW) left = scrollW - scaledW - pad;
-    if (left < pad) left = pad;
-
-    popupEl.style.left = `${left}px`;
-    popupEl.style.top = `${top}px`;
+    positionPopupEl(view);
   }
 
   function fetchItems(query: string, view: EditorView) {

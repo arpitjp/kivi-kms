@@ -69,8 +69,83 @@ describe('e2e: editing-scenarios', () => {
 
   it('source map tracks correct number of blocks', () => {
     const result = parseMarkdown(source);
-    // Count the top-level blocks from the fixture
     const doc = result.doc as { content: { type: string }[] };
     expect(doc.content.length).toBe(result.blockOrder.length);
+  });
+});
+
+describe('e2e: dirty-tracking isolation', () => {
+  it('adjacent blocks use originalSource when only the middle block is dirty', () => {
+    const md = '# Title\n\nFirst paragraph.\n\nSecond paragraph.\n\nThird paragraph.';
+    const result = parseMarkdown(md);
+    expect(result.blockOrder.length).toBe(4);
+
+    markBlockDirty(result, 2);
+
+    const serialized = serializeDocument(result);
+    const stats = assertUnchangedBlocks(md, serialized, [2]);
+    expect(stats.identical).toBe(3);
+  });
+
+  it('preserves gaps between blocks when one block is dirty', () => {
+    const md = '# Title\n\nParagraph one.\n\n\nParagraph two.';
+    const result = parseMarkdown(md);
+    markBlockDirty(result, 1);
+
+    const serialized = serializeDocument(result);
+    expect(serialized).toContain('\n\n\n');
+  });
+
+  it('multiple dirty blocks leave clean blocks untouched', () => {
+    const md = '# Title\n\nPara A.\n\nPara B.\n\nPara C.\n\nPara D.';
+    const result = parseMarkdown(md);
+
+    markBlockDirty(result, 0);
+    markBlockDirty(result, 2);
+    markBlockDirty(result, 4);
+
+    const serialized = serializeDocument(result);
+    const stats = assertUnchangedBlocks(md, serialized, [0, 2, 4]);
+    expect(stats.identical).toBe(2);
+  });
+
+  it('blockCountChanged: adding a block still produces valid output', () => {
+    const md = '# Title\n\nParagraph.';
+    const result = parseMarkdown(md);
+
+    const newBlockId = 'new-block-999';
+    result.blockOrder.splice(1, 0, newBlockId);
+    result.sourceMap.blocks.set(newBlockId, {
+      originalSource: '',
+      dirty: true,
+      position: { start: 0, end: 0 },
+      styleHints: {},
+    });
+
+    const doc = result.doc as { content: unknown[] };
+    doc.content.splice(1, 0, {
+      type: 'paragraph',
+      content: [{ type: 'text', text: 'Inserted paragraph.' }],
+    });
+
+    const serialized = serializeDocument(result);
+    expect(serialized).toContain('Title');
+    expect(serialized).toContain('Inserted paragraph');
+    expect(serialized).toContain('Paragraph');
+  });
+
+  it('blockCountChanged: removing a block still produces valid output', () => {
+    const md = '# Title\n\nMiddle para.\n\nEnd para.';
+    const result = parseMarkdown(md);
+    expect(result.blockOrder.length).toBe(3);
+
+    result.blockOrder.splice(1, 1);
+    const doc = result.doc as { content: unknown[] };
+    doc.content.splice(1, 1);
+
+    const serialized = serializeDocument(result);
+    expect(serialized).toContain('Title');
+    expect(serialized).toContain('End para');
+    expect(serialized).not.toContain('Middle para');
   });
 });

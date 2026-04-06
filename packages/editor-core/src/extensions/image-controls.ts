@@ -551,22 +551,26 @@ export const ImageControls = Extension.create({
               }
             }
 
+            let hasSpecificOpenBtn = false;
             if (kind === 'excalidrawBlock') {
               const excSrc = getNodeAttr('src') as string | null;
               if (excSrc) {
+                hasSpecificOpenBtn = true;
                 buttonRow.appendChild(makeBtn(ICONS.openExt, 'Edit in Excalidraw',
                   () => document.dispatchEvent(new CustomEvent('kivi-open-excalidraw', { detail: { src: excSrc } }))));
               }
             }
 
-            // "Open file" button — consistent across all media types
             const mediaSrc = (getNodeAttr('src') as string) || '';
-            if (mediaSrc) {
-              const openLabel = kind === 'excalidrawBlock' ? 'Open source file'
-                : kind === 'image' ? 'Open image' : kind === 'video' ? 'Open video' : 'Open audio';
-              buttonRow.appendChild(makeBtn(ICONS.openExt, openLabel, () => {
-                document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src: mediaSrc } }));
-              }));
+            if (mediaSrc && !hasSpecificOpenBtn) {
+              if (kind === 'image' && /\.excalidraw\.(png|svg)$/i.test(mediaSrc)) {
+                // "Open in Excalidraw" already added above for this case; skip generic open
+              } else {
+                const openLabel = kind === 'image' ? 'Open image' : kind === 'video' ? 'Open video' : 'Open audio';
+                buttonRow.appendChild(makeBtn(ICONS.openExt, openLabel, () => {
+                  document.dispatchEvent(new CustomEvent('kivi-open-asset', { detail: { src: mediaSrc } }));
+                }));
+              }
             }
 
             buttonRow.appendChild(makeSep());

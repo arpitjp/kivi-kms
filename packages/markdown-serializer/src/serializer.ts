@@ -163,5 +163,9 @@ function stringifyMdast(root: Root, styleHints?: StyleHints): string {
     .replace(/(!?)\\\[([^\]]*)\\\]\(([^)]*)\)/g, '$1[$2]($3)')
     .replace(/(!?)\\\[([^\]]*)\]\(([^)]*)\)/g, '$1[$2]($3)')
     .replace(/(!?)\[([^\]]*)\\\]\(([^)]*)\)/g, '$1[$2]($3)')
+    // Restore callout/admonition syntax inside blockquotes: > [!type]
+    .replace(/^(>\s*)\\\[(![\w-]+)\\\]/gm, '$1[$2]')
+    .replace(/^(>\s*)\\\[(![\w-]+)\]/gm, '$1[$2]')
+    .replace(/^(>\s*)\[(![\w-]+)\\\]/gm, '$1[$2]')
     .trimEnd();
 }

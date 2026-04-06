@@ -8,7 +8,7 @@ export { KiviToolbar, type ToolbarAction } from './toolbar.js';
 export { WikiLink } from './wiki-link.js';
 export { HashTag } from './hashtag.js';
 export { TocBlock } from './toc.js';
-export { SlashCommands, type SlashCommandItem } from './slash-commands.js';
+export { SlashCommands, type SlashCommandItem, CALLOUT_TYPES } from './slash-commands.js';
 export { MermaidBlock } from './mermaid.js';
 export { ExcalidrawBlock, setExcalidrawCallbacks } from './excalidraw.js';
 export { TableControls } from './table-controls.js';
@@ -21,6 +21,7 @@ export { SmartTypography } from './smart-typography.js';
 
 export { CursorFix } from './cursor-fix.js';
 export { BlockCopyControls } from './block-copy-controls.js';
+export { CalloutDecoration } from './callout.js';
 export { LinkSuggest, type LinkSuggestFileInfo, type LinkSuggestOptions } from './link-suggest.js';
 export {
   LinkPreviewExtension,

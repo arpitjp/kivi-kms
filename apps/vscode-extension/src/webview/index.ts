@@ -1227,11 +1227,11 @@ function init() {
       }
 
       case 'find':
-        toggleSearchBar();
+        showSearchBar(false);
         break;
 
       case 'findReplace':
-        toggleSearchBar(true);
+        showSearchBar(true);
         break;
 
       case 'toggleBlame':
@@ -1389,7 +1389,11 @@ function init() {
       }
 
       case 'scrollToLine': {
-        if (editor && typeof msg.line === 'number') {
+        const targetLine = typeof msg.line === 'number' ? msg.line : 0;
+        if (!targetLine) break;
+
+        // Live / split mode: scroll TipTap to the target line
+        if (editor && (viewMode === 'live' || viewMode === 'split')) {
           const tiptapEd = editor.getTiptapEditor();
           const { doc } = tiptapEd.state;
           let currentLine = 1;
@@ -1397,12 +1401,19 @@ function init() {
           let found = false;
           doc.forEach((node, offset) => {
             if (found) return;
-            if (currentLine >= (msg.line || 1)) { found = true; return; }
+            if (currentLine >= targetLine) { found = true; return; }
             currentLine += node.textContent.split('\n').length;
             targetPos = offset + node.nodeSize;
           });
           tiptapEd.commands.setTextSelection(Math.min(targetPos, doc.content.size - 1));
           tiptapEd.commands.scrollIntoView();
+        }
+
+        // Source / split mode: scroll Monaco to the target line
+        const monacoInst = viewMode === 'source' ? rawMonaco : viewMode === 'split' ? splitMonaco : null;
+        if (monacoInst) {
+          if (viewMode === 'split') suppressScrollSync();
+          monacoInst.revealLine(targetLine);
         }
         break;
       }
@@ -1472,17 +1483,23 @@ function init() {
 
   // ── Keyboard shortcuts ──
 
+  // Monaco editors dispatch 'kivi-find' when Cmd+F / Cmd+H is pressed inside them,
+  // since Monaco's internal handlers intercept the key event before it bubbles to document.
+  document.addEventListener('kivi-find', ((e: CustomEvent<{ replace: boolean }>) => {
+    showSearchBar(e.detail?.replace ?? false);
+  }) as EventListener);
+
   document.addEventListener('keydown', (e) => {
-    // Cmd+F: search
+    // Cmd+F: search (always opens, never toggles — matches VS Code)
     if ((e.metaKey || e.ctrlKey) && e.key === 'f' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
-      toggleSearchBar();
+      showSearchBar(false);
       return;
     }
     // Cmd+H / Cmd+Alt+F: find and replace
     if ((e.metaKey || e.ctrlKey) && (e.key === 'h' || (e.key === 'f' && e.altKey))) {
       e.preventDefault();
-      toggleSearchBar(true);
+      showSearchBar(true);
       return;
     }
     // Cmd+Shift+E: reveal in explorer
@@ -1493,6 +1510,10 @@ function init() {
     if ((e.metaKey || e.ctrlKey) && e.key === 'k' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       insertLinkAtCursor();
+    }
+    // Escape: close search bar from anywhere (matches VS Code)
+    if (e.key === 'Escape' && searchBarVisible) {
+      hideSearchBar();
     }
   });
 
@@ -1699,6 +1720,16 @@ function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
 
 let scrollSyncCleanup: (() => void) | null = null;
 
+// Temporarily suppress scroll sync during search navigation so both
+// editors independently center on their active match.
+let _scrollSyncSuppressed = false;
+let _scrollSyncTimer: ReturnType<typeof setTimeout> | null = null;
+function suppressScrollSync(ms = 400) {
+  _scrollSyncSuppressed = true;
+  if (_scrollSyncTimer) clearTimeout(_scrollSyncTimer);
+  _scrollSyncTimer = setTimeout(() => { _scrollSyncSuppressed = false; }, ms);
+}
+
 function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
   saveCurrentPosition();
 
@@ -1815,7 +1846,7 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
       };
 
       const syncLiveToRaw = () => {
-        if (syncSource === 'raw' || !splitMonaco) return;
+        if (_scrollSyncSuppressed || syncSource === 'raw' || !splitMonaco) return;
         syncSource = 'live';
         const maxY = scrollEl.scrollHeight - scrollEl.clientHeight;
         const ratio = maxY > 0 ? scrollEl.scrollTop / maxY : 0;
@@ -1825,7 +1856,7 @@ function doSetViewMode(mode: 'live' | 'source' | 'split', persist = true) {
       };
 
       const syncRawToLive = () => {
-        if (syncSource === 'live' || !splitMonaco) return;
+        if (_scrollSyncSuppressed || syncSource === 'live' || !splitMonaco) return;
         syncSource = 'raw';
         const rawMaxY = splitMonaco.getScrollHeight() - splitMonaco.getClientHeight();
         const ratio = rawMaxY > 0 ? splitMonaco.getScrollTop() / rawMaxY : 0;
@@ -3219,11 +3250,9 @@ function initToolbar(el: HTMLElement) {
   tiptap.on('selectionUpdate', update);
   tiptap.on('update', update);
 
-  // ── Collapsible extras: zoom, word-wrap, graph, reveal ──
+  // ── Collapsible extras: zoom, graph, reveal, new page, insert file ──
   const extras = document.createElement('div');
   extras.className = 'kivi-toolbar-extras';
-  appendWordWrapToggle(extras);
-  appendSep(extras);
   appendZoomControls(extras);
   appendSep(extras);
   appendGraphButton(extras);
@@ -3235,9 +3264,6 @@ function initToolbar(el: HTMLElement) {
   revealBtn.addEventListener('click', () => vscode.postMessage({ type: 'revealInExplorer' }));
   addDelayedTooltip(revealBtn);
   extras.appendChild(revealBtn);
-  el.appendChild(extras);
-
-  // ── Quick actions: New Page, Insert File ──
   appendSep(extras);
   const newPageBtn = document.createElement('button');
   newPageBtn.className = 'kivi-toolbar-btn';
@@ -3246,7 +3272,6 @@ function initToolbar(el: HTMLElement) {
   newPageBtn.addEventListener('click', () => vscode.postMessage({ type: 'promptCreateChildPage' }));
   addDelayedTooltip(newPageBtn);
   extras.appendChild(newPageBtn);
-
   const insertFileBtn = document.createElement('button');
   insertFileBtn.className = 'kivi-toolbar-btn';
   insertFileBtn.title = 'Insert File';
@@ -3254,12 +3279,15 @@ function initToolbar(el: HTMLElement) {
   insertFileBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAsset' }));
   addDelayedTooltip(insertFileBtn);
   extras.appendChild(insertFileBtn);
-
   scrollZone.appendChild(extras);
 
-  appendViewModeGroup(el);
-  appendSep(el);
-
+  // ── Pinned right: word-wrap, L/S/R, toggle ──
+  // These stay visible even when the toolbar is collapsed.
+  const pinnedRight = document.createElement('div');
+  pinnedRight.className = 'kivi-toolbar-pinned';
+  appendWordWrapToggle(pinnedRight);
+  appendViewModeGroup(pinnedRight);
+  appendSep(pinnedRight);
   const toggleBtn = document.createElement('button');
   toggleBtn.className = 'kivi-toolbar-btn kivi-toolbar-toggle-btn';
   toggleBtn.title = 'Hide Toolbar';
@@ -3268,7 +3296,8 @@ function initToolbar(el: HTMLElement) {
     setToolbarVisible(el.classList.contains('kivi-toolbar-collapsed'));
   });
   addDelayedTooltip(toggleBtn);
-  el.appendChild(toggleBtn);
+  pinnedRight.appendChild(toggleBtn);
+  el.appendChild(pinnedRight);
 }
 
 function initFloatingBar() {
@@ -3302,7 +3331,7 @@ function initContextMenu() {
     { label: 'Toggle Blockquote', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.toggleBlockquote().run(); } },
     { label: 'Toggle Code Block', action: () => { const c = editor?.getTiptapEditor()?.chain().focus() as any; c?.toggleCodeBlock().run(); } },
     { divider: true, label: '' },
-    { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+    { label: 'Find in File', shortcut: '⌘F', action: () => showSearchBar(false) },
     { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
   ];
 
@@ -3328,7 +3357,7 @@ function initContextMenu() {
         }
       }},
       { divider: true, label: '' },
-      { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+      { label: 'Find in File', shortcut: '⌘F', action: () => showSearchBar(false) },
       { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
     ];
   }
@@ -3355,7 +3384,7 @@ function initContextMenu() {
         }
       }},
       { divider: true, label: '' },
-      { label: 'Find in File', shortcut: '⌘F', action: () => toggleSearchBar() },
+      { label: 'Find in File', shortcut: '⌘F', action: () => showSearchBar(false) },
       { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
     ];
   }
@@ -3460,7 +3489,7 @@ function initContextMenu() {
         { divider: true, label: '' },
         { label: blameEnabled ? 'Hide Git Blame' : 'Show Git Blame', action: () => toggleBlame() },
         { divider: true, label: '' },
-        { label: 'Find in File', shortcut: '⌘F', action: () => monacoInst ? monacoInst.openFind() : toggleSearchBar() },
+        { label: 'Find in File', shortcut: '⌘F', action: () => showSearchBar(false) },
         { label: 'Reveal in Explorer', shortcut: '⌘⇧E', action: () => vscode.postMessage({ type: 'revealInExplorer' }) },
       ];
       renderMenu(rawItems);
@@ -3849,17 +3878,18 @@ function appendSep(parent: HTMLElement) {
 let searchBarVisible = false;
 // (rawSearchMatches/rawSearchIndex removed — Monaco handles search natively)
 
+// VS Code codicon-compatible SVG icons for the search bar
 const _si = (d: string, s = 14) =>
-  `<svg width="${s}" height="${s}" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">${d}</svg>`;
+  `<svg width="${s}" height="${s}" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">${d}</svg>`;
 
 const SEARCH_ICONS = {
-  chevronRight: _si('<path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.5"/>'),
-  chevronDown: _si('<path d="M3.5 6L8 10.5 12.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/>'),
-  prevMatch: _si('<path d="M12 10L8 6 4 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'),
-  nextMatch: _si('<path d="M4 6L8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'),
-  close: _si('<path d="M4 4L12 12M12 4L4 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'),
-  replace: _si('<path d="M3 8h7M7 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>'),
-  replaceAll: _si('<path d="M3 6h6M6 3l3 3-3 3M3 11h6M6 8l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>'),
+  chevronRight: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M5.7 13.7L5 13l4.6-4.6.7-.4-.7-.4L5 3l.7-.7 5.3 5.4-5.3 5z" fill="currentColor"/>'),
+  chevronDown: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L7.976 11.3 3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/>'),
+  prevMatch: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M5.649 10.356l2.349-2.35 2.349 2.35.707-.707L8 6.592l-3.054 3.057.703.707z" fill="currentColor"/>'),
+  nextMatch: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M10.349 5.644l-2.35 2.349-2.348-2.35-.707.707L8 9.408l3.054-3.057-.705-.707z" fill="currentColor"/>'),
+  close: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.707.708L7.293 8l-3.646 3.646.707.708L8 8.707z" fill="currentColor"/>'),
+  replace: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M3.221 3.739l2.261 2.269L7.7 3.784l-.7-.7-1.012 1.007-.008-1.6a.523.523 0 0 1 .5-.526H8V1h-1.52a1.523 1.523 0 0 0-1.48 1.56l.007 1.529L4.006 3.1l-.785.639zM12.5 7h-8a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5zm-8-1A1.5 1.5 0 0 0 3 7.5v6A1.5 1.5 0 0 0 4.5 15h8a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 12.5 6h-8z" fill="currentColor"/>'),
+  replaceAll: _si('<path fill-rule="evenodd" clip-rule="evenodd" d="M11.6 2.677a1.47 1.47 0 0 0-1.06.44l-.057.058-.463.462h1.38l.14-.14a.47.47 0 0 1 .338-.14h.22a.47.47 0 0 1 .471.47v.14H13.5v-.14A1.47 1.47 0 0 0 12.029 2.5l-.429.177zm-2.853 2.5l.708-.708L11 2.924l1.546 1.545-.707.708L11 4.339l-.838.838-.415-.415zm2.853.308V5h.93v.485a1.47 1.47 0 0 1-1.47 1.47h-.22a1.47 1.47 0 0 1-1.061-.441l-.088-.089.708-.707.088.089a.47.47 0 0 0 .338.14h.22a.47.47 0 0 0 .47-.47V5.5l.085-.015zM4.5 7h8a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-.5.5h-8a.5.5 0 0 1-.5-.5v-6a.5.5 0 0 1 .5-.5zm-1.5.5A1.5 1.5 0 0 1 4.5 6h8A1.5 1.5 0 0 1 14 7.5v6a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 3 13.5v-6zM2 9H1v4.5A1.5 1.5 0 0 0 2.5 15H7v-1H2.5a.5.5 0 0 1-.5-.5V9z" fill="currentColor"/>'),
 };
 
 function createSearchBar() {
@@ -3933,11 +3963,29 @@ function createSearchBar() {
   });
 
   const updateSearchCount = () => {
-    if (!editor) return;
-    if (viewMode === 'source' || viewMode === 'split') return;
-    const info = editor.getSearchInfo();
-    if (info.total > 0) {
-      countEl.textContent = `${info.activeIndex + 1} of ${info.total}`;
+    let total = 0;
+    let activeIdx = -1;
+
+    if (viewMode === 'source') {
+      const monacoInst = rawMonaco;
+      if (monacoInst) {
+        total = monacoInst.getSearchMatchCount();
+        activeIdx = monacoInst.getSearchActiveIdx();
+      }
+    } else if (viewMode === 'split') {
+      const monacoInst = splitMonaco;
+      if (monacoInst) {
+        total = monacoInst.getSearchMatchCount();
+        activeIdx = monacoInst.getSearchActiveIdx();
+      }
+    } else if (editor) {
+      const info = editor.getSearchInfo();
+      total = info.total;
+      activeIdx = info.activeIndex;
+    }
+
+    if (total > 0) {
+      countEl.textContent = `${activeIdx + 1} of ${total}`;
       countEl.classList.remove('ks-no-results');
     } else if (searchInput.value) {
       countEl.textContent = 'No results';
@@ -3949,16 +3997,28 @@ function createSearchBar() {
   };
 
   const doSearch = () => {
-    if (!editor) return;
     const query = searchInput.value;
     if (!query) {
-      editor.clearSearch();
+      editor?.clearSearch();
+      if (rawMonaco) rawMonaco.clearSearchHighlights();
+      if (splitMonaco) splitMonaco.clearSearchHighlights();
       countEl.textContent = '';
       countEl.classList.remove('ks-no-results');
       return;
     }
     const focused = document.activeElement;
-    editor.search({ query, caseSensitive, regex: useRegex, wholeWord });
+
+    if (viewMode === 'split') suppressScrollSync();
+
+    if (viewMode === 'live' || viewMode === 'split') {
+      editor?.search({ query, caseSensitive, regex: useRegex, wholeWord });
+    }
+
+    const monacoInst = viewMode === 'source' ? rawMonaco : viewMode === 'split' ? splitMonaco : null;
+    if (monacoInst) {
+      monacoInst.setSearchHighlights({ query, caseSensitive, regex: useRegex, wholeWord });
+    }
+
     if (focused && bar.contains(focused)) (focused as HTMLElement).focus();
     requestAnimationFrame(updateSearchCount);
   };
@@ -3970,11 +4030,27 @@ function createSearchBar() {
   });
 
   const nextResult = () => {
-    editor?.nextSearchResult();
+    if (viewMode === 'source' && rawMonaco) {
+      rawMonaco.nextSearchMatch();
+    } else if (viewMode === 'split' && splitMonaco) {
+      suppressScrollSync();
+      splitMonaco.nextSearchMatch();
+      editor?.nextSearchResult();
+    } else {
+      editor?.nextSearchResult();
+    }
     requestAnimationFrame(updateSearchCount);
   };
   const prevResult = () => {
-    editor?.previousSearchResult();
+    if (viewMode === 'source' && rawMonaco) {
+      rawMonaco.prevSearchMatch();
+    } else if (viewMode === 'split' && splitMonaco) {
+      suppressScrollSync();
+      splitMonaco.prevSearchMatch();
+      editor?.previousSearchResult();
+    } else {
+      editor?.previousSearchResult();
+    }
     requestAnimationFrame(updateSearchCount);
   };
 
@@ -3982,41 +4058,41 @@ function createSearchBar() {
     e.stopPropagation();
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); nextResult(); }
     else if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); prevResult(); }
-    else if (e.key === 'Escape') { toggleSearchBar(); }
+    else if (e.key === 'Escape') { hideSearchBar(); }
   });
 
   replaceInput.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doReplace(); }
-    else if (e.key === 'Escape') { toggleSearchBar(); }
+    else if (e.key === 'Escape') { hideSearchBar(); }
   });
 
   bar.querySelector('#kivi-search-next')!.addEventListener('click', nextResult);
   bar.querySelector('#kivi-search-prev')!.addEventListener('click', prevResult);
-  bar.querySelector('#kivi-search-close')!.addEventListener('click', () => toggleSearchBar());
+  bar.querySelector('#kivi-search-close')!.addEventListener('click', () => hideSearchBar());
 
   const doReplace = () => {
-    // In source/split mode, use Monaco's built-in find/replace
-    if (viewMode === 'source' || viewMode === 'split') {
-      const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
-      monacoInst?.openReplace();
-      return;
+    const monacoInst = viewMode === 'source' ? rawMonaco : viewMode === 'split' ? splitMonaco : null;
+    if (monacoInst) {
+      monacoInst.replaceCurrentMatch(replaceInput.value);
+      doSearch();
+    } else {
+      const tiptap = editor?.getTiptapEditor();
+      if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceCurrentResult'](replaceInput.value);
     }
-    const tiptap = editor?.getTiptapEditor();
-    if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceCurrentResult'](replaceInput.value);
     requestAnimationFrame(updateSearchCount);
   };
 
   bar.querySelector('#kivi-replace-one')!.addEventListener('click', doReplace);
   bar.querySelector('#kivi-replace-all')!.addEventListener('click', () => {
-    // In source/split mode, use Monaco's built-in find/replace
-    if (viewMode === 'source' || viewMode === 'split') {
-      const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
-      monacoInst?.openReplace();
-      return;
+    const monacoInst = viewMode === 'source' ? rawMonaco : viewMode === 'split' ? splitMonaco : null;
+    if (monacoInst) {
+      monacoInst.replaceAllMatches(replaceInput.value);
+      doSearch();
+    } else {
+      const tiptap = editor?.getTiptapEditor();
+      if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceAllResults'](replaceInput.value);
     }
-    const tiptap = editor?.getTiptapEditor();
-    if (tiptap) (tiptap.commands as Record<string, (...args: unknown[]) => boolean>)['replaceAllResults'](replaceInput.value);
     requestAnimationFrame(updateSearchCount);
   });
 
@@ -4026,27 +4102,9 @@ function createSearchBar() {
   });
 }
 
-function toggleSearchBar(openReplace = false) {
-  // In source/split mode, delegate to Monaco's built-in find
-  if (viewMode === 'source' && rawMonaco) {
-    if (openReplace) rawMonaco.openReplace(); else rawMonaco.openFind();
-    return;
-  }
-  if (viewMode === 'split' && splitMonaco) {
-    if (openReplace) splitMonaco.openReplace(); else splitMonaco.openFind();
-    return;
-  }
+function showSearchBar(openReplace = false) {
   const bar = document.getElementById('kivi-search-bar');
   if (!bar) return;
-  // If already visible and not toggling replace, close
-  if (searchBarVisible && !openReplace) {
-    searchBarVisible = false;
-    bar.style.display = 'none';
-    editor?.clearSearch();
-    editor?.focus();
-    saveState();
-    return;
-  }
   searchBarVisible = true;
   bar.style.display = '';
   if (openReplace) {
@@ -4058,7 +4116,52 @@ function toggleSearchBar(openReplace = false) {
   const input = bar.querySelector<HTMLInputElement>('#kivi-search-input');
   input?.focus();
   input?.select();
+  if (input && input.value) {
+    _triggerUnifiedSearch();
+  }
   saveState();
+}
+
+function hideSearchBar() {
+  const bar = document.getElementById('kivi-search-bar');
+  if (!bar || !searchBarVisible) return;
+  searchBarVisible = false;
+  bar.style.display = 'none';
+  editor?.clearSearch();
+  if (rawMonaco) rawMonaco.clearSearchHighlights();
+  if (splitMonaco) splitMonaco.clearSearchHighlights();
+  if (viewMode === 'source' && rawMonaco) rawMonaco.focus();
+  else editor?.focus();
+  saveState();
+}
+
+function _triggerUnifiedSearch() {
+  const bar = document.getElementById('kivi-search-bar');
+  if (!bar) return;
+  const searchInput = bar.querySelector<HTMLInputElement>('#kivi-search-input');
+  if (!searchInput) return;
+  const query = searchInput.value;
+  const caseSensitive = bar.querySelector<HTMLButtonElement>('#ks-case')?.classList.contains('active') ?? false;
+  const wholeWord = bar.querySelector<HTMLButtonElement>('#ks-word')?.classList.contains('active') ?? false;
+  const useRegex = bar.querySelector<HTMLButtonElement>('#ks-regex')?.classList.contains('active') ?? false;
+
+  if (!query) {
+    editor?.clearSearch();
+    if (rawMonaco) rawMonaco.clearSearchHighlights();
+    if (splitMonaco) splitMonaco.clearSearchHighlights();
+    return;
+  }
+
+  // Drive TipTap search (live editor) in live and split modes
+  if (viewMode === 'live' || viewMode === 'split') {
+    editor?.search({ query, caseSensitive, regex: useRegex, wholeWord });
+  }
+
+  // Drive Monaco search in source and split modes
+  const monacoInst = viewMode === 'source' ? rawMonaco : viewMode === 'split' ? splitMonaco : null;
+  if (monacoInst) {
+    monacoInst.setSearchHighlights({ query, caseSensitive, regex: useRegex, wholeWord });
+  }
 }
 
 if (document.readyState === 'loading') {

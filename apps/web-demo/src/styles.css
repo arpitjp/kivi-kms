@@ -1229,6 +1229,56 @@ body {
   margin: 0.5em 0;
   color: #aaaaaa;
 }
+#editor .ProseMirror .kivi-callout {
+  border-left-width: 3px; border-left-style: solid; border-radius: 4px;
+  padding: 8px 14px; color: inherit; opacity: 1; position: relative;
+}
+#editor .ProseMirror .kivi-callout::before {
+  content: attr(data-callout-icon) ' ' attr(data-callout-label);
+  display: block; font-size: 0.82em; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; margin-bottom: 4px; opacity: 0.9;
+}
+#editor .ProseMirror .kivi-callout .kivi-callout-marker { display: none; }
+.kivi-callout-note, .kivi-callout-info { border-left-color: #4fc1ff !important; background: rgba(79,193,255,0.06) !important; }
+.kivi-callout-note::before, .kivi-callout-info::before { color: #4fc1ff; }
+.kivi-callout-tip, .kivi-callout-success { border-left-color: #4ec9b0 !important; background: rgba(78,201,176,0.06) !important; }
+.kivi-callout-tip::before, .kivi-callout-success::before { color: #4ec9b0; }
+.kivi-callout-warning { border-left-color: #dcdcaa !important; background: rgba(220,220,170,0.06) !important; }
+.kivi-callout-warning::before { color: #dcdcaa; }
+.kivi-callout-caution, .kivi-callout-danger { border-left-color: #f48771 !important; background: rgba(244,135,113,0.06) !important; }
+.kivi-callout-caution::before, .kivi-callout-danger::before { color: #f48771; }
+.kivi-callout-important { border-left-color: #c586c0 !important; background: rgba(197,134,192,0.06) !important; }
+.kivi-callout-important::before { color: #c586c0; }
+.kivi-callout-bug { border-left-color: #f44747 !important; background: rgba(244,71,71,0.05) !important; }
+.kivi-callout-bug::before { color: #f44747; }
+
+/* ── Callout floating controls ── */
+.kivi-callout-controls {
+  position: fixed;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  background: var(--bg-surface, #252526);
+  border: 1px solid var(--border, #454545);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.kcc-current { font-weight: 600; font-size: 11px; padding: 0 4px; user-select: none; }
+.kcc-sep { width: 1px; height: 14px; margin: 0 2px; background: var(--border, #454545); opacity: 0.5; }
+.kcc-pill {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border: none; border-radius: 4px;
+  background: transparent; cursor: pointer; font-size: 12px;
+  line-height: 1; padding: 0; transition: background 0.12s;
+}
+.kcc-pill:hover { background: rgba(255, 255, 255, 0.12); }
+.kcc-remove { color: #f48771; font-size: 11px; font-weight: 700; opacity: 0.7; }
+.kcc-remove:hover { opacity: 1; background: rgba(244, 71, 71, 0.15); }
+
 #editor .ProseMirror ul,
 #editor .ProseMirror ol { padding-left: 24px; margin: 0.5em 0; }
 #editor .ProseMirror li { margin: 0.2em 0; }

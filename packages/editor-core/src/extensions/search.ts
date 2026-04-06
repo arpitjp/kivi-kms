@@ -68,6 +68,17 @@ export const KiviSearch = Extension.create<KiviSearchOptions>({
           }
           return true;
         },
+      setSearchActiveIndex:
+        (targetPos: number) =>
+        ({ tr, dispatch, state }: CommandProps & { state: import('@tiptap/pm/state').EditorState }) => {
+          const searchState = searchPluginKey.getState(state) as SearchState | undefined;
+          if (!searchState || searchState.results.length === 0) return false;
+          if (dispatch) {
+            tr.setMeta(searchPluginKey, { type: 'setIndex', targetPos });
+            dispatch(tr);
+          }
+          return true;
+        },
       replaceCurrentResult:
         (replacement: string) =>
         ({ tr, dispatch, state }: CommandProps & { state: import('@tiptap/pm/state').EditorState }) => {
@@ -174,6 +185,18 @@ export const KiviSearch = Extension.create<KiviSearchOptions>({
                   (state.activeIndex - 1 + state.results.length) % state.results.length;
                 const decorations = buildDecorations(tr.doc, state.results, prevIndex, options);
                 return { ...state, activeIndex: prevIndex, decorations };
+              }
+              case 'setIndex': {
+                if (state.results.length === 0) return state;
+                const tp: number = meta.targetPos;
+                let best = 0;
+                let bestDist = Math.abs(state.results[0].from - tp);
+                for (let i = 1; i < state.results.length; i++) {
+                  const d = Math.abs(state.results[i].from - tp);
+                  if (d < bestDist) { best = i; bestDist = d; }
+                }
+                const decorations = buildDecorations(tr.doc, state.results, best, options);
+                return { ...state, activeIndex: best, decorations };
               }
               case 'rerun': {
                 if (!state.query) return state;

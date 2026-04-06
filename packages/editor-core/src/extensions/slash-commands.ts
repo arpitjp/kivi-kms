@@ -13,6 +13,59 @@ export interface SlashCommandItem {
   action: (editor: Editor) => void;
 }
 
+const CALLOUT_TYPES: { type: string; icon: string; label: string; aliases: string[] }[] = [
+  { type: 'note',      icon: 'ℹ️',  label: 'Note',      aliases: ['note', 'callout'] },
+  { type: 'tip',       icon: '💡', label: 'Tip',       aliases: ['tip', 'hint'] },
+  { type: 'warning',   icon: '⚠️',  label: 'Warning',   aliases: ['warning', 'warn'] },
+  { type: 'danger',    icon: '🔴', label: 'Danger',    aliases: ['danger', 'error'] },
+  { type: 'important', icon: '❗', label: 'Important', aliases: ['important'] },
+  { type: 'success',   icon: '✅', label: 'Success',   aliases: ['success', 'check'] },
+  { type: 'info',      icon: 'ℹ️',  label: 'Info',      aliases: ['info'] },
+  { type: 'bug',       icon: '🐛', label: 'Bug',       aliases: ['bug'] },
+  { type: 'todo',      icon: '☑️',  label: 'Todo',      aliases: ['todo'] },
+  { type: 'question',  icon: '❓', label: 'Question',  aliases: ['question', 'faq'] },
+  { type: 'example',   icon: '📋', label: 'Example',   aliases: ['example'] },
+  { type: 'quote',     icon: '❝',  label: 'Quote',     aliases: ['callout-quote'] },
+  { type: 'abstract',  icon: '📄', label: 'Abstract',  aliases: ['abstract', 'summary', 'tldr'] },
+  { type: 'caution',   icon: '🔴', label: 'Caution',   aliases: ['caution'] },
+  { type: 'failure',   icon: '❌', label: 'Failure',   aliases: ['failure', 'fail'] },
+];
+
+export { CALLOUT_TYPES };
+
+function _insertCallout(e: Editor, type: string) {
+  const { from } = e.state.selection;
+  const $pos = e.state.doc.resolve(from);
+  const inBlockquote = $pos.parent.type.name === 'paragraph'
+    && $pos.depth >= 2
+    && e.state.doc.resolve($pos.before($pos.depth)).parent.type.name === 'blockquote';
+  if (!inBlockquote) {
+    e.chain().focus().toggleBlockquote().run();
+  }
+  requestAnimationFrame(() => {
+    const { from: newFrom } = e.state.selection;
+    const newPos = e.state.doc.resolve(newFrom);
+    if (newPos.parent.textContent === '') {
+      e.chain().focus().insertContentAt(newFrom, `[!${type}] `).run();
+    } else if (!newPos.parent.textContent.startsWith('[!')) {
+      const startOfParagraph = newPos.start(newPos.depth);
+      e.chain().focus().insertContentAt(startOfParagraph, `[!${type}] `).run();
+    }
+  });
+}
+
+function _calloutItems(): SlashCommandItem[] {
+  return CALLOUT_TYPES.map((ct) => ({
+    id: `callout-${ct.type}`,
+    label: `${ct.label} Callout`,
+    description: `${ct.label} callout block`,
+    aliases: [...ct.aliases, 'callout', 'admonition'],
+    icon: ct.icon,
+    category: 'Callout',
+    action: (e: Editor) => _insertCallout(e, ct.type),
+  }));
+}
+
 function buildDefaultItems(
   promptInput?: (msg: string, placeholder?: string) => Promise<string | null>,
   createExcalidrawFile?: (name: string) => Promise<string | null>,
@@ -29,16 +82,7 @@ function buildDefaultItems(
     { id: 'quote', label: 'Blockquote', description: 'Quoted text block', aliases: ['quote', 'blockquote', 'bq', '>'], icon: '❝', category: 'Basic', action: (e) => e.chain().focus().toggleBlockquote().run() },
     { id: 'code', label: 'Code Block', description: 'Fenced code with syntax highlighting', aliases: ['code', 'codeblock', 'cb', 'fence', '```'], icon: '{ }', category: 'Basic', action: (e) => e.chain().focus().toggleCodeBlock().run() },
     { id: 'hr', label: 'Divider', description: 'Horizontal rule separator', aliases: ['hr', 'divider', 'line', 'separator', '---'], icon: '—', category: 'Basic', action: (e) => e.chain().focus().setHorizontalRule().run() },
-    { id: 'callout', label: 'Callout', description: 'Highlighted note, tip, or warning', aliases: ['callout', 'note', 'tip', 'warning', 'info', 'admonition'], icon: '💡', category: 'Basic', action: (e) => {
-      e.chain().focus().toggleBlockquote().run();
-      requestAnimationFrame(() => {
-        const { from } = e.state.selection;
-        const $pos = e.state.doc.resolve(from);
-        if ($pos.parent.textContent === '') {
-          e.chain().insertContentAt(from, '[!note] ').run();
-        }
-      });
-    }},
+    ..._calloutItems(),
 
     // ── Media ─────────────────────────────────────────────────
   ];

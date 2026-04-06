@@ -227,6 +227,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
    *  when the target has a #fragment; consumed when the target panel sends 'ready'. */
   private static pendingHeadingScroll = new Map<string, string>();
 
+
   /** Workspace-wide tag set, populated by indexWorkspace in extension.ts */
   static workspaceTags = new Set<string>();
 
@@ -445,7 +446,6 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
       webviewPanel.onDidChangeViewState(() => {
         if (webviewPanel.active) {
           vscode.commands.executeCommand('setContext', 'kivi.editorFocused', true);
-          // Re-send file info for sidebars that track active editor
           postMessage({ type: 'focus' });
         } else {
           vscode.commands.executeCommand('setContext', 'kivi.editorFocused', false);
@@ -529,6 +529,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
                 }
               }
             }
+
           }, 100);
           break;
         }
@@ -1730,9 +1731,10 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'none'; img-src ${webview.cspSource} data: https:; media-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource} data:; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource}; worker-src ${webview.cspSource} blob:;" />
-  <link href="${styleUri}" rel="stylesheet" />
   <title>Kivi</title>
   <style nonce="${nonce}">
+    body { margin:0; padding:0; overflow:hidden; height:100vh; display:flex; flex-direction:column; background:var(--vscode-editor-background,#1e1e1e); color:var(--vscode-editor-foreground,#d4d4d4); }
+    #editor { position:relative; flex:1; overflow:hidden; }
     .kivi-skeleton { padding: 40px 60px; opacity: 0.35; animation: kivi-pulse 1.2s ease-in-out infinite; position: absolute; inset: 0; z-index: 50; background: var(--vscode-editor-background, #1e1e1e); }
     .kivi-skeleton-line { height: 14px; margin-bottom: 12px; border-radius: 4px; background: var(--vscode-editor-foreground, #888); }
     .kivi-skeleton-line.h1 { height: 26px; width: 45%; margin-bottom: 20px; }
@@ -1742,11 +1744,6 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     .kivi-skeleton-line.full { width: 95%; }
     @keyframes kivi-pulse { 0%,100% { opacity: 0.15; } 50% { opacity: 0.35; } }
   </style>
-  <script nonce="${nonce}">
-    self.MonacoEnvironment = {
-      getWorkerUrl: function() { return '${monacoWorkerUri}'; }
-    };
-  </script>
 </head>
 <body class="kivi-loading">
   <div id="editor">
@@ -1763,8 +1760,14 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     </div>
   </div>
   ${dataTag}
+  <link href="${styleUri}" rel="stylesheet" />
+  <script nonce="${nonce}">
+    self.MonacoEnvironment = {
+      getWorkerUrl: function() { return '${monacoWorkerUri}'; }
+    };
+  </script>
   <script nonce="${nonce}" src="${excalidrawScriptUri}" async></script>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script nonce="${nonce}" src="${scriptUri}" defer></script>
 </body>
 </html>`;
   }

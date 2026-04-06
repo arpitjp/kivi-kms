@@ -102,6 +102,7 @@ function ensureMarkdownTheme() {
         [/^\s*`{3,}\s*(\S+)?\s*$/, { token: 'string.code.fence', next: '@codeblock' }],
         [/^\$\$\s*$/, { token: 'keyword.math', next: '@mathblock' }],
         [/^(\s{0,3})(#{1,6}\s)(.+)$/, ['white', 'keyword.heading', 'keyword.heading']],
+        [/^>\s*\[![\w-]+\]/, 'comment.callout'],
         [/^\s*>\s+/, 'comment.quote'],
         [/^\s*[-*+]\s+\[[ xX]\]\s/, 'keyword.checkbox'],
         [/^\s*[-*+]\s/, 'keyword.list'],
@@ -194,25 +195,36 @@ function applyVscodeTheme(isDark: boolean) {
   const muted = hexFromCssColor(cssVar('--vscode-disabledForeground', isDark ? '808080' : '808080'));
   const strongFg = hexFromCssColor(cssVar('--vscode-editor-foreground', isDark ? 'e0e0e0' : '333333'));
 
+  const lineHighlight = hexFromCssColor(cssVar('--vscode-editor-lineHighlightBackground', isDark ? '2a2d2e' : 'f5f5f5'));
+  const selection = hexFromCssColor(cssVar('--vscode-editor-selectionBackground', isDark ? '264f78' : 'add6ff'));
+  const lineNumber = hexFromCssColor(cssVar('--vscode-editorLineNumber-foreground', isDark ? '858585' : '237893'));
+  const activeLineNumber = hexFromCssColor(cssVar('--vscode-editorLineNumber-activeForeground', isDark ? 'c6c6c6' : '0b216f'));
+  const inactiveSelection = hexFromCssColor(cssVar('--vscode-editor-inactiveSelectionBackground', isDark ? '3a3d41' : 'e5ebf1'));
+  const findMatch = hexFromCssColor(cssVar('--vscode-editor-findMatchBackground', isDark ? '515c6a' : 'a8ac94'));
+  const findMatchHighlight = hexFromCssColor(cssVar('--vscode-editor-findMatchHighlightBackground', isDark ? 'ea5c0055' : 'ea5c0040'));
+  const codeInline = isDark ? 'ce9178' : 'a31515';
+  const codeBlockFg = isDark ? 'd4d4d4' : '333333';
+
   const rules: monaco.editor.ITokenThemeRule[] = [
     { token: 'keyword.heading.md', foreground: keyword, fontStyle: 'bold' },
     { token: 'keyword.list.md', foreground: keyword },
-    { token: 'keyword.hr.md', foreground: keyword },
+    { token: 'keyword.hr.md', foreground: muted },
     { token: 'keyword.checkbox.md', foreground: keyword },
     { token: 'keyword.table.md', foreground: keyword },
     { token: 'keyword.math.md', foreground: number },
     { token: 'strong.md', fontStyle: 'bold', foreground: strongFg },
-    { token: 'emphasis.md', fontStyle: 'italic', foreground: variable },
+    { token: 'emphasis.md', fontStyle: 'italic', foreground: fg },
     { token: 'strikethrough.md', fontStyle: 'strikethrough', foreground: muted },
-    { token: 'variable.code.md', foreground: str },
-    { token: 'variable.source.md', foreground: str },
+    { token: 'variable.code.md', foreground: codeInline },
+    { token: 'variable.source.md', foreground: codeBlockFg },
     { token: 'variable.key.md', foreground: variable },
     { token: 'string.link.md', foreground: link, fontStyle: 'underline' },
     { token: 'string.link.wiki.md', foreground: link, fontStyle: 'underline' },
     { token: 'string.link.image.md', foreground: link },
-    { token: 'string.code.fence.md', foreground: str },
+    { token: 'string.code.fence.md', foreground: muted },
     { token: 'string.escape.md', foreground: str },
     { token: 'comment.quote.md', foreground: comment, fontStyle: 'italic' },
+    { token: 'comment.callout.md', foreground: isDark ? '4fc1ff' : '0070c1', fontStyle: 'bold' },
     { token: 'tag.md', foreground: muted },
     { token: 'meta.md', foreground: keyword },
     { token: 'meta.value.md', foreground: comment },
@@ -228,6 +240,13 @@ function applyVscodeTheme(isDark: boolean) {
     colors: {
       'editor.background': `#${bg}`,
       'editor.foreground': `#${fg}`,
+      'editor.lineHighlightBackground': `#${lineHighlight}`,
+      'editor.selectionBackground': `#${selection}`,
+      'editor.inactiveSelectionBackground': `#${inactiveSelection}`,
+      'editorLineNumber.foreground': `#${lineNumber}`,
+      'editorLineNumber.activeForeground': `#${activeLineNumber}`,
+      'editor.findMatchBackground': `#${findMatch}`,
+      'editor.findMatchHighlightBackground': `#${findMatchHighlight}`,
     },
     rules,
   });
@@ -283,6 +302,18 @@ export function createMonacoRawEditor(opts: MonacoRawEditorOptions) {
     selectionHighlight: true,
     bracketPairColorization: { enabled: false },
     matchBrackets: 'never',
+  });
+
+  // Override Monaco's built-in Cmd+F / Cmd+H to dispatch DOM events
+  // so the unified Kivi search bar in index.ts can handle them.
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => {
+    document.dispatchEvent(new CustomEvent('kivi-find', { detail: { replace: false } }));
+  });
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH, () => {
+    document.dispatchEvent(new CustomEvent('kivi-find', { detail: { replace: true } }));
+  });
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {
+    document.dispatchEvent(new CustomEvent('kivi-find', { detail: { replace: true } }));
   });
 
   // Markdown heading-based folding — scoped to this editor's model
@@ -622,9 +653,130 @@ export function createMonacoRawEditor(opts: MonacoRawEditorOptions) {
     editor.revealLineInCenter(line);
   }
 
+  // ── Unified search decorations ──
+  let searchDecorations: string[] = [];
+  interface MonacoSearchMatch { startLine: number; startCol: number; endLine: number; endCol: number; }
+  let searchMatches: MonacoSearchMatch[] = [];
+  let searchActiveIndex = -1;
+
+  function setSearchHighlights(opts: { query: string; caseSensitive?: boolean; regex?: boolean; wholeWord?: boolean }): { total: number } {
+    const model = editor.getModel();
+    if (!model || !opts.query) {
+      clearSearchHighlights();
+      return { total: 0 };
+    }
+    let isRegex = opts.regex ?? false;
+    let searchStr = opts.query;
+    if (!isRegex) {
+      searchStr = opts.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    if (opts.wholeWord) {
+      searchStr = `\\b${searchStr}\\b`;
+    }
+    try {
+      new RegExp(searchStr);
+    } catch {
+      clearSearchHighlights();
+      return { total: 0 };
+    }
+    const matches = model.findMatches(searchStr, true, true, opts.caseSensitive ?? false, opts.wholeWord && !isRegex ? searchStr : null, true);
+    searchMatches = matches.map(m => ({
+      startLine: m.range.startLineNumber,
+      startCol: m.range.startColumn,
+      endLine: m.range.endLineNumber,
+      endCol: m.range.endColumn,
+    }));
+    searchActiveIndex = searchMatches.length > 0 ? 0 : -1;
+    applySearchDecorations();
+    return { total: searchMatches.length };
+  }
+
+  function applySearchDecorations() {
+    const newDecorations: monaco.editor.IModelDeltaDecoration[] = searchMatches.map((m, i) => ({
+      range: new monaco.Range(m.startLine, m.startCol, m.endLine, m.endCol),
+      options: {
+        className: i === searchActiveIndex ? 'kivi-monaco-search-active' : 'kivi-monaco-search-match',
+        overviewRuler: { color: i === searchActiveIndex ? '#f0a030' : '#d4aa40', position: monaco.editor.OverviewRulerLane.Center },
+      },
+    }));
+    searchDecorations = editor.deltaDecorations(searchDecorations, newDecorations);
+  }
+
+  function setSearchActiveIndex(index: number) {
+    if (index < 0 || index >= searchMatches.length) return;
+    searchActiveIndex = index;
+    applySearchDecorations();
+    const m = searchMatches[index];
+    editor.revealRangeInCenter(new monaco.Range(m.startLine, m.startCol, m.endLine, m.endCol));
+  }
+
+  function getSearchMatchCount(): number {
+    return searchMatches.length;
+  }
+
+  function getSearchActiveIdx(): number {
+    return searchActiveIndex;
+  }
+
+  function findNearestMatchIndex(line: number, col = 1): number {
+    if (searchMatches.length === 0) return -1;
+    let best = 0;
+    let bestDist = Math.abs(searchMatches[0].startLine - line) * 10000 + Math.abs(searchMatches[0].startCol - col);
+    for (let i = 1; i < searchMatches.length; i++) {
+      const d = Math.abs(searchMatches[i].startLine - line) * 10000 + Math.abs(searchMatches[i].startCol - col);
+      if (d < bestDist) { best = i; bestDist = d; }
+    }
+    return best;
+  }
+
+  function nextSearchMatch(): number {
+    if (searchMatches.length === 0) return -1;
+    searchActiveIndex = (searchActiveIndex + 1) % searchMatches.length;
+    applySearchDecorations();
+    const m = searchMatches[searchActiveIndex];
+    editor.revealRangeInCenter(new monaco.Range(m.startLine, m.startCol, m.endLine, m.endCol));
+    return searchActiveIndex;
+  }
+
+  function prevSearchMatch(): number {
+    if (searchMatches.length === 0) return -1;
+    searchActiveIndex = (searchActiveIndex - 1 + searchMatches.length) % searchMatches.length;
+    applySearchDecorations();
+    const m = searchMatches[searchActiveIndex];
+    editor.revealRangeInCenter(new monaco.Range(m.startLine, m.startCol, m.endLine, m.endCol));
+    return searchActiveIndex;
+  }
+
+  function replaceCurrentMatch(replacement: string): boolean {
+    const model = editor.getModel();
+    if (!model || searchActiveIndex < 0 || searchActiveIndex >= searchMatches.length) return false;
+    const m = searchMatches[searchActiveIndex];
+    const range = new monaco.Range(m.startLine, m.startCol, m.endLine, m.endCol);
+    editor.executeEdits('kivi-search-replace', [{ range, text: replacement }]);
+    return true;
+  }
+
+  function replaceAllMatches(replacement: string): number {
+    const model = editor.getModel();
+    if (!model || searchMatches.length === 0) return 0;
+    const edits = [...searchMatches].reverse().map(m => ({
+      range: new monaco.Range(m.startLine, m.startCol, m.endLine, m.endCol),
+      text: replacement,
+    }));
+    editor.executeEdits('kivi-search-replace-all', edits);
+    return edits.length;
+  }
+
+  function clearSearchHighlights() {
+    searchDecorations = editor.deltaDecorations(searchDecorations, []);
+    searchMatches = [];
+    searchActiveIndex = -1;
+  }
+
   function dispose() {
     themeObserver.disconnect();
     clearBlame();
+    clearSearchHighlights();
     blameActionDisposable?.dispose();
     copyShaDisposable?.dispose();
     copyMsgDisposable?.dispose();
@@ -662,6 +814,16 @@ export function createMonacoRawEditor(opts: MonacoRawEditorOptions) {
     onDidScrollChange,
     revealLine,
     setOnToggleBlame,
+    setSearchHighlights,
+    setSearchActiveIndex,
+    findNearestMatchIndex,
+    getSearchMatchCount,
+    getSearchActiveIdx,
+    nextSearchMatch,
+    prevSearchMatch,
+    replaceCurrentMatch,
+    replaceAllMatches,
+    clearSearchHighlights,
     dispose,
   };
 }

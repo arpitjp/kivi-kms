@@ -46,6 +46,7 @@ import { Video, Audio } from './extensions/video.js';
 import { CursorFix } from './extensions/cursor-fix.js';
 import { BlockCopyControls } from './extensions/block-copy-controls.js';
 import { LinkSuggest } from './extensions/link-suggest.js';
+import { CalloutDecoration } from './extensions/callout.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -332,6 +333,7 @@ export class KiviEditor {
 
         CursorFix,
         BlockCopyControls,
+        CalloutDecoration,
         ...(options.linkSuggest ? (() => {
           try {
             return [LinkSuggest.configure({
@@ -498,6 +500,16 @@ export class KiviEditor {
   previousSearchResult(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this.editor.commands as any).previousSearchResult();
+    this.scrollToActiveSearchResult();
+  }
+
+  /**
+   * Set the active search result to the match nearest the given document position,
+   * then scroll it into view.
+   */
+  setSearchActiveByPosition(docPos: number): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editor.commands as any).setSearchActiveIndex(docPos);
     this.scrollToActiveSearchResult();
   }
 

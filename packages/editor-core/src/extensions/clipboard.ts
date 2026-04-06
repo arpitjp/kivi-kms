@@ -352,13 +352,18 @@ function serializeInline(node: import('@tiptap/pm/model').Node): string {
     } else if (child.type.name === 'hardBreak') {
       result += '  \n';
     } else if (child.type.name === 'image') {
-      if (child.attrs.width || child.attrs['data-align']) {
+      if (child.attrs['data-align']) {
         let html = `<img src="${child.attrs.src || ''}"`;
         if (child.attrs.alt) html += ` alt="${child.attrs.alt}"`;
         if (child.attrs.width) html += ` width="${child.attrs.width}"`;
+        if (child.attrs.height) html += ` height="${child.attrs.height}"`;
         if (child.attrs['data-align']) html += ` data-align="${child.attrs['data-align']}"`;
         html += ' />';
         result += html;
+      } else if (child.attrs.width || child.attrs.height) {
+        const w = child.attrs.width ? String(child.attrs.width) : '';
+        const h = child.attrs.height ? String(child.attrs.height) : '';
+        result += `![${child.attrs.alt || ''}](${child.attrs.src || ''} =${w}x${h})`;
       } else {
         result += `![${child.attrs.alt || ''}](${child.attrs.src || ''})`;
       }

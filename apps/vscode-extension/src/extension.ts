@@ -481,18 +481,22 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(outlineView);
 
-  // Auto-reveal the active heading in the outline as user scrolls
+  // Auto-focus: collapse outline then reveal only the active heading's ancestry,
+  // so the current section is expanded while sibling sections stay folded.
   let _revealTimer: ReturnType<typeof setTimeout> | undefined;
+  let _lastRevealedLabel: string | undefined;
   context.subscriptions.push(
     KiviEditorProvider.onActiveHeading((heading) => {
       if (_revealTimer) clearTimeout(_revealTimer);
-      _revealTimer = setTimeout(() => {
+      if (heading === _lastRevealedLabel) return;
+      _revealTimer = setTimeout(async () => {
         if (!outlineView.visible) return;
         const item = outlineProvider.findByLabel(heading);
-        if (item) {
-          outlineView.reveal(item, { select: true, focus: false, expand: true });
-        }
-      }, 100);
+        if (!item) return;
+        _lastRevealedLabel = heading;
+        await vscode.commands.executeCommand('workbench.actions.treeView.kivi.outline.collapseAll');
+        try { await outlineView.reveal(item, { select: true, focus: false, expand: true }); } catch { /* ignore */ }
+      }, 200);
     }),
   );
 
@@ -954,8 +958,15 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('workbench.actions.treeView.kivi.files.collapseAll');
     }),
     vscode.commands.registerCommand('kivi.refreshOutline', () => outlineProvider.refresh()),
-    vscode.commands.registerCommand('kivi.collapseOutline', () => outlineProvider.collapseAll()),
-    vscode.commands.registerCommand('kivi.expandOutline', () => outlineProvider.expandAll()),
+    vscode.commands.registerCommand('kivi.collapseOutline', () => {
+      vscode.commands.executeCommand('workbench.actions.treeView.kivi.outline.collapseAll');
+    }),
+    vscode.commands.registerCommand('kivi.expandOutline', async () => {
+      const roots = outlineProvider.getRoots();
+      for (const root of roots) {
+        try { await outlineView.reveal(root, { expand: 3, select: false, focus: false }); } catch { /* ignore */ }
+      }
+    }),
     vscode.commands.registerCommand('kivi.copyOutlineLink', (item: OutlineItem) => {
       if (!item) return;
       const slug = makeHeadingSlug(item.label);

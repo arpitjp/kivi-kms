@@ -207,6 +207,18 @@ export class KiviEditor {
                   return { width: String(attrs.width) };
                 },
               },
+              height: {
+                default: null,
+                parseHTML: (el: HTMLElement) => {
+                  const h = el.getAttribute('height');
+                  if (!h) return null;
+                  return parseInt(h, 10) || null;
+                },
+                renderHTML: (attrs: Record<string, unknown>) => {
+                  if (!attrs.height) return {};
+                  return { height: String(attrs.height) };
+                },
+              },
               'data-align': {
                 default: null,
                 parseHTML: (el: HTMLElement) => el.getAttribute('data-align') || null,

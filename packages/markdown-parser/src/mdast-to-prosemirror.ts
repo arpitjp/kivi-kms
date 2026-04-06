@@ -341,6 +341,12 @@ function convertImage(node: Image): PMNodeJSON {
   if (isExcalidrawUrl(node.url)) {
     return { type: 'excalidrawBlock', attrs: { src: node.url, data: '{}', alt: node.alt || null } };
   }
+  const d = node.data as Record<string, unknown> | undefined;
+  const w = (d?.width as number | null) ?? null;
+  const h = (d?.height as number | null) ?? null;
+  if (w || h) {
+    return imageNode(node.url, node.alt ?? undefined, node.title ?? undefined, { width: w, height: h });
+  }
   return imageNode(node.url, node.alt ?? undefined, node.title ?? undefined);
 }
 
@@ -512,13 +518,16 @@ function convertImgHtml(attrStr: string): PMNodeJSON {
   const src = extractHtmlAttr(attrStr, 'src') || '';
   const alt = extractHtmlAttr(attrStr, 'alt') || undefined;
   const widthStr = extractHtmlAttr(attrStr, 'width');
+  const heightStr = extractHtmlAttr(attrStr, 'height');
   const align = extractHtmlAttr(attrStr, 'data-align');
   const width = widthStr === '100%' ? '100%' : widthStr ? parseInt(widthStr, 10) || null : null;
+  const height = heightStr ? parseInt(heightStr, 10) || null : null;
   if (isExcalidrawUrl(src)) {
     return { type: 'excalidrawBlock', attrs: { src, data: '{}', alt: alt || null, width, 'data-align': align || null } };
   }
   return imageNode(src, alt, undefined, {
-    width: width,
+    width,
+    height,
     'data-align': align,
   });
 }

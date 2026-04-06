@@ -263,8 +263,10 @@ function convertInlineContent(nodes: PMNode[]): PhrasingContent[] {
     } else if (node.type === 'hardBreak') {
       result.push({ type: 'break' });
     } else if (node.type === 'image') {
-      if (imageHasCustomAttrs(node)) {
+      if (imageHasAlignOnly(node)) {
         result.push({ type: 'html', value: buildImageHtml(node) } as unknown as PhrasingContent);
+      } else if (imageHasCustomAttrs(node)) {
+        result.push({ type: 'html', value: buildImageDimSyntax(node) } as unknown as PhrasingContent);
       } else {
         result.push({
           type: 'image',
@@ -383,17 +385,33 @@ function escAttr(s: string): string {
 }
 
 function imageHasCustomAttrs(node: PMNode): boolean {
-  return !!node.attrs?.width || !!node.attrs?.['data-align'];
+  return !!node.attrs?.width || !!node.attrs?.height || !!node.attrs?.['data-align'];
+}
+
+function imageHasAlignOnly(node: PMNode): boolean {
+  return !!node.attrs?.['data-align'];
+}
+
+function buildImageDimSyntax(node: PMNode): string {
+  const src = (node.attrs?.src as string) || '';
+  const alt = (node.attrs?.alt as string) || '';
+  const width = node.attrs?.width as number | string | null;
+  const height = node.attrs?.height as number | null;
+  const w = width ? String(width) : '';
+  const h = height ? String(height) : '';
+  return `![${alt}](${src} =${w}x${h})`;
 }
 
 function buildImageHtml(node: PMNode): string {
   const src = (node.attrs?.src as string) || '';
   const alt = (node.attrs?.alt as string) || '';
   const width = node.attrs?.width as number | null;
+  const height = node.attrs?.height as number | null;
   const align = node.attrs?.['data-align'] as string | null;
   let html = `<img src="${escAttr(src)}"`;
   if (alt) html += ` alt="${escAttr(alt)}"`;
   if (width) html += ` width="${width}"`;
+  if (height) html += ` height="${height}"`;
   if (align) html += ` data-align="${escAttr(align)}"`;
   html += ' />';
   return html;
@@ -422,8 +440,11 @@ function convertAudio(node: PMNode): RootContent {
 }
 
 function convertBlockImage(node: PMNode): RootContent {
-  if (imageHasCustomAttrs(node)) {
+  if (imageHasAlignOnly(node)) {
     return { type: 'html', value: buildImageHtml(node) } as unknown as RootContent;
+  }
+  if (imageHasCustomAttrs(node)) {
+    return { type: 'html', value: buildImageDimSyntax(node) } as unknown as RootContent;
   }
   return {
     type: 'paragraph',

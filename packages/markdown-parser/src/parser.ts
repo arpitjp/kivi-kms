@@ -37,6 +37,7 @@ export function parseMarkdown(source: string, options?: ParseOptions): KiviDocum
   const processor = buildProcessor(opts);
   const mdast = processor.parse(source) as Root;
   fixIndentedFences(mdast, source);
+  injectImageDimensions(mdast);
 
   const doc = mdastToProseMirror(mdast);
 
@@ -95,6 +96,52 @@ function buildProcessor(opts: Required<ParseOptions>): any {
 
   processorCache.set(key, processor);
   return processor;
+}
+
+/**
+ * Scan the mdast tree for text nodes containing Obsidian-style
+ * `![alt](url =WIDTHxHEIGHT)` which remark leaves as literal text
+ * (the space before `=` is invalid CommonMark). We replace the text
+ * with proper `image` nodes carrying width/height in `data`.
+ */
+const IMG_DIM_RE = /!\[([^\]]*)\]\(([^\s)]+)\s+=(\d*)x(\d*)\)/g;
+
+function injectImageDimensions(root: Root): void {
+  function walk(nodes: RootContent[]): void {
+    for (const node of nodes) {
+      if (node.type === 'paragraph') {
+        const para = node as Paragraph;
+        let changed = false;
+        const out: Paragraph['children'] = [];
+        for (const child of para.children) {
+          if (child.type !== 'text') { out.push(child); continue; }
+          const val = (child as Text).value;
+          if (!IMG_DIM_RE.test(val)) { out.push(child); continue; }
+          IMG_DIM_RE.lastIndex = 0;
+          let last = 0;
+          let m: RegExpExecArray | null;
+          while ((m = IMG_DIM_RE.exec(val)) !== null) {
+            if (m.index > last) out.push({ type: 'text', value: val.slice(last, m.index) } as Text);
+            out.push({
+              type: 'image', url: m[2], alt: m[1] || null, title: null,
+              data: {
+                width: m[3] ? parseInt(m[3], 10) : null,
+                height: m[4] ? parseInt(m[4], 10) : null,
+              },
+            } as unknown as Paragraph['children'][number]);
+            last = m.index + m[0].length;
+          }
+          if (last < val.length) out.push({ type: 'text', value: val.slice(last) } as Text);
+          changed = true;
+        }
+        if (changed) para.children = out;
+      }
+      if ('children' in node && Array.isArray((node as { children: unknown[] }).children)) {
+        walk((node as { children: RootContent[] }).children);
+      }
+    }
+  }
+  walk(root.children);
 }
 
 /**

@@ -76,10 +76,11 @@ export function imageNode(
   src: string,
   alt?: string,
   title?: string,
-  extra?: { width?: number | string | null; 'data-align'?: string | null },
+  extra?: { width?: number | string | null; height?: number | string | null; 'data-align'?: string | null },
 ): PMNodeJSON {
   const attrs: Record<string, unknown> = { src, alt: alt || null, title: title || null };
   if (extra?.width) attrs.width = extra.width;
+  if (extra?.height) attrs.height = extra.height;
   if (extra?.['data-align']) attrs['data-align'] = extra['data-align'];
   return { type: 'image', attrs };
 }

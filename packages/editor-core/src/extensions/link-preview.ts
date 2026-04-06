@@ -601,10 +601,10 @@ const LINK_PREVIEW_CSS = `
   text-decoration: underline;
   cursor: pointer;
 }
-/* Cmd/Ctrl held: underline all link types */
-.kivi-cmd-hover .kivi-wiki-link,
-.kivi-cmd-hover .kivi-link,
-.kivi-cmd-hover .kivi-hashtag {
+/* Cmd/Ctrl held: underline only the hovered link */
+.kivi-cmd-hover .kivi-wiki-link:hover,
+.kivi-cmd-hover .kivi-link:hover,
+.kivi-cmd-hover .kivi-hashtag:hover {
   text-decoration: underline;
   cursor: pointer;
 }

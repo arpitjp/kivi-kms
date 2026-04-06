@@ -197,7 +197,7 @@ function tryMarkdownLink(view: EditorView): boolean {
   if (openBracketIdx < 0) return false;
 
   const altText = parentText.slice(openBracketIdx + 1, closeBracketIdx);
-  const url = parentText.slice(openParenIdx + 1, closeParenIdx);
+  const rawUrl = parentText.slice(openParenIdx + 1, closeParenIdx);
   if (!altText) return false;
 
   const isImage = openBracketIdx > 0 && parentText[openBracketIdx - 1] === '!';
@@ -209,8 +209,13 @@ function tryMarkdownLink(view: EditorView): boolean {
   if (isImage) {
     const imageType = state.schema.nodes.image;
     if (!imageType) return false;
+    const dimMatch = rawUrl.match(/^(.+?)\s+=(\d*)x(\d*)$/);
+    const url = dimMatch ? dimMatch[1] : rawUrl;
+    const imgAttrs: Record<string, unknown> = { src: url, alt: altText };
+    if (dimMatch?.[2]) imgAttrs.width = parseInt(dimMatch[2], 10);
+    if (dimMatch?.[3]) imgAttrs.height = parseInt(dimMatch[3], 10);
     tr.delete(absStart, absEnd);
-    tr.insert(absStart, imageType.create({ src: url, alt: altText }));
+    tr.insert(absStart, imageType.create(imgAttrs));
     tr.setSelection(TextSelection.create(tr.doc, absStart + 1));
   } else {
     const linkMark = state.schema.marks.link;
@@ -291,7 +296,7 @@ function tryMarkdownLinkOnState(state: EditorState): import('@tiptap/pm/state').
 }
 
 const MD_LINK_RE = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g;
-const MD_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+const MD_IMAGE_RE = /!\[([^\]]*)\]\(([^\s)]+)(?:\s+=(\d*)x(\d*))?\)/g;
 
 function tryConvertPastedLinks(state: EditorState): Transaction | null {
   const linkMark = state.schema.marks.link;
@@ -300,7 +305,7 @@ function tryConvertPastedLinks(state: EditorState): Transaction | null {
   if (!linkMark && !imageType) return null;
 
   type LinkHit = { kind: 'link'; from: number; to: number; text: string; url: string };
-  type ImageHit = { kind: 'image'; from: number; to: number; alt: string; url: string };
+  type ImageHit = { kind: 'image'; from: number; to: number; alt: string; url: string; width?: number | null; height?: number | null };
   type Hit = LinkHit | ImageHit;
   const hits: Hit[] = [];
 
@@ -315,7 +320,9 @@ function tryConvertPastedLinks(state: EditorState): Transaction | null {
       while ((m = MD_IMAGE_RE.exec(fullText)) !== null) {
         const absFrom = pos + 1 + m.index;
         const absTo = absFrom + m[0].length;
-        hits.push({ kind: 'image', from: absFrom, to: absTo, alt: m[1], url: m[2] });
+        const w = m[3] ? parseInt(m[3], 10) || null : null;
+        const h = m[4] ? parseInt(m[4], 10) || null : null;
+        hits.push({ kind: 'image', from: absFrom, to: absTo, alt: m[1], url: m[2], width: w, height: h });
       }
     }
 
@@ -344,7 +351,10 @@ function tryConvertPastedLinks(state: EditorState): Transaction | null {
     const h = hits[i];
     if (h.kind === 'image') {
       tr.delete(h.from, h.to);
-      tr.insert(h.from, imageType!.create({ src: h.url, alt: h.alt }));
+      const imgAttrs: Record<string, unknown> = { src: h.url, alt: h.alt };
+      if (h.width) imgAttrs.width = h.width;
+      if (h.height) imgAttrs.height = h.height;
+      tr.insert(h.from, imageType!.create(imgAttrs));
     } else {
       tr.delete(h.from, h.to);
       tr.insertText(h.text, h.from);

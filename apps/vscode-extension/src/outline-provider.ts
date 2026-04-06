@@ -100,7 +100,6 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
 
   private roots: OutlineItem[] = [];
   private allItems: OutlineItem[] = [];
-  private collapsed = false;
   private iconDir: string | null = null;
 
   constructor(private context?: vscode.ExtensionContext) {
@@ -110,20 +109,17 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
   }
 
   refresh(): void {
-    this.collapsed = false;
     this.parseActiveDocument().then(() => {
       this._onDidChangeTreeData.fire();
     }).catch(() => { /* parse failure is non-fatal; outline stays empty */ });
   }
 
-  collapseAll(): void {
-    this.collapsed = true;
-    this._onDidChangeTreeData.fire();
+  getRoots(): OutlineItem[] {
+    return this.roots;
   }
 
-  expandAll(): void {
-    this.collapsed = false;
-    this._onDidChangeTreeData.fire();
+  getAllItems(): OutlineItem[] {
+    return this.allItems;
   }
 
   getTreeItem(element: OutlineItem): vscode.TreeItem {
@@ -131,7 +127,7 @@ export class OutlineProvider implements vscode.TreeDataProvider<OutlineItem> {
     const item = new vscode.TreeItem(
       element.label,
       hasChildren
-        ? (this.collapsed ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded)
+        ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.None,
     );
 

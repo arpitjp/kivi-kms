@@ -47,6 +47,7 @@ import { CursorFix } from './extensions/cursor-fix.js';
 import { BlockCopyControls } from './extensions/block-copy-controls.js';
 import { LinkSuggest } from './extensions/link-suggest.js';
 import { CalloutDecoration } from './extensions/callout.js';
+import { HtmlBlock } from './extensions/html-block.js';
 
 export interface KiviEditorOptions extends EditorConfig {}
 
@@ -343,6 +344,7 @@ export class KiviEditor {
         DevWatchdog,
         SmartTypography,
 
+        HtmlBlock,
         CursorFix,
         BlockCopyControls,
         CalloutDecoration,

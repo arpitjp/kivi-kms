@@ -84,6 +84,12 @@ export function looksLikeMarkdown(text: string): boolean {
   return false;
 }
 
+function looksLikeRawHtml(text: string): boolean {
+  const t = text.trim();
+  if (!t.startsWith('<')) return false;
+  return /<\s*\/?\s*[a-zA-Z][^>]*>/.test(t);
+}
+
 export interface FileStorageAdapter {
   store(blob: Blob, filename: string, originalName?: string): Promise<string>;
 }
@@ -209,12 +215,14 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
             if (!plainText) return false;
 
             const isMarkdown = looksLikeMarkdown(plainText);
+            const isRawHtml = looksLikeRawHtml(plainText);
+            const preferStructuredParse = isMarkdown || isRawHtml;
 
             // Single-line plain text that isn't markdown: insert inline.
             // VS Code wraps copied text in HTML (<div style=...>) which
             // ProseMirror's default handler turns into a block — wrong for
             // simple text like file paths or short strings.
-            if (!isMarkdown && !plainText.includes('\n')) {
+            if (!preferStructuredParse && !plainText.includes('\n')) {
               event.preventDefault();
               const tr = _view.state.tr.insertText(plainText);
               _view.dispatch(tr);
@@ -226,7 +234,7 @@ export const KiviClipboard = Extension.create<KiviClipboardOptions>({
             // which ProseMirror turns into a code block — wrong behavior for markdown.
             // Only let HTML through if the plain text doesn't look like markdown
             // AND the HTML looks like rich content (from a web page, Google Docs, etc.)
-            if (!isMarkdown && htmlText) {
+            if (!preferStructuredParse && htmlText) {
               return false;
             }
 

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import * as cp from 'child_process';
 import * as https from 'https';
 import * as http from 'http';
@@ -325,6 +326,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
     for (const f of vscode.workspace.workspaceFolders ?? []) {
       roots.push(f.uri);
     }
+    roots.push(vscode.Uri.file(os.homedir()));
 
     webviewPanel.webview.options = {
       enableScripts: true,
@@ -480,6 +482,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             const wbu = webviewPanel.webview.asWebviewUri(wsFolder.uri).toString();
             wsBaseUrl = wbu.endsWith('/') ? wbu : wbu + '/';
           }
+          const homeUri = webviewPanel.webview.asWebviewUri(vscode.Uri.file(os.homedir())).toString();
           postMessage({
             type: 'init',
             filePath: relPath,
@@ -487,6 +490,7 @@ export class KiviEditorProvider implements vscode.CustomTextEditorProvider {
             isReadonly: document.isUntitled,
             docBaseUrl: docBaseUrl.endsWith('/') ? docBaseUrl : docBaseUrl + '/',
             workspaceBaseUrl: wsBaseUrl,
+            homeBaseUrl: homeUri.endsWith('/') ? homeUri : homeUri + '/',
           });
 
           sendSettings();

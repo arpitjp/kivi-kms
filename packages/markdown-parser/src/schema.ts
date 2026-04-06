@@ -148,3 +148,7 @@ export function hashTagMark(tag: string): PMMarkJSON {
 export function tocBlockNode(): PMNodeJSON {
   return { type: 'tocBlock' };
 }
+
+export function htmlBlockNode(content: string): PMNodeJSON {
+  return { type: 'htmlBlock', attrs: { content } };
+}

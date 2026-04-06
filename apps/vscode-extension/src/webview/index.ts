@@ -89,6 +89,7 @@ let filePath = '';
 let fileName = '';
 let docBaseUrl = '';
 let workspaceBaseUrl = '';
+let homeBaseUrl = '';
 let currentEditorZoom = 100;
 let currentWordWrap = true;
 let _lastFontSize = 14;
@@ -96,6 +97,47 @@ let _lastFontFamily = '';
 let rawMonaco: MonacoRawEditor | null = null;
 let splitMonaco: MonacoRawEditor | null = null;
 let _rawMonacoContainer: HTMLElement | null = null;
+
+function getActiveRawMonacoEditor() {
+  if (viewMode === 'split') return splitMonaco?.editor() ?? null;
+  if (viewMode === 'source') return rawMonaco?.editor() ?? null;
+  return null;
+}
+
+function isRawEditorTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return !!target.closest('#kivi-raw-wrapper, .kivi-split-right, .monaco-editor');
+}
+
+async function pasteIntoRawEditorFromClipboard(): Promise<void> {
+  const ed = getActiveRawMonacoEditor();
+  if (!ed) return;
+  ed.focus();
+
+  // Prefer browser clipboard API for reliability inside webviews.
+  try {
+    const text = await navigator.clipboard.readText();
+    if (typeof text === 'string') {
+      const selections = ed.getSelections();
+      if (selections && selections.length > 0) {
+        ed.executeEdits(
+          'kivi-raw-paste',
+          selections.map((sel) => ({ range: sel, text, forceMoveMarkers: true })),
+        );
+        return;
+      }
+    }
+  } catch {
+    // Fall back to Monaco's native paste action below.
+  }
+
+  const action = ed.getAction('editor.action.clipboardPasteAction');
+  if (action) {
+    await action.run();
+  } else {
+    ed.trigger('keyboard', 'paste', null);
+  }
+}
 
 function ensureRawMonaco(): MonacoRawEditor {
   if (rawMonaco) return rawMonaco;
@@ -1129,6 +1171,9 @@ function init() {
         if (msg.workspaceBaseUrl) {
           workspaceBaseUrl = msg.workspaceBaseUrl;
         }
+        if (msg.homeBaseUrl) {
+          homeBaseUrl = msg.homeBaseUrl;
+        }
         if (msg.docBaseUrl || msg.workspaceBaseUrl) {
           rewriteRelativeImages();
           requestAnimationFrame(() => rewriteRelativeImages());
@@ -1490,6 +1535,15 @@ function init() {
   }) as EventListener);
 
   document.addEventListener('keydown', (e) => {
+    // Raw/source mode paste: handle explicitly to avoid webview clipboard quirks.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v') {
+      const rawFocus = isRawEditorTarget(e.target) || isRawEditorTarget(document.activeElement);
+      if ((viewMode === 'source' || viewMode === 'split') && rawFocus) {
+        e.preventDefault();
+        void pasteIntoRawEditorFromClipboard();
+        return;
+      }
+    }
     // Cmd+F: search (always opens, never toggles — matches VS Code)
     if ((e.metaKey || e.ctrlKey) && e.key === 'f' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
@@ -1556,11 +1610,22 @@ const _rewrittenEls = new WeakSet<HTMLElement>();
 
 function resolveMediaUrl(src: string): string | null {
   if (!src || !isRelativeUrl(src)) return null;
-  if (src.startsWith('/') && workspaceBaseUrl) {
-    return workspaceBaseUrl + src.slice(1);
+  // ~/ → system home directory
+  if (src.startsWith('~/') && homeBaseUrl) {
+    return homeBaseUrl + src.slice(2);
   }
+  // ./ or ../ → relative to current document's directory
+  if (src.startsWith('./') || src.startsWith('../')) {
+    if (!docBaseUrl) return null;
+    return docBaseUrl + src;
+  }
+  // / or bare path (images/foo.png) → workspace root
+  if (workspaceBaseUrl) {
+    return workspaceBaseUrl + src.replace(/^\//, '');
+  }
+  // fallback: resolve relative to doc
   if (!docBaseUrl) return null;
-  return docBaseUrl + src.replace(/^\.\//, '');
+  return docBaseUrl + src;
 }
 
 function rewriteRelativeImages() {
@@ -3314,6 +3379,21 @@ function initContextMenu() {
 
   type MenuItem = { label: string; shortcut?: string; divider?: boolean; action?: () => void };
 
+  function runRawEditorAction(actionId: string, triggerId?: string) {
+    const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
+    const ed = monacoInst?.editor();
+    if (!ed) return;
+    ed.focus();
+    const action = ed.getAction(actionId);
+    if (action) {
+      void action.run();
+      return;
+    }
+    if (triggerId) {
+      ed.trigger('keyboard', triggerId, null);
+    }
+  }
+
   const textItems: MenuItem[] = [
     { label: 'Cut', shortcut: '⌘X', action: () => document.execCommand('cut') },
     { label: 'Copy', shortcut: '⌘C', action: () => document.execCommand('copy') },
@@ -3481,11 +3561,14 @@ function initContextMenu() {
     } else {
       const monacoInst = viewMode === 'split' ? splitMonaco : rawMonaco;
       const rawItems: MenuItem[] = [
-        { label: 'Cut', shortcut: '⌘X', action: () => document.execCommand('cut') },
-        { label: 'Copy', shortcut: '⌘C', action: () => document.execCommand('copy') },
-        { label: 'Paste', shortcut: '⌘V', action: () => document.execCommand('paste') },
+        { label: 'Undo', shortcut: '⌘Z', action: () => runRawEditorAction('undo', 'undo') },
+        { label: 'Redo', shortcut: '⌘⇧Z', action: () => runRawEditorAction('redo', 'redo') },
         { divider: true, label: '' },
-        { label: 'Select All', shortcut: '⌘A', action: () => document.execCommand('selectAll') },
+        { label: 'Cut', shortcut: '⌘X', action: () => runRawEditorAction('editor.action.clipboardCutAction') },
+        { label: 'Copy', shortcut: '⌘C', action: () => runRawEditorAction('editor.action.clipboardCopyAction') },
+        { label: 'Paste', shortcut: '⌘V', action: () => { void pasteIntoRawEditorFromClipboard(); } },
+        { divider: true, label: '' },
+        { label: 'Select All', shortcut: '⌘A', action: () => runRawEditorAction('editor.action.selectAll') },
         { divider: true, label: '' },
         { label: blameEnabled ? 'Hide Git Blame' : 'Show Git Blame', action: () => toggleBlame() },
         { divider: true, label: '' },

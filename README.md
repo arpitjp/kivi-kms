@@ -1,17 +1,18 @@
 <p align="center">
-  <img src="kivi.png" alt="Kivi" width="128" height="128" />
+<img src="kivi.png" alt="Kivi" width="128" height="128" />
 </p>
 
 <h1 align="center">Kivi</h1>
 
 <p align="center">
-  A high-performance, WYSIWYG-first Markdown editor and personal knowledge management system.<br/>
-  Built as a reusable editor engine (<code>@kivi/editor-core</code>), a vault/knowledge layer (<code>@kivi/vault</code>), and a VS Code / Cursor extension.
+A high-performance, WYSIWYG-first Markdown editor and personal knowledge management system.<br/>
+Built as a reusable editor engine (<code>@kivi/editor-core</code>), a vault/knowledge layer (<code>@kivi/vault</code>), and a VS Code / Cursor extension.
 </p>
 
 ## Features
 
 ### Editor (Phase 1)
+
 - Full CommonMark + GFM support with lossless round-trip editing
 - Block-level dirty tracking for minimal-diff serialization
 - Bold, italic, underline, strikethrough, inline code, fenced code blocks
@@ -22,6 +23,7 @@
 - Web Worker parsing for large files (>10KB)
 
 ### Knowledge Management (Phase 2)
+
 - **Wiki-links** — `[[page-name]]` and `[[page-name|alias]]` with Obsidian-compatible syntax
 - **Backlinks** — bidirectional link index, VS Code sidebar view, web demo panel
 - **Tags** — `#tag-name` inline nodes with hierarchical support (`#project/kivi`)
@@ -58,6 +60,7 @@ pnpm --filter @kivi/web-demo dev
 ```
 
 Opens at `http://localhost:5173`. Features:
+
 - Split view: WYSIWYG editor + raw Markdown
 - Sidebar with file browser, backlinks, and outline
 - Formatting toolbar with theme picker
@@ -71,6 +74,7 @@ Opens at `http://localhost:5173`. Features:
 3. Open any `.md` file → Reopen with Kivi Markdown Editor
 
 The extension provides:
+
 - WYSIWYG editor with formatting toolbar
 - File explorer sidebar with markdown files
 - Outline view (heading tree)
@@ -95,14 +99,14 @@ pnpm test:all
 
 ### Test Coverage
 
-| Package | Tests | Scope |
-|---|---|---|
-| `@kivi/markdown-parser` | 32 | Parsing, wiki-links, hashtags, ToC, mermaid, excalidraw |
-| `@kivi/markdown-serializer` | 29 | Round-trip serialization, wiki-link/tag/diagram output |
-| `@kivi/editor-core` | 71 | E2E round-trips, dirty tracking, clipboard, incremental diff |
-| `@kivi/vault` | 33 | Vault CRUD, backlinks, tags, graph, search, hierarchy, scanner |
-| VS Code extension | 16 | Extension activation, custom editor, document operations |
-| **Total** | **181** | |
+| Package                     | Tests   | Scope                                                          |
+| --------------------------- | ------- | -------------------------------------------------------------- |
+| `@kivi/markdown-parser`     | 32      | Parsing, wiki-links, hashtags, ToC, mermaid, excalidraw        |
+| `@kivi/markdown-serializer` | 29      | Round-trip serialization, wiki-link/tag/diagram output         |
+| `@kivi/editor-core`         | 71      | E2E round-trips, dirty tracking, clipboard, incremental diff   |
+| `@kivi/vault`               | 33      | Vault CRUD, backlinks, tags, graph, search, hierarchy, scanner |
+| VS Code extension           | 16      | Extension activation, custom editor, document operations       |
+| **Total**                   | **181** |                                                                |
 
 ## Project Structure
 
@@ -129,6 +133,8 @@ kivi/
 - **Custom preservation layer** stores original source text, positions, and style hints per block
 - **Block-level dirty tracking** — only modified blocks are re-serialized, producing minimal diffs
 - **Web Worker** for background parsing of large files (>100KB)
-- **`@kivi/vault`** — standalone knowledge index with no editor dependency
+- **@kivi/vault** — standalone knowledge index with no editor dependency
 - **Canvas-based graph renderer** — lightweight force-directed layout without external deps
 - **Theme system** via CSS custom properties, seamless VS Code theme bridging
+
+

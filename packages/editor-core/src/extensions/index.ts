@@ -22,6 +22,7 @@ export { SmartTypography } from './smart-typography.js';
 export { CursorFix } from './cursor-fix.js';
 export { BlockCopyControls } from './block-copy-controls.js';
 export { CalloutDecoration } from './callout.js';
+export { HtmlBlock } from './html-block.js';
 export { LinkSuggest, type LinkSuggestFileInfo, type LinkSuggestOptions } from './link-suggest.js';
 export {
   LinkPreviewExtension,

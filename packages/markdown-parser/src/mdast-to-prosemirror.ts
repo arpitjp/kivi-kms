@@ -53,6 +53,7 @@ import {
   wikiLinkMark,
   hashTagMark,
   tocBlockNode,
+  htmlBlockNode,
 } from './schema.js';
 
 /**
@@ -350,7 +351,7 @@ function convertImage(node: Image): PMNodeJSON {
   return imageNode(node.url, node.alt ?? undefined, node.title ?? undefined);
 }
 
-const HASHTAG_RE = /(?:^|\s)#([a-zA-Z0-9_/][a-zA-Z0-9_/-]*)/g;
+const HASHTAG_RE = /(?:^|\s)#([^\s#][^\s]*)/g;
 const HIGHLIGHT_RE = /==([^=\n]+?)==/g;
 
 function convertText(node: Text, marks: PMMarkJSON[]): PMNodeJSON | PMNodeJSON[] {
@@ -479,7 +480,7 @@ function convertHtml(node: Html): PMNodeJSON | PMNodeJSON[] {
   if (linkMatch) {
     return textNode(linkMatch[2], [{ type: 'link', attrs: { href: linkMatch[1], title: null, target: '_blank' } }]);
   }
-  return paragraphNode([textNode(node.value)]);
+  return htmlBlockNode(node.value);
 }
 
 function convertVideoHtml(attrStr: string): PMNodeJSON {

@@ -118,6 +118,9 @@ function convertBlockNode(node: PMNode): RootContent[] {
     case 'tocBlock':
       return [{ type: 'paragraph', children: [{ type: 'text', value: '[TOC]' }] }];
 
+    case 'htmlBlock':
+      return [{ type: 'html', value: (node.attrs?.content as string) || '' } as unknown as RootContent];
+
     case 'mermaidBlock':
       return [{
         type: 'code',

@@ -437,6 +437,7 @@ body {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
+  font-family: var(--vscode-editor-font-family);
   font-size: var(--kivi-font-size, var(--vscode-editor-font-size, 14px));
   caret-color: var(--vscode-editorCursor-foreground, #d4d4d4);
   padding-bottom: 40vh;
@@ -452,12 +453,15 @@ body {
 
 .kivi-vscode-editor > p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
+  position: absolute;
+  top: 0;
   left: 0;
   width: auto;
-  text-align: left;
   font-family: inherit;
   font-size: inherit;
   color: var(--vscode-input-placeholderForeground, #666);
+  pointer-events: none;
+  user-select: none;
 }
 /* Hide placeholder while skeleton/loading is active */
 body.kivi-loading .kivi-vscode-editor > p.is-editor-empty:first-child::before {
@@ -2038,6 +2042,16 @@ body.kivi-loading .kivi-vscode-editor > p.is-editor-empty:first-child::before {
   font-family: var(--kivi-mono-stack);
   font-size: 0.85em;
   color: var(--vscode-descriptionForeground, #888);
+}
+
+/* ---------- HTML Block ---------- */
+
+.kivi-html-block {
+  margin: 0.5em 0;
+}
+
+.kivi-html-rendered {
+  display: block;
 }
 
 /* ---------- Footnotes ---------- */

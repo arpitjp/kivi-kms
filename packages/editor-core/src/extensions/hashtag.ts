@@ -47,7 +47,7 @@ function detectHashTrigger(state: EditorState): { from: number; to: number; quer
   }
 
   const textBefore = $pos.parent.textBetween(0, $pos.parentOffset, undefined, '\ufffc');
-  const match = textBefore.match(/(?:^|\s)#([a-zA-Z0-9_/\-]*)$/);
+  const match = textBefore.match(/(?:^|\s)#([^\s#][^\s]*)$/);
   if (!match) return null;
 
   const query = match[1];
@@ -113,7 +113,7 @@ export const HashTag = Mark.create<HashTagOptions>({
   addInputRules() {
     return [
       new InputRule({
-        find: /(?:^|\s)#([a-zA-Z0-9_/][a-zA-Z0-9_/-]*)\s$/,
+        find: /(?:^|\s)#([^\s#][^\s]*)\s$/,
         handler: ({ range, match, chain }) => {
           const tag = match[1];
           const hashStart = range.from + (match[0].startsWith(' ') ? 1 : 0);
@@ -435,12 +435,15 @@ function createSuggestionPlugin(
         if (items.length === 0) {
           if (event.key === 'Enter' || event.key === ' ') {
             if (activeRange) {
-              event.preventDefault();
               const trigger = detectHashTrigger(view.state);
-              if (trigger?.query) applyTag(view, trigger.query);
-              else destroy();
+              if (trigger?.query) {
+                event.preventDefault();
+                applyTag(view, trigger.query);
+                return true;
+              }
             }
-            return true;
+            destroy();
+            return false;
           }
           return false;
         }
@@ -463,9 +466,13 @@ function createSuggestionPlugin(
           return true;
         }
         if (event.key === ' ') {
-          event.preventDefault();
           const trigger = detectHashTrigger(view.state);
-          applyTag(view, trigger?.query || items[selectedIndex]);
+          if (!trigger?.query) {
+            destroy();
+            return false;
+          }
+          event.preventDefault();
+          applyTag(view, trigger.query || items[selectedIndex]);
           return true;
         }
         return false;

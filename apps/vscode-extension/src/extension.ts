@@ -120,6 +120,55 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // ── Re-open pinned / restored .md tabs with Kivi ──
+  // VS Code persists the editor type per tab across sessions, so tabs opened before
+  // Kivi was installed (or set as default) keep using the built-in text editor even
+  // after reload. On activation, find those tabs and re-open them with Kivi.
+  const reopenExistingMarkdownTabs = async () => {
+    const cfg = vscode.workspace.getConfiguration('kivi');
+    if (!cfg.get<boolean>('defaultEditor', true)) return;
+
+    const mdExts = new Set(['.md', '.markdown']);
+    const tabsToReopen: { uri: vscode.Uri; viewColumn: vscode.ViewColumn; isPinned: boolean; isActive: boolean }[] = [];
+
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (!(tab.input instanceof vscode.TabInputText)) continue;
+        const uri = tab.input.uri;
+        if (uri.scheme !== 'file') continue;
+        const ext = uri.fsPath.slice(uri.fsPath.lastIndexOf('.')).toLowerCase();
+        if (!mdExts.has(ext)) continue;
+        if (tab.isDirty) continue;
+        tabsToReopen.push({
+          uri,
+          viewColumn: group.viewColumn,
+          isPinned: tab.isPinned,
+          isActive: tab.isActive,
+        });
+      }
+    }
+
+    if (tabsToReopen.length === 0) return;
+    DevPanel.log('info', 'config', `Re-opening ${tabsToReopen.length} markdown tab(s) with Kivi`);
+
+    for (const { uri, viewColumn, isPinned, isActive } of tabsToReopen) {
+      const staleTab = vscode.window.tabGroups.all
+        .flatMap(g => g.tabs)
+        .find(t => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
+      if (staleTab) await vscode.window.tabGroups.close(staleTab);
+
+      await vscode.commands.executeCommand(
+        'vscode.openWith', uri, KiviEditorProvider.viewType,
+        isActive ? viewColumn : { viewColumn, preserveFocus: true },
+      );
+      if (isPinned) {
+        await vscode.commands.executeCommand('workbench.action.pinEditor');
+      }
+    }
+  };
+  setTimeout(() => reopenExistingMarkdownTabs().catch(err =>
+    console.error('[kivi] reopenExistingMarkdownTabs failed:', err)), 1500);
+
   const getActiveUri = (): vscode.Uri | undefined =>
     vscode.window.activeTextEditor?.document.uri
     ?? getTabUri(vscode.window.tabGroups.activeTabGroup.activeTab);
